@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GRT Tables</title>
+    <link rel="stylesheet" href="css/app.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="group">
+        <button id="btn-new">New</button>
+        <button id="btn-open">Open</button>
+        <button id="btn-close">Close</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-new-table">New table</button>
+        <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-import-csv">Import CSV</button>
+        <button id="btn-export-csv">Export CSV</button>
+        <button id="btn-export-grt" title="A readable archive of schema and data">Export archive</button>
+        <button id="btn-import-grt">Import archive</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-share" title="Compact the file and remove what is beside it">Prepare for sharing</button>
+      </div>
+
+      <span class="spacer"></span>
+      <button id="btn-settings">Settings</button>
+    </header>
+
+    <div id="readonly-bar" class="readonly-bar hidden">
+      <span>This database was opened, not created here, so it is read-only.</span>
+      <button id="btn-unlock">Allow changes</button>
+    </div>
+
+    <main>
+      <aside class="sidebar">
+        <h2>Tables</h2>
+        <div id="table-list"></div>
+      </aside>
+
+      <section class="workspace">
+        <nav class="tabs">
+          <button data-view="data" class="tab active">Data</button>
+          <button data-view="design" class="tab">Design</button>
+          <button data-view="query" class="tab">Query</button>
+        </nav>
+
+        <div id="view-data" class="view">
+          <div class="filter-bar">
+            <select id="filter-column"><option value="">Any column</option></select>
+            <input id="filter-value" type="search" placeholder="Contains…" />
+            <span class="spacer"></span>
+            <button id="btn-add-row">Add row</button>
+            <button id="btn-delete-row">Delete row</button>
+          </div>
+          <div id="data-grid" class="data-grid"></div>
+          <div class="pager">
+            <button id="btn-prev-page">Previous</button>
+            <span id="page-label" class="dim"></span>
+            <button id="btn-next-page">Next</button>
+          </div>
+        </div>
+
+        <div id="view-design" class="view hidden">
+          <div id="design-panel" class="design-panel"></div>
+          <h3>The statement this would run</h3>
+          <pre id="design-sql" class="sql-preview"></pre>
+        </div>
+
+        <div id="view-query" class="view hidden">
+          <textarea id="query-input" class="query-input" spellcheck="false"
+                    placeholder="SELECT * FROM …"></textarea>
+          <div class="query-bar">
+            <button id="btn-run-query">Run</button>
+            <span id="query-note" class="dim"></span>
+          </div>
+          <div id="query-result" class="data-grid"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="statusbar">
+      <span id="db-path" class="dim"></span>
+      <span class="spacer"></span>
+      <span id="ephemeral" class="badge hidden">Ephemeral — the database is in memory</span>
+      <span class="dim">GRT Tables <span id="version"></span></span>
+    </footer>
+
+    <div id="overlay" class="overlay hidden">
+      <div class="panel">
+        <h2 id="panel-title"></h2>
+        <div id="panel-body"></div>
+        <div class="panel-actions">
+          <button id="panel-cancel">Cancel</button>
+          <button id="panel-confirm" class="primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

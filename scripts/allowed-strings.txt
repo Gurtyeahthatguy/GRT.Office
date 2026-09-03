@@ -1,0 +1,30 @@
+# Strings check-build.sh accepts in a release binary, one per line.
+#
+# Every entry needs a reason. The point of the network check is to catch an
+# endpoint the program could actually contact, so anything listed here must be
+# demonstrably inert — a source comment, a local origin, a schema identifier.
+# If you cannot write the reason, do not add the line.
+
+# Tauri, wry and muda embed source comments and panic messages that cite their
+# own issue tracker. They are text inside code, never fetched.
+https://github.com/tauri-apps/muda
+https://github.com/tauri-apps/tauri/issues/2549
+https://github.com/tauri-apps/tauri/issues/8306
+https://github.com/tauri-apps/wry/blob
+https://github.com/whatwg/html/issues/7428
+
+# Tauri's own IPC origin on Windows. Local to the process; never leaves the
+# machine.
+http://ipc.localhost
+
+# A placeholder inside a dependency's test fixture.
+http://dummy.test
+
+# XML/PDF namespace identifiers. These are names that happen to look like
+# addresses; nothing resolves them.
+http://www.w3.org
+https://www.w3.org
+http://purl.org
+https://purl.org
+http://ns.adobe.com
+https://ns.adobe.com

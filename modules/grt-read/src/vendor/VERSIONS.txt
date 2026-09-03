@@ -1,0 +1,4 @@
+Vendored third-party code. Regenerate with: npm run vendor
+
+pdfjs-dist  4.10.38  (Apache-2.0)
+pdf-lib     1.17.1  (MIT)

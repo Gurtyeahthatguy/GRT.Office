@@ -1,0 +1,120 @@
+# Builds and tests every module on Linux and Windows.
+
+name: build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The JavaScript suites.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - grt-read
+          - grt-graphs
+          - grt-slides
+          - grt-paper
+          - grt-dates
+          - grt-notes
+          - grt-grid
+          - grt-tables
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: modules/${{ matrix.module }}
+        run: npm ci
+      - name: Test
+        working-directory: modules/${{ matrix.module }}
+        run: npm test
+
+  # Rust suites: the container crate and GRT Tables' database layer.
+  rust-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - core/grt-container
+          - modules/grt-tables/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+
+      - name: Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev \
+            libayatana-appindicator3-dev libssl-dev patchelf
+
+      - name: Test
+        working-directory: ${{ matrix.crate }}
+        run: cargo test
+
+  build:
+    needs: [test, rust-test]
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - grt-read
+          - grt-graphs
+          - grt-slides
+          - grt-paper
+          - grt-dates
+          - grt-notes
+          - grt-grid
+          - grt-tables
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: modules/${{ matrix.module }}/src-tauri
+
+      - name: Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev \
+            libayatana-appindicator3-dev libssl-dev patchelf
+
+      - name: Install and build
+        working-directory: modules/${{ matrix.module }}
+        run: |
+          npm ci
+          npx tauri build --no-bundle
+
+      - name: No-trace check
+        if: matrix.os == 'ubuntu-latest'
+        run: ./scripts/check-build.sh modules/${{ matrix.module }}/src-tauri/target/release/${{ matrix.module }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.module }}-${{ matrix.os }}
+          path: |
+            modules/${{ matrix.module }}/src-tauri/target/release/${{ matrix.module }}
+            modules/${{ matrix.module }}/src-tauri/target/release/${{ matrix.module }}.exe
+          if-no-files-found: error

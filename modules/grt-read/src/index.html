@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GRT Read</title>
+    <link rel="stylesheet" href="css/app.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="group">
+        <button id="btn-open" title="Open a PDF (Ctrl+O)">Open</button>
+        <button id="btn-merge" class="needs-doc" title="Append another PDF">Append</button>
+        <button id="btn-save" class="needs-doc" title="Save (Ctrl+S)">Save</button>
+        <button id="btn-save-as" class="needs-doc" title="Save as (Ctrl+Shift+S)">Save as</button>
+      </div>
+
+      <div class="group needs-doc">
+        <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
+      </div>
+
+      <div class="group needs-doc">
+        <button id="btn-rotate-left" title="Rotate left">&#8630;</button>
+        <button id="btn-rotate-right" title="Rotate right">&#8631;</button>
+        <button id="btn-delete" title="Delete page (Del)">Delete</button>
+        <button id="btn-extract" title="Save the selected pages as a new file">Extract</button>
+      </div>
+
+      <div class="group needs-doc">
+        <button id="btn-zoom-out" title="Zoom out">&minus;</button>
+        <span id="zoom-label">100%</span>
+        <button id="btn-zoom-in" title="Zoom in">+</button>
+        <button id="btn-zoom-fit" title="Fit page width">Fit</button>
+      </div>
+
+      <div class="group needs-doc">
+        <button id="btn-split" title="Split into several files">Split</button>
+        <button id="btn-stamp" title="Watermark and page numbers">Stamp</button>
+        <button id="btn-crop" title="Crop pages">Crop</button>
+        <button id="btn-highlight" title="Draw a highlight (H)" aria-pressed="false">Highlight</button>
+        <button id="btn-redact" title="Remove content permanently (R)" aria-pressed="false">Redact</button>
+        <button id="btn-clear-marks" title="Remove marks from the selected pages">Clear marks</button>
+        <button id="btn-metadata" title="Set metadata deliberately">Metadata</button>
+      </div>
+
+      <div class="group needs-doc">
+        <input id="search-input" type="search" placeholder="Find text" autocomplete="off" />
+        <button id="btn-search" title="Search the document">Find</button>
+        <span id="search-status" class="muted"></span>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="group">
+        <span id="page-indicator" class="muted"></span>
+        <button id="btn-fingerprint" class="needs-doc" title="What this file will contain">Fingerprint</button>
+        <button id="btn-commands" title="All commands (Ctrl+K)">Commands</button>
+        <button id="btn-settings" title="Settings">Settings</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside id="thumbnails" class="thumbnails" aria-label="Page thumbnails"></aside>
+      <section id="pages" class="pages" tabindex="0"></section>
+    </main>
+
+    <div id="empty-state" class="empty-state">
+      <h1>GRT Read</h1>
+      <p>Open a PDF, or drop one onto this window.</p>
+      <p class="muted small">
+        Nothing leaves this machine. Saved files are rebuilt from scratch and
+        their metadata is cleared.
+      </p>
+      <p id="ephemeral-note" class="muted small hidden">Ephemeral mode: nothing is written to disk except the document you save.</p>
+    </div>
+
+    <div id="overlay" class="overlay hidden">
+      <div class="panel" role="dialog" aria-modal="true">
+        <h2 id="panel-title">Fingerprint</h2>
+        <div id="panel-body"></div>
+        <div class="panel-actions">
+          <button id="panel-cancel">Close</button>
+          <button id="panel-confirm" class="primary hidden">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

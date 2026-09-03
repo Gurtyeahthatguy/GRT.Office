@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GRT Paper</title>
+    <link rel="stylesheet" href="css/app.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="group">
+        <button id="btn-new" title="New document (Ctrl+N)">New</button>
+        <button id="btn-open" title="Open (Ctrl+O)">Open</button>
+        <button id="btn-save" title="Save (Ctrl+S)">Save</button>
+        <button id="btn-save-as" title="Save as (Ctrl+Shift+S)">Save as</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
+      </div>
+
+      <div class="group">
+        <select id="style-picker" title="Paragraph style">
+          <option value="body">Body</option>
+          <option value="h1">Heading 1</option>
+          <option value="h2">Heading 2</option>
+          <option value="h3">Heading 3</option>
+          <option value="h4">Heading 4</option>
+          <option value="quote">Quote</option>
+          <option value="code">Code</option>
+        </select>
+        <button id="btn-bold" title="Bold (Ctrl+B)"><b>B</b></button>
+        <button id="btn-italic" title="Italic (Ctrl+I)"><i>I</i></button>
+        <button id="btn-underline" title="Underline (Ctrl+U)"><u>U</u></button>
+        <button id="btn-strike" title="Strikethrough"><s>S</s></button>
+      </div>
+
+      <div class="group">
+        <button id="btn-align-left" title="Align left">&#8676;</button>
+        <button id="btn-align-center" title="Centre">&#8596;</button>
+        <button id="btn-align-right" title="Align right">&#8677;</button>
+        <button id="btn-align-justify" title="Justify">&#8801;</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-bullets" title="Bulleted list">&bull; List</button>
+        <button id="btn-numbers" title="Numbered list">1. List</button>
+        <button id="btn-image" title="Insert an image">Image</button>
+        <button id="btn-break" title="Page break">Break</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-find" title="Find and replace (Ctrl+F)">Find</button>
+        <button id="btn-outline" title="Table of contents">Contents</button>
+        <button id="btn-page-setup" title="Page size and margins">Page</button>
+        <button id="btn-export" title="Export">Export</button>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="group">
+        <span id="status" class="muted"></span>
+        <button id="btn-commands" title="All commands (Ctrl+K)">Commands</button>
+        <button id="btn-settings" title="Settings (Ctrl+,)">Settings</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside id="outline-panel" class="outline hidden" aria-label="Contents"></aside>
+      <section id="scroll" class="scroll">
+        <div id="sheet" class="sheet">
+          <div
+            id="surface"
+            class="surface"
+            contenteditable="true"
+            spellcheck="false"
+            role="textbox"
+            aria-multiline="true"
+          ></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="overlay" class="overlay hidden">
+      <div class="panel" role="dialog" aria-modal="true">
+        <h2 id="panel-title">Panel</h2>
+        <div id="panel-body"></div>
+        <div class="panel-actions">
+          <button id="panel-cancel">Close</button>
+          <button id="panel-confirm" class="primary hidden">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+    <p id="ephemeral-note" class="ephemeral-note hidden">
+      Ephemeral mode: nothing is written to disk except the document you save.
+    </p>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "name": "grt-paper",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "author": "GRT Project",
+  "license": "MIT",
+  "scripts": {
+    "sync-core": "node ../../scripts/sync-core.mjs modules/grt-paper",
+    "predev": "npm run sync-core",
+    "prebuild": "npm run sync-core",
+    "pretest": "npm run sync-core",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "jsdom": "^25",
+    "vitest": "^2"
+  }
+}

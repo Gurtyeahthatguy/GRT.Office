@@ -1,0 +1,26 @@
+{
+  "name": "grt-read",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "author": "GRT Project",
+  "license": "MIT",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri",
+    "test": "vitest run",
+    "vendor": "node scripts/vendor.mjs",
+    "sync-core": "node ../../scripts/sync-core.mjs modules/grt-read",
+    "predev": "npm run sync-core",
+    "prebuild": "npm run sync-core",
+    "pretest": "npm run sync-core"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "jsdom": "^25",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38",
+    "vitest": "^2"
+  }
+}

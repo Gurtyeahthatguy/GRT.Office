@@ -1,0 +1,17 @@
+[package]
+name = "grt-container"
+version = "0.1.0"
+description = "Deterministic reader and writer for the .grt document container"
+authors = ["GRT Project"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+# rlib for now: linked into each module rather than shipped as a shared
+# object.
+crate-type = ["rlib"]
+
+[dependencies]
+flate2 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

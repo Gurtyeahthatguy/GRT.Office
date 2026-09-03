@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GRT Grid</title>
+    <link rel="stylesheet" href="css/app.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="group">
+        <button id="btn-new" title="New (Ctrl+N)">New</button>
+        <button id="btn-open" title="Open (Ctrl+O)">Open</button>
+        <button id="btn-save" title="Save (Ctrl+S)">Save</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
+      </div>
+
+      <div class="group">
+        <select id="style-picker" title="Cell style">
+          <option value="normal">Normal</option>
+          <option value="header">Header</option>
+          <option value="currency">Currency</option>
+          <option value="percent">Percent</option>
+          <option value="date">Date</option>
+        </select>
+        <button id="btn-insert-row" title="Insert a row above">+Row</button>
+        <button id="btn-insert-col" title="Insert a column to the left">+Col</button>
+        <button id="btn-delete-row" title="Delete the selected rows">&minus;Row</button>
+        <button id="btn-delete-col" title="Delete the selected columns">&minus;Col</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-import-csv" title="Import a CSV file">Import CSV</button>
+        <button id="btn-export-csv" title="Export as CSV">Export CSV</button>
+      </div>
+
+      <span class="spacer"></span>
+      <div class="group">
+        <button id="btn-settings" title="Settings">Settings</button>
+      </div>
+    </header>
+
+    <div class="formula-bar">
+      <span id="name-box" class="name-box">A1</span>
+      <input id="formula-input" class="formula-input" spellcheck="false"
+             placeholder="Type a value, or a formula beginning with =" />
+    </div>
+
+    <main>
+      <div id="grid" class="grid">
+        <div class="grid-corner"></div>
+        <div class="grid-column-header"></div>
+        <div class="grid-row-header"></div>
+        <div class="grid-body"></div>
+      </div>
+    </main>
+
+    <footer class="statusbar">
+      <span id="sheet-tabs" class="sheet-tabs"></span>
+      <button id="btn-add-sheet" class="add-sheet" title="Add a sheet">+</button>
+      <span class="spacer"></span>
+      <span id="summary" class="summary"></span>
+      <span id="ephemeral" class="badge hidden">Ephemeral</span>
+      <span class="dim">GRT Grid <span id="version"></span></span>
+    </footer>
+
+    <div id="overlay" class="overlay hidden">
+      <div class="panel">
+        <h2 id="panel-title"></h2>
+        <div id="panel-body"></div>
+        <div class="panel-actions">
+          <button id="panel-cancel">Cancel</button>
+          <button id="panel-confirm" class="primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

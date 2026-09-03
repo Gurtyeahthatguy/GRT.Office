@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GRT Notes</title>
+    <link rel="stylesheet" href="css/app.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="group">
+        <button id="btn-new-note" title="New note (Ctrl+N)">New note</button>
+        <button id="btn-quick" title="Quick note (Ctrl+Shift+N)">Quick note</button>
+      </div>
+
+      <div class="group">
+        <select id="style-picker" title="Turn this block into">
+          <option value="">Style…</option>
+          <option value="paragraph">Body</option>
+          <option value="h1">Heading 1</option>
+          <option value="h2">Heading 2</option>
+          <option value="h3">Heading 3</option>
+          <option value="quote">Quote</option>
+        </select>
+        <button id="btn-bold" title="Bold (Ctrl+B)"><b>B</b></button>
+        <button id="btn-italic" title="Italic (Ctrl+I)"><i>I</i></button>
+        <button id="btn-underline" title="Underline (Ctrl+U)"><u>U</u></button>
+        <button id="btn-strike" title="Strikethrough"><s>S</s></button>
+      </div>
+
+      <div class="group">
+        <button id="btn-todo" title="To-do">&#9744;</button>
+        <button id="btn-callout" title="Callout">&#9432;</button>
+        <button id="btn-code" title="Code block">&lt;/&gt;</button>
+      </div>
+
+      <div class="group grow search-group">
+        <input id="search" type="search" placeholder="Search the archive (Ctrl+F)" />
+        <select id="search-mode" title="How to search">
+          <option value="text">Words</option>
+          <option value="regex">Pattern</option>
+        </select>
+      </div>
+
+      <div class="group">
+        <button id="btn-settings" title="Settings">Settings</button>
+      </div>
+    </header>
+
+    <main>
+      <aside class="sidebar">
+        <section class="tree-section">
+          <h2>Archive</h2>
+          <div id="tree"></div>
+          <button id="btn-new-notebook">New notebook</button>
+        </section>
+
+        <section id="backlinks" class="backlinks">
+          <h2>What links here</h2>
+          <div id="backlink-list"></div>
+        </section>
+      </aside>
+
+      <div class="editor">
+        <div class="note-head">
+          <input id="note-title" class="note-title" placeholder="Untitled note" />
+          <input id="note-tags" class="note-tags" placeholder="#tags" />
+        </div>
+
+        <div
+          id="surface"
+          class="surface"
+          contenteditable="true"
+          spellcheck="true"
+          role="textbox"
+          aria-multiline="true"
+        ></div>
+
+        <div id="completions" class="completions hidden"></div>
+      </div>
+
+      <div id="results" class="results hidden"></div>
+    </main>
+
+    <footer class="statusbar">
+      <span id="ephemeral" class="badge hidden">Ephemeral — nothing is written unless you ask</span>
+      <span id="save-state" class="save-state"></span>
+      <span class="spacer"></span>
+      <span class="dim">GRT Notes <span id="version"></span></span>
+    </footer>
+
+    <div id="overlay" class="overlay hidden">
+      <div class="panel">
+        <h2 id="panel-title"></h2>
+        <div id="panel-body"></div>
+        <div class="panel-actions">
+          <button id="panel-cancel">Cancel</button>
+          <button id="panel-confirm" class="primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

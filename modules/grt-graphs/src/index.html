@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GRT Graphs</title>
+    <link rel="stylesheet" href="css/app.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="group">
+        <button id="btn-new" title="New diagram">New</button>
+        <button id="btn-open" title="Open (Ctrl+O)">Open</button>
+        <button id="btn-save" title="Save (Ctrl+S)">Save</button>
+        <button id="btn-save-as" title="Save as (Ctrl+Shift+S)">Save as</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-add" title="Add a node (Insert)">Add node</button>
+        <button id="btn-delete" title="Delete selection (Del)">Delete</button>
+        <select id="shape-picker" title="Shape of the selected nodes">
+          <option value="">Shape…</option>
+          <option value="rect">Rectangle</option>
+          <option value="rounded">Rounded</option>
+          <option value="ellipse">Ellipse</option>
+          <option value="diamond">Diamond</option>
+          <option value="parallelogram">Parallelogram</option>
+          <option value="hexagon">Hexagon</option>
+          <option value="triangle">Triangle</option>
+        </select>
+        <select id="style-picker" title="Style of the selected nodes">
+          <option value="">Style…</option>
+          <option value="default">Default</option>
+          <option value="accent">Accent</option>
+          <option value="warn">Warning</option>
+        </select>
+        <select id="routing-picker" title="Routing of the selected connectors">
+          <option value="">Routing…</option>
+          <option value="orthogonal">Orthogonal</option>
+          <option value="straight">Straight</option>
+          <option value="curved">Curved</option>
+        </select>
+      </div>
+
+      <div class="group">
+        <button id="btn-layout" title="Arrange as a tree">Tree layout</button>
+        <button id="btn-validate" title="Check for problems">Check</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-zoom-out" title="Zoom out">&minus;</button>
+        <span id="zoom-label">100%</span>
+        <button id="btn-zoom-in" title="Zoom in">+</button>
+        <button id="btn-fit" title="Fit to view (Ctrl+0)">Fit</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-import" title="Import from JSON or Mermaid">Import</button>
+        <button id="btn-export" title="Export as SVG, PNG, PDF or JSON">Export</button>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="group">
+        <span id="status" class="muted"></span>
+        <button id="btn-commands" title="All commands (Ctrl+K)">Commands</button>
+        <button id="btn-settings" title="Settings (Ctrl+,)">Settings</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <svg id="canvas" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="empty-state" class="empty-state">
+        <h1>GRT Graphs</h1>
+        <p>Double-click anywhere to add a node.</p>
+        <p class="muted small">
+          Drag from a node's port to connect it. Nothing leaves this machine.
+        </p>
+        <p id="ephemeral-note" class="muted small hidden">
+          Ephemeral mode: nothing is written to disk except the document you save.
+        </p>
+      </div>
+      <input id="text-editor" class="text-editor hidden" type="text" />
+    </main>
+
+    <div id="overlay" class="overlay hidden">
+      <div class="panel" role="dialog" aria-modal="true">
+        <h2 id="panel-title">Panel</h2>
+        <div id="panel-body"></div>
+        <div class="panel-actions">
+          <button id="panel-cancel">Close</button>
+          <button id="panel-confirm" class="primary hidden">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the editor and the presenter view. Network and shell access are denied: neither tauri-plugin-http nor tauri-plugin-shell is compiled in, so those permissions have nothing to attach to. Window creation stays denied to the frontend \u2014 the presenter window is opened by a Rust command, at a page this program ships, and nothing else can ask for another.",
+  "windows": [
+    "main",
+    "presenter"
+  ],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message",
+    "dialog:allow-ask",
+    "core:webview:deny-create-webview",
+    "core:webview:deny-create-webview-window",
+    "core:window:deny-create"
+  ]
+}

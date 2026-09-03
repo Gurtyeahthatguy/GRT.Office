@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>GRT Slides — presenter view</title>
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="stylesheet" href="css/presenter.css" />
+  </head>
+  <body class="presenter">
+    <main class="presenter-grid">
+      <section class="pane now">
+        <h2>Now</h2>
+        <div class="preview" id="now-preview"></div>
+      </section>
+
+      <section class="pane next">
+        <h2>Next</h2>
+        <div class="preview" id="next-preview"></div>
+        <div class="clock">
+          <span id="elapsed">00:00</span>
+          <button id="btn-reset">Reset</button>
+          <button id="btn-pause">Pause</button>
+        </div>
+      </section>
+
+      <section class="pane notes-pane">
+        <h2>Notes</h2>
+        <div id="notes-text" class="notes-text"></div>
+      </section>
+    </main>
+
+    <footer class="presenter-bar">
+      <button id="btn-prev">Previous</button>
+      <span id="position">—</span>
+      <button id="btn-next">Next</button>
+      <span class="muted small">
+        Arrows move both screens. This window shows what the audience does not.
+      </span>
+    </footer>
+
+    <script type="module" src="js/presenter.js"></script>
+  </body>
+</html>

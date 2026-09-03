@@ -1,0 +1,32 @@
+[package]
+name = "grt-read"
+version = "0.1.0"
+description = "Local PDF reader and editor that leaves no trace in the files it writes"
+authors = ["GRT Project"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary to make the lib
+# name unique and wouldn't conflict with the bin name.
+name = "grt_read_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+percent-encoding = "2"
+
+# Release profile: strip and the path remapping in .cargo/config.toml are
+# what let scripts/check-build.sh pass.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

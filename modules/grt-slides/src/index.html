@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GRT Slides</title>
+    <link rel="stylesheet" href="css/app.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="group">
+        <button id="btn-new" title="New presentation">New</button>
+        <button id="btn-open" title="Open (Ctrl+O)">Open</button>
+        <button id="btn-save" title="Save (Ctrl+S)">Save</button>
+        <button id="btn-save-as" title="Save as (Ctrl+Shift+S)">Save as</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-add-slide" title="New slide (Ctrl+M)">Add slide</button>
+        <button id="btn-duplicate" title="Duplicate this slide">Duplicate</button>
+        <button id="btn-delete-slide" title="Delete this slide">Delete slide</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-add-text" title="Insert a text box">Text</button>
+        <button id="btn-add-image" title="Insert an image">Image</button>
+        <button id="btn-add-shape" title="Insert a shape">Shape</button>
+        <button id="btn-add-table" title="Insert a table">Table</button>
+        <select id="style-picker" title="Style of the selected text">
+          <option value="">Style…</option>
+          <option value="title">Title</option>
+          <option value="body">Body</option>
+          <option value="caption">Caption</option>
+        </select>
+      </div>
+
+      <div class="group">
+        <button id="btn-import-pptx" title="Import a PowerPoint file">Import PPTX</button>
+        <button id="btn-design" title="Colours, fonts and the look of the deck">Design</button>
+        <button id="btn-slide-setup" title="Background and transition for this slide">Slide</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-front" title="Bring to front">Front</button>
+        <button id="btn-back" title="Send to back">Back</button>
+        <button id="btn-delete" title="Delete selection (Del)">Delete</button>
+      </div>
+
+      <div class="group">
+        <button id="btn-present" class="primary" title="Present (F5)">Present</button>
+        <button id="btn-presenter" title="Presenter view on a second screen">Presenter</button>
+        <button id="btn-export" title="Export">Export</button>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="group">
+        <span id="status" class="muted"></span>
+        <button id="btn-commands" title="All commands (Ctrl+K)">Commands</button>
+        <button id="btn-settings" title="Settings (Ctrl+,)">Settings</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside id="thumbnails" class="thumbnails" aria-label="Slides"></aside>
+      <section id="stage" class="stage">
+        <div id="surface" class="surface"></div>
+      </section>
+      <aside id="notes-panel" class="notes">
+        <label for="notes">Speaker notes</label>
+        <textarea id="notes" placeholder="Visible in the presenter view, never on screen."></textarea>
+      </aside>
+    </main>
+
+    <div id="present-root" class="present-root"></div>
+
+    <div id="overlay" class="overlay hidden">
+      <div class="panel" role="dialog" aria-modal="true">
+        <h2 id="panel-title">Panel</h2>
+        <div id="panel-body"></div>
+        <div class="panel-actions">
+          <button id="panel-cancel">Close</button>
+          <button id="panel-confirm" class="primary hidden">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+    <p id="ephemeral-note" class="ephemeral-note hidden">
+      Ephemeral mode: nothing is written to disk except the document you save.
+    </p>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

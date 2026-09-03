@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GRT Dates</title>
+    <link rel="stylesheet" href="css/app.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="group">
+        <button id="btn-today" title="Go to today (T)">Today</button>
+        <button id="btn-prev" title="Previous (Left arrow)" aria-label="Previous">&#8592;</button>
+        <button id="btn-next" title="Next (Right arrow)" aria-label="Next">&#8594;</button>
+      </div>
+
+      <h1 id="view-title">&nbsp;</h1>
+
+      <div class="group views">
+        <button data-view="month" title="Month (M)">Month</button>
+        <button data-view="week" title="Week (W)">Week</button>
+        <button data-view="day" title="Day (D)">Day</button>
+        <button data-view="agenda" title="Agenda (A)">Agenda</button>
+      </div>
+
+      <div class="group grow">
+        <input id="search" type="search" placeholder="Search (Ctrl+F)" />
+      </div>
+
+      <div class="group">
+        <button id="btn-new-event" title="New event (Ctrl+N)">New event</button>
+        <button id="btn-save" title="Save (Ctrl+S)">Save</button>
+        <button id="btn-settings" title="Settings">Settings</button>
+      </div>
+    </header>
+
+    <main>
+      <aside class="sidebar">
+        <section>
+          <h2>Calendars</h2>
+          <div id="calendars"></div>
+          <div class="group stacked">
+            <button id="btn-new-calendar">New calendar</button>
+            <button id="btn-open">Open a file</button>
+          </div>
+          <p class="hint">Double-click a calendar to remove it.</p>
+        </section>
+
+        <section class="tasks-section">
+          <h2>Tasks</h2>
+          <div id="tasks"></div>
+          <button id="btn-new-task">New task</button>
+        </section>
+      </aside>
+
+      <div id="surface" class="surface"></div>
+    </main>
+
+    <footer class="statusbar">
+      <span id="ephemeral" class="badge hidden">Ephemeral — nothing is written unless you ask</span>
+      <span id="save-state" class="save-state"></span>
+      <span class="spacer"></span>
+      <span class="dim">GRT Dates <span id="version"></span></span>
+    </footer>
+
+    <div id="overlay" class="overlay hidden">
+      <div class="panel">
+        <h2 id="panel-title"></h2>
+        <div id="panel-body"></div>
+        <div class="panel-actions">
+          <button id="panel-cancel">Cancel</button>
+          <button id="panel-confirm" class="primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

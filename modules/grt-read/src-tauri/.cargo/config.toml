@@ -1,0 +1,7 @@
+# Absolute build paths embedded in the binary would reveal the user name and
+# the filesystem layout of whoever compiled it.
+[build]
+rustflags = [
+  "--remap-path-prefix=/home=/redacted",
+  "--remap-path-prefix=/Users=/redacted",
+]

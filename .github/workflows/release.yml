@@ -1,0 +1,193 @@
+# Builds every module for both platforms and attaches the results to a
+# GitHub release. Triggered by a tag such as v0.1.0, which must match the
+# version in tauri.conf.json.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - grt-read
+          - grt-graphs
+          - grt-slides
+          - grt-paper
+          - grt-dates
+          - grt-notes
+          - grt-grid
+          - grt-tables
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: modules/${{ matrix.module }}/src-tauri
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev \
+            libayatana-appindicator3-dev libssl-dev patchelf
+
+      - name: Check the tag against the version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        working-directory: modules/${{ matrix.module }}
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "Tag $GITHUB_REF_NAME says $tag, ${{ matrix.module }} says $version." >&2
+            exit 1
+          fi
+
+      - name: Install
+        shell: bash
+        working-directory: modules/${{ matrix.module }}
+        run: npm ci
+
+      - name: Test
+        shell: bash
+        working-directory: modules/${{ matrix.module }}
+        run: npm test
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        working-directory: modules/${{ matrix.module }}
+        run: npx tauri build --bundles deb,rpm,appimage
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        working-directory: modules/${{ matrix.module }}
+        run: npx tauri build --bundles nsis
+
+      - name: No-trace check
+        if: runner.os == 'Linux'
+        run: ./scripts/check-build.sh modules/${{ matrix.module }}/src-tauri/target/release/${{ matrix.module }}
+
+      # Tauri names its output after the product, spaces included. Rename to
+      # one shape.
+      - name: Collect
+        shell: bash
+        working-directory: modules/${{ matrix.module }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          name="${{ matrix.module }}-$version"
+          out="$GITHUB_WORKSPACE/dist"
+          bundle="src-tauri/target/release/bundle"
+          mkdir -p "$out"
+
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            cp "$bundle"/appimage/*.AppImage "$out/$name-linux-x86_64.AppImage"
+            cp "$bundle"/deb/*.deb           "$out/$name-linux-x86_64.deb"
+            cp "$bundle"/rpm/*.rpm           "$out/$name-linux-x86_64.rpm"
+          else
+            cp "$bundle"/nsis/*-setup.exe \
+               "$out/$name-windows-x86_64-setup.exe"
+            cp "src-tauri/target/release/${{ matrix.module }}.exe" \
+               "$out/$name-windows-x86_64.exe"
+          fi
+          ls -la "$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.module }}-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+
+      - name: Release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          {
+            echo "Eight separate programs. Download the ones you want; none of"
+            echo "them needs any of the others."
+            echo
+            echo "**On Linux, the \`.AppImage\` is the easy one**: one file,"
+            echo "no installation, runs from anywhere. Make it executable"
+            echo "(\`chmod +x\`) and open it. The \`.deb\` and \`.rpm\` are"
+            echo "there for installing properly through the package manager."
+            echo
+            echo "**On Windows, take the \`-setup.exe\`**. The plain \`.exe\`"
+            echo "beside it is the same program with no installer, if a"
+            echo "portable copy is preferred."
+            echo
+            echo "| Program | What it is | Linux | Windows |"
+            echo "|---|---|---|---|"
+            while read -r module description; do
+              echo "| ${module} | ${description} | \`${module}-${version}-linux-x86_64.AppImage\` | \`${module}-${version}-windows-x86_64-setup.exe\` |"
+            done <<'PROGRAMS'
+          grt-read PDF reader and editor
+          grt-graphs Diagrams and node graphs
+          grt-slides Presentations
+          grt-paper Word processor
+          grt-dates Calendar and tasks
+          grt-notes Notebooks and notes
+          grt-grid Spreadsheet
+          grt-tables Database
+          PROGRAMS
+            echo
+            echo "Every Linux binary here passed \`scripts/check-build.sh\`"
+            echo "before it was uploaded: no absolute build paths, no network"
+            echo "references, no telemetry libraries, no debug symbols."
+            echo
+            echo "\`SHA256SUMS\` covers every file. Verify with"
+            echo "\`sha256sum -c SHA256SUMS\`."
+            echo
+            echo "The Windows builds are made by this workflow and have not"
+            echo "been opened by a person. They are not code-signed, so"
+            echo "Windows will warn about an unknown publisher."
+            echo
+            echo "Building from source instead: [INSTALL.md](INSTALL.md)."
+          } > notes.md
+          cat notes.md
+
+      # A moved tag means the release may already exist.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release delete "$GITHUB_REF_NAME" --yes
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "GRT Suite $GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            dist/*
