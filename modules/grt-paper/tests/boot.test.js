@@ -81,32 +81,42 @@ function press(surface, inputType) {
   }));
 }
 
-const settle = () => new Promise((resolve) => { setTimeout(resolve, 0); });
+const settle = () => new Promise((resolve) => { setImmediate(resolve); });
+const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 
-/** Waits for something to happen, rather than for a number of turns. */
-async function until(predicate, tries = 400) {
-  for (let i = 0; i < tries; i += 1) {
+/**
+ * Waits for something to happen, bounded by the clock rather than by a number
+ * of turns.
+ *
+ * A turn is a setImmediate, which costs nothing; every twentieth turn is a
+ * real timer, so that work waiting on one can proceed. Counting turns was the
+ * mistake: setTimeout(fn, 0) is clamped, so the same loop that took a
+ * comfortable second here took far longer on a Windows runner.
+ */
+async function until(predicate, ms = 5000) {
+  const deadline = Date.now() + ms;
+  for (let i = 0; Date.now() < deadline; i += 1) {
     if (predicate()) return true;
-    await settle();
+    await (i % 20 === 19 ? tick() : settle());
   }
   return predicate();
 }
 
-/**
- * Waits for the program to finish starting.
- *
- * A fixed number of turns is a race: on a cold machine the last await has not
- * resolved when the first assertion runs. This waits for the backend to stop
- * being asked for things, which is what "started" means here.
- */
+/** Waits for the program to finish starting. */
 async function ready(extra = () => true) {
+  // Startup is several awaits deep before there is anything to look at.
+  for (let i = 0; i < 12; i += 1) await (i % 4 === 3 ? tick() : settle());
+
+  // Then wait until the backend stops being asked for things. Not every
+  // module's fake records its calls; where none are recorded this settles on
+  // the next turn.
   let seen = -1;
-  for (let i = 0; i < 400; i += 1) {
+  return until(() => {
     const calls = window.__TAURI_CALLS__?.length ?? 0;
-    if (calls > 0 && calls === seen && extra()) return;
+    const quiet = calls === seen;
     seen = calls;
-    await settle();
-  }
+    return quiet && extra();
+  });
 }
 
 let backend;

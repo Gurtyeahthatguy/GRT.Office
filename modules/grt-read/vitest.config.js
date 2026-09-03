@@ -10,6 +10,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    testTimeout: 20000,
     include: ['tests/**/*.test.js'],
   },
 });
