@@ -27,23 +27,22 @@ function installEnvironment() {
   Element.prototype.scrollIntoView = () => {};
 }
 
-const settle = () => new Promise((resolve_) => { setTimeout(resolve_, 0); });
+const settle = () => new Promise((resolve_) => { setImmediate(resolve_); });
+const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 
-/**
- * Waits for the program to finish starting.
- *
- * A fixed number of turns is a race: on a cold machine the last await has not
- * resolved when the first assertion runs. This waits for the backend to stop
- * being asked for things, which is what "started" means here.
- */
+/** Waits for the program to finish starting. */
 async function ready(extra = () => true) {
+  // Startup is several awaits deep before there is anything to look at.
+  for (let i = 0; i < 12; i += 1) await (i % 4 === 3 ? tick() : settle());
+
+  // Then until the backend stops being called.
   let seen = -1;
-  for (let i = 0; i < 400; i += 1) {
+  return until(() => {
     const calls = window.__TAURI_CALLS__?.length ?? 0;
-    if (calls > 0 && calls === seen && extra()) return;
+    const quiet = calls === seen;
     seen = calls;
-    await settle();
-  }
+    return quiet && extra();
+  });
 }
 
 async function boot() {
@@ -69,11 +68,12 @@ const commands = () => (window.__TAURI_CALLS__ ?? []).map((c) => c.command);
 const el = (id) => document.getElementById(id);
 const thumbs = () => el('thumbnails').querySelectorAll('.thumb');
 
-/** Waits for a condition, since pdf.js work is asynchronous throughout. */
-async function until(predicate, tries = 60) {
-  for (let i = 0; i < tries; i += 1) {
+/** Waits for a condition, bounded by the clock. */
+async function until(predicate, ms = 5000) {
+  const deadline = Date.now() + ms;
+  for (let i = 0; Date.now() < deadline; i += 1) {
     if (predicate()) return true;
-    await settle();
+    await (i % 20 === 19 ? tick() : settle());
   }
   return predicate();
 }
