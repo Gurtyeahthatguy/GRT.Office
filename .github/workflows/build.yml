@@ -28,8 +28,8 @@ jobs:
           - grt-grid
           - grt-tables
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Install
@@ -49,7 +49,7 @@ jobs:
           - core/grt-container
           - modules/grt-tables/src-tauri
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -82,9 +82,9 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -111,7 +111,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: ./scripts/check-build.sh modules/${{ matrix.module }}/src-tauri/target/release/${{ matrix.module }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.module }}-${{ matrix.os }}
           path: |
