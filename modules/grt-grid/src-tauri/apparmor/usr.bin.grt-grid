@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: MIT
+# AppArmor profile for grt-grid.
+#
+# What is being confined is not really the application, it is WebKitGTK
+# underneath it: a browser engine with a JIT, parsing documents that came from
+# somewhere else. That is the attack the people who use this actually face.
+#
+# The first rule is the one that matters. grt-grid has no network feature, so it has
+# no business opening a socket, and this says so rather than trusting that it
+# never will.
+abi <abi/3.0>,
+
+include <tunables/global>
+
+profile grt-grid /usr/bin/grt-grid {
+  include <abstractions/base>
+  include <abstractions/X>
+  include <abstractions/fonts>
+  include <abstractions/freedesktop.org>
+  include <abstractions/dbus-session-strict>
+  include <abstractions/mesa>
+  include <abstractions/nameservice>
+  include <abstractions/openssl>
+
+  deny network inet,
+  deny network inet6,
+  deny network netlink raw,
+  deny network packet,
+
+  /usr/bin/grt-grid mr,
+  /usr/share/grt-grid/{,**} r,
+  /usr/share/applications/{,*} r,
+  /usr/share/icons/{,**} r,
+  /usr/share/mime/{,**} r,
+  /usr/share/glib-2.0/schemas/{,*} r,
+
+  /usr/libexec/webkit2gtk-4.1/* ix,
+  /usr/lib/@{multiarch}/webkit2gtk-4.1/** mr,
+  /usr/bin/bwrap ix,
+
+  # Tauri derives its directories from the application identifier, so these are
+  # org.grt.grid and not grt-grid. Getting that wrong does not fail loudly: the program
+  # starts, finds no settings and no notes, and looks as though it had never
+  # been used.
+  owner @{HOME}/.config/org.grt.grid/{,**} rwk,
+  owner @{HOME}/.cache/org.grt.grid/{,**} rwk,
+  owner @{HOME}/.local/share/org.grt.grid/{,**} rwk,
+  owner @{HOME}/.local/state/org.grt.grid/{,**} rwk,
+
+  owner @{HOME}/Documents/{,**} rwk,
+  owner @{HOME}/Downloads/{,**} rwk,
+
+  deny @{HOME}/.ssh/{,**} rwklx,
+  deny @{HOME}/.gnupg/{,**} rwklx,
+  deny @{HOME}/.mozilla/{,**} rwklx,
+  deny @{HOME}/.config/grt-sentry/{,**} rwklx,
+
+  # Opening something in whatever the person uses for it. This deliberately
+  # leaves the confinement — the handler is their video player or browser, and
+  # it is not this profile's business to constrain it. Ux rather than Px
+  # because there is no profile to hand it to.
+  /usr/bin/xdg-open Ux,
+  /usr/bin/xdg-mime rix,
+  /usr/bin/gio Ux,
+
+  # File dialogs go through the XDG desktop portal on the session bus, and
+  # dbus-session-strict allows the connection but no traffic. Without these,
+  # import and export silently do nothing.
+  dbus send bus=session path=/org/freedesktop/portal/{desktop,documents}
+       interface=org.freedesktop.portal.*
+       peer=(name=org.freedesktop.portal.Desktop),
+  dbus receive bus=session path=/org/freedesktop/portal/{desktop,documents}
+       interface=org.freedesktop.portal.*
+       peer=(name=org.freedesktop.portal.Desktop),
+  dbus send bus=session path=/org/freedesktop/DBus
+       interface=org.freedesktop.DBus
+       member={Hello,GetNameOwner,NameHasOwner,AddMatch,RemoveMatch}
+       peer=(name=org.freedesktop.DBus),
+  # The portal hands back a file descriptor for what the person picked, and the
+  # document store is where it lives.
+  owner /run/user/@{uid}/doc/{,**} rw,
+
+  /dev/dri/* rw,
+  /sys/devices/**/drm/** r,
+  /sys/bus/pci/devices/ r,
+  /sys/devices/system/cpu/{,**} r,
+  /sys/fs/cgroup/** r,
+
+  @{PROC}/@{pid}/{cmdline,stat,statm,status,maps,mountinfo,cgroup} r,
+  @{PROC}/sys/kernel/random/boot_id r,
+  @{PROC}/sys/vm/overcommit_memory r,
+  owner /run/user/@{uid}/{,**} rw,
+  owner /tmp/{,**} rw,
+  owner /dev/shm/** rw,
+}
