@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: MIT
+# AppArmor profile for grt-tables.
+abi <abi/3.0>,
+
+include <tunables/global>
+
+profile grt-tables /usr/bin/grt-tables {
+  include <abstractions/base>
+  include <abstractions/X>
+  include <abstractions/fonts>
+  include <abstractions/freedesktop.org>
+  include <abstractions/dbus-session-strict>
+  include <abstractions/mesa>
+  include <abstractions/nameservice>
+  include <abstractions/openssl>
+
+  deny network inet,
+  deny network inet6,
+  deny network netlink raw,
+  deny network packet,
+
+  /usr/bin/grt-tables mr,
+  /usr/share/grt-tables/{,**} r,
+  /usr/share/applications/{,*} r,
+  /usr/share/icons/{,**} r,
+  /usr/share/mime/{,**} r,
+  /usr/share/glib-2.0/schemas/{,*} r,
+
+  /usr/libexec/webkit2gtk-4.1/* ix,
+  /usr/lib/@{multiarch}/webkit2gtk-4.1/** mr,
+  /usr/bin/bwrap ix,
+
+  owner @{HOME}/.config/org.grt.tables/{,**} rwk,
+  owner @{HOME}/.cache/org.grt.tables/{,**} rwk,
+  owner @{HOME}/.local/share/org.grt.tables/{,**} rwk,
+  owner @{HOME}/.local/state/org.grt.tables/{,**} rwk,
+
+  owner @{HOME}/Documents/{,**} rwk,
+  owner @{HOME}/Downloads/{,**} rwk,
+
+  deny @{HOME}/.ssh/{,**} rwklx,
+  deny @{HOME}/.gnupg/{,**} rwklx,
+  deny @{HOME}/.mozilla/{,**} rwklx,
+  deny @{HOME}/.config/grt-sentry/{,**} rwklx,
+
+  /usr/bin/xdg-open Ux,
+  /usr/bin/xdg-mime rix,
+  /usr/bin/gio Ux,
+
+  dbus send bus=session path=/org/freedesktop/portal/{desktop,documents}
+       interface=org.freedesktop.portal.*
+       peer=(name=org.freedesktop.portal.Desktop),
+  dbus receive bus=session path=/org/freedesktop/portal/{desktop,documents}
+       interface=org.freedesktop.portal.*
+       peer=(name=org.freedesktop.portal.Desktop),
+  dbus send bus=session path=/org/freedesktop/DBus
+       interface=org.freedesktop.DBus
+       member={Hello,GetNameOwner,NameHasOwner,AddMatch,RemoveMatch}
+       peer=(name=org.freedesktop.DBus),
+  owner /run/user/@{uid}/doc/{,**} rw,
+
+  /dev/dri/* rw,
+  /sys/devices/**/drm/** r,
+  /sys/bus/pci/devices/ r,
+  /sys/devices/system/cpu/{,**} r,
+  /sys/fs/cgroup/** r,
+
+  @{PROC}/@{pid}/{cmdline,stat,statm,status,maps,mountinfo,cgroup} r,
+  @{PROC}/sys/kernel/random/boot_id r,
+  @{PROC}/sys/vm/overcommit_memory r,
+  owner /run/user/@{uid}/{,**} rw,
+  owner /tmp/{,**} rw,
+  owner /dev/shm/** rw,
+}

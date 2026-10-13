@@ -1,6 +1,6 @@
 [package]
 name = "grt-slides"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local editor for presentations, with a projection mode"
 authors = ["GRT Project"]
 license = "MIT"

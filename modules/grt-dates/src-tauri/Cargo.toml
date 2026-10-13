@@ -1,6 +1,6 @@
 [package]
 name = "grt-dates"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local calendar and task list, kept in plain iCalendar files"
 authors = ["GRT Project"]
 license = "MIT"

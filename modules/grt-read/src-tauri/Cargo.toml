@@ -1,6 +1,6 @@
 [package]
 name = "grt-read"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local PDF reader and editor that leaves no trace in the files it writes"
 authors = ["GRT Project"]
 license = "MIT"
