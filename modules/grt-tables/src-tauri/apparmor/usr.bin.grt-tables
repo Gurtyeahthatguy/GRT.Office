@@ -19,6 +19,11 @@ profile grt-tables /usr/bin/grt-tables {
   include <abstractions/freedesktop.org>
   include <abstractions/dbus-session-strict>
   include <abstractions/mesa>
+  # mesa identifies the GPU from the PCI device's uevent, vendor and device
+  # files. Refused, it cannot tell what it is driving and falls back to the CPU;
+  # in a virtual machine that looks like working, which is why it was only seen
+  # once the test stopped truncating the list of denials.
+  include <abstractions/dri-enumerate>
   include <abstractions/nameservice>
   include <abstractions/openssl>
 
@@ -36,19 +41,64 @@ profile grt-tables /usr/bin/grt-tables {
 
   /usr/libexec/webkit2gtk-4.1/* ix,
   /usr/lib/@{multiarch}/webkit2gtk-4.1/** mr,
+  # Debian keeps WebKit's helper processes here, not in /usr/libexec, so the
+  # /usr/libexec line above matches nothing on this distribution. With mr alone
+  # the libraries loaded and the processes that use them were refused: exec of
+  # WebKitNetworkProcess denied, measured in a booted image under enforcement.
+  /usr/lib/@{multiarch}/webkit2gtk-4.1/WebKit*Process ix,
+
+  # Three reads WebKit makes on every start, each refused until they were
+  # listed here, each measured in a booted image under enforcement:
+  #
+  # libglvnd looks up the EGL vendor libraries in these two directories. Refused,
+  # EGL does not initialise and WebKit falls back to software rendering — which
+  # in a virtual machine looks exactly like working, and on a real laptop is
+  # every page drawn by the CPU.
+  /usr/share/glvnd/egl_vendor.d/{,*} r,
+  /etc/glvnd/egl_vendor.d/{,*} r,
+  # The memory-pressure monitor reads zoneinfo, and JavaScriptCore reads the
+  # lowest address it may map. Neither says anything about the person.
+  @{PROC}/zoneinfo r,
+  @{PROC}/sys/vm/mmap_min_addr r,
+  # mesa keeps compiled shaders here; refused, every start recompiles them.
+  owner @{HOME}/.cache/mesa_shader_cache{,_db}/{,**} rwk,
+  # Whether this is a laptop or a desktop, which GLib and WebKit ask once at
+  # start. One of a handful of values, and the program has no network to send it
+  # anywhere.
+  /sys/devices/virtual/dmi/id/chassis_type r,
+  /sys/firmware/acpi/pm_profile r,
   /usr/bin/bwrap ix,
 
   # Tauri derives its directories from the application identifier, so these are
   # org.grt.tables and not grt-tables. Getting that wrong does not fail loudly: the program
   # starts, finds no settings and no notes, and looks as though it had never
   # been used.
+  # The directories those live in, created when they do not exist yet, and
+  # only the directories: a rule ending in / grants nothing inside it.
+  #
+  # Without these, a program started where ~/.local does not exist dies before
+  # its window opens. Tauri creates ~/.local/share/<identifier> with
+  # create_dir_all, the mkdir of ~/.local is refused, and the process panics
+  # with "Failed to setup app: Permission denied (os error 13)". That is what
+  # all nine did the first time they ran under this profile in a booted image.
+  owner @{HOME}/.local/ w,
+  owner @{HOME}/.local/share/ w,
+  owner @{HOME}/.local/state/ w,
+  owner @{HOME}/.config/ w,
+  owner @{HOME}/.cache/ w,
+
   owner @{HOME}/.config/org.grt.tables/{,**} rwk,
   owner @{HOME}/.cache/org.grt.tables/{,**} rwk,
   owner @{HOME}/.local/share/org.grt.tables/{,**} rwk,
   owner @{HOME}/.local/state/org.grt.tables/{,**} rwk,
 
-  owner @{HOME}/Documents/{,**} rwk,
-  owner @{HOME}/Downloads/{,**} rwk,
+  # By their XDG names rather than their English ones: on an Italian desktop the
+  # folder is ~/Documenti, and a profile that names ~/Documents confines a
+  # program to a directory that does not exist. The tunables define these as
+  # Documents and Downloads, and the image adds the localised names beside them
+  # in tunables/xdg-user-dirs.d.
+  owner @{HOME}/@{XDG_DOCUMENTS_DIR}/{,**} rwk,
+  owner @{HOME}/@{XDG_DOWNLOAD_DIR}/{,**} rwk,
 
   deny @{HOME}/.ssh/{,**} rwklx,
   deny @{HOME}/.gnupg/{,**} rwklx,
