@@ -11,6 +11,7 @@ profile grt-read /usr/bin/grt-read {
   include <abstractions/freedesktop.org>
   include <abstractions/dbus-session-strict>
   include <abstractions/mesa>
+  include <abstractions/dri-enumerate>
   include <abstractions/nameservice>
   include <abstractions/openssl>
 
@@ -28,15 +29,30 @@ profile grt-read /usr/bin/grt-read {
 
   /usr/libexec/webkit2gtk-4.1/* ix,
   /usr/lib/@{multiarch}/webkit2gtk-4.1/** mr,
+  /usr/lib/@{multiarch}/webkit2gtk-4.1/WebKit*Process ix,
+
+  /usr/share/glvnd/egl_vendor.d/{,*} r,
+  /etc/glvnd/egl_vendor.d/{,*} r,
+  @{PROC}/zoneinfo r,
+  @{PROC}/sys/vm/mmap_min_addr r,
+  owner @{HOME}/.cache/mesa_shader_cache{,_db}/{,**} rwk,
+  /sys/devices/virtual/dmi/id/chassis_type r,
+  /sys/firmware/acpi/pm_profile r,
   /usr/bin/bwrap ix,
+
+  owner @{HOME}/.local/ w,
+  owner @{HOME}/.local/share/ w,
+  owner @{HOME}/.local/state/ w,
+  owner @{HOME}/.config/ w,
+  owner @{HOME}/.cache/ w,
 
   owner @{HOME}/.config/org.grt.read/{,**} rwk,
   owner @{HOME}/.cache/org.grt.read/{,**} rwk,
   owner @{HOME}/.local/share/org.grt.read/{,**} rwk,
   owner @{HOME}/.local/state/org.grt.read/{,**} rwk,
 
-  owner @{HOME}/Documents/{,**} rwk,
-  owner @{HOME}/Downloads/{,**} rwk,
+  owner @{HOME}/@{XDG_DOCUMENTS_DIR}/{,**} rwk,
+  owner @{HOME}/@{XDG_DOWNLOAD_DIR}/{,**} rwk,
 
   deny @{HOME}/.ssh/{,**} rwklx,
   deny @{HOME}/.gnupg/{,**} rwklx,

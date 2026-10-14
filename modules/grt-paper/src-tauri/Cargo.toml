@@ -1,6 +1,6 @@
 [package]
 name = "grt-paper"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local word processor with pagination and PDF export"
 authors = ["GRT Project"]
 license = "MIT"

@@ -4,7 +4,7 @@ The suite is **eight separate programs**, not one package. Each builds,
 installs and uninstalls on its own, and none of them needs any of the others.
 Install the ones that are wanted and ignore the rest.
 
-All eight are at version **0.1.1**.
+All eight are at version **0.1.2**.
 
 | Program | Binary | What it is | Opens |
 |---|---|---|---|
@@ -30,23 +30,23 @@ platforms. Nothing else has to be installed to use them.
 administrator rights, and it runs from anywhere, including a USB stick:
 
 ```bash
-chmod +x grt-read-0.1.1-linux-x86_64.AppImage
-./grt-read-0.1.1-linux-x86_64.AppImage
+chmod +x grt-read-0.1.2-linux-x86_64.AppImage
+./grt-read-0.1.2-linux-x86_64.AppImage
 ```
 
 The `.deb` and `.rpm` beside it are for installing through the package manager
 instead, which puts the program in the application menu:
 
 ```bash
-sudo apt install ./grt-read-0.1.1-linux-x86_64.deb     # Debian, Ubuntu
-sudo dnf install ./grt-read-0.1.1-linux-x86_64.rpm     # Fedora
+sudo apt install ./grt-read-0.1.2-linux-x86_64.deb     # Debian, Ubuntu
+sudo dnf install ./grt-read-0.1.2-linux-x86_64.rpm     # Fedora
 ```
 
 The AppImage is about 78 MB against 1 to 3 MB for the packages, because it
 carries its own copy of WebKitGTK instead of using the one the system has.
 
-**Windows.** Take `grt-read-0.1.1-windows-x86_64-setup.exe` and run it. The
-plain `grt-read-0.1.1-windows-x86_64.exe` beside it is the same program with no
+**Windows.** Take `grt-read-0.1.2-windows-x86_64-setup.exe` and run it. The
+plain `grt-read-0.1.2-windows-x86_64.exe` beside it is the same program with no
 installer, for a portable copy.
 
 **Checking the download.** Every release includes `SHA256SUMS`:
@@ -141,10 +141,10 @@ opens a file stays the user's choice.
 
 ```bash
 npm run tauri build -- --bundles deb
-sudo apt install "./src-tauri/target/release/bundle/deb/GRT Read_0.1.1_amd64.deb"
+sudo apt install "./src-tauri/target/release/bundle/deb/GRT Read_0.1.2_amd64.deb"
 
 npm run tauri build -- --bundles rpm
-sudo dnf install "./src-tauri/target/release/bundle/rpm/GRT Read-0.1.1-1.x86_64.rpm"
+sudo dnf install "./src-tauri/target/release/bundle/rpm/GRT Read-0.1.2-1.x86_64.rpm"
 ```
 
 The packages are between 1 MB and 3 MB. They depend on the WebKitGTK runtime
@@ -155,7 +155,7 @@ component, and the package manager will pull it in if not.
 
 ```bash
 npm run tauri build -- --bundles appimage
-chmod +x "src-tauri/target/release/bundle/appimage/GRT Read_0.1.1_amd64.AppImage"
+chmod +x "src-tauri/target/release/bundle/appimage/GRT Read_0.1.2_amd64.AppImage"
 ```
 
 It runs from anywhere, including a USB stick and a machine that is not yours.
@@ -166,7 +166,7 @@ Two things worth knowing about the AppImage. The bundler downloads its own
 tooling (`linuxdeploy` and friends) into `~/.cache/tauri/` the first time it
 runs, so **that one build step uses the network** even though nothing in the
 finished program ever does. And running an AppImage needs FUSE; on systems
-without it, `./GRT\ Read_0.1.1_amd64.AppImage --appimage-extract-and-run`
+without it, `./GRT\ Read_0.1.2_amd64.AppImage --appimage-extract-and-run`
 works instead.
 
 Running `npm run build` with no arguments produces all three together.
@@ -177,7 +177,7 @@ Running `npm run build` with no arguments produces all three together.
 ./scripts/install-local.sh --remove     # the home-directory install
 sudo apt remove grt-read                # the .deb
 sudo dnf remove grt-read                # the .rpm
-rm grt-read-0.1.1-linux-x86_64.AppImage # the AppImage
+rm grt-read-0.1.2-linux-x86_64.AppImage # the AppImage
 ```
 
 None of those touch the settings. To remove those as well, see
@@ -217,7 +217,7 @@ npm run build
 
 The build produces an installer under
 `src-tauri\target\release\bundle\nsis\`, named something like
-`GRT Read_0.1.1_x64-setup.exe`. Run it and the program installs for the current
+`GRT Read_0.1.2_x64-setup.exe`. Run it and the program installs for the current
 user, with a Start menu entry.
 
 The plain executable at `src-tauri\target\release\grt-read.exe` also runs on

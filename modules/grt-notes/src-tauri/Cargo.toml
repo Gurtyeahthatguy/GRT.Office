@@ -1,6 +1,6 @@
 [package]
 name = "grt-notes"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local notebooks and notes, searchable across the whole archive"
 authors = ["GRT Project"]
 license = "MIT"
