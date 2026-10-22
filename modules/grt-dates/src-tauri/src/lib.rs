@@ -247,8 +247,15 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(grt_app::CloseGuard::default())
+        .manage(grt_app::Recovery::default())
+        .on_window_event(grt_app::on_window_event)
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            grt_app::commands::set_close_guard,
+            grt_app::commands::close_ack,
+            grt_app::commands::close_window,
+            grt_app::commands::print_page,
             read_file,
             write_file_atomic,
             file_exists,

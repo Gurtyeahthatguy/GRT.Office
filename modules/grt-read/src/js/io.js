@@ -45,6 +45,13 @@ export async function readFileBytes(path) {
   return new Uint8Array(buffer);
 }
 
+/** Writes a whole file atomically, as raw bytes. */
+export async function writeFileBytes(bytes, path) {
+  await invoke('write_file_atomic', bytes, {
+    headers: { 'x-grt-path': encodeURIComponent(path) },
+  });
+}
+
 export async function fileExists(path) {
   return invoke('file_exists', { path });
 }

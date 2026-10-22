@@ -82,9 +82,14 @@ export class InputCapture {
       return;
     }
 
-    if (type === 'insertParagraph' || type === 'insertLineBreak') {
+    if (type === 'insertParagraph') {
       event.preventDefault();
       this.handlers.splitBlock();
+      return;
+    }
+    if (type === 'insertLineBreak') {
+      event.preventDefault();
+      (this.handlers.lineBreak ?? this.handlers.splitBlock)();
       return;
     }
 

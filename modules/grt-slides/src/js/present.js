@@ -19,6 +19,10 @@ export class Presentation {
     this.onKey = (event) => this.key(event);
     this.onClick = (event) => this.click(event);
     this.onResize = () => this.fit();
+    // Leaving fullscreen ends the presentation.
+    this.onFullscreen = () => {
+      if (!document.fullscreenElement && this.running) this.stop();
+    };
   }
 
   get running() {
@@ -36,6 +40,7 @@ export class Presentation {
 
     try {
       await document.documentElement.requestFullscreen();
+      document.addEventListener('fullscreenchange', this.onFullscreen);
     } catch {
       // A refused fullscreen request is not a reason to abandon the
       // presentation.
@@ -51,6 +56,7 @@ export class Presentation {
     document.removeEventListener('keydown', this.onKey, true);
     this.root.removeEventListener('click', this.onClick);
     window.removeEventListener('resize', this.onResize);
+    document.removeEventListener('fullscreenchange', this.onFullscreen);
 
     if (this.wakeLock) {
       try { await this.wakeLock.release(); } catch { /** already gone. */ }

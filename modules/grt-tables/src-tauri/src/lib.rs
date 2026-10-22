@@ -2,6 +2,7 @@
 
 pub mod db;
 pub mod export;
+pub mod undo;
 
 use std::collections::HashMap;
 use std::fs;
@@ -162,10 +163,7 @@ fn insert_row(
     values: HashMap<String, serde_json::Value>,
 ) -> Result<i64, String> {
     with_db(&state, |database| {
-        database.refuse_if_read_only()?;
-        db::begin_step(database)?;
-        let result = db::insert_row(&database.connection, &table, &values);
-        finish(database, result)
+        undo::step(database, None, |connection| db::insert_row(connection, &table, &values))
     })
 }
 
@@ -177,35 +175,15 @@ fn update_row(
     values: HashMap<String, serde_json::Value>,
 ) -> Result<usize, String> {
     with_db(&state, |database| {
-        database.refuse_if_read_only()?;
-        db::begin_step(database)?;
-        let result = db::update_row(&database.connection, &table, rowid, &values);
-        finish(database, result)
+        undo::step(database, None, |connection| db::update_row(connection, &table, rowid, &values))
     })
 }
 
 #[tauri::command]
 fn delete_row(state: State<'_, Open>, table: String, rowid: i64) -> Result<usize, String> {
     with_db(&state, |database| {
-        database.refuse_if_read_only()?;
-        db::begin_step(database)?;
-        let result = db::delete_row(&database.connection, &table, rowid);
-        finish(database, result)
+        undo::step(database, None, |connection| db::delete_row(connection, &table, rowid))
     })
-}
-
-/// Keeps a change if it worked, throws it away if it did not.
-fn finish<T>(database: &mut Database, result: Result<T, String>) -> Result<T, String> {
-    match result {
-        Ok(value) => {
-            db::commit_step(database)?;
-            Ok(value)
-        }
-        Err(problem) => {
-            let _ = db::undo_step(database);
-            Err(problem)
-        }
-    }
 }
 
 // Schema.
@@ -214,13 +192,7 @@ fn finish<T>(database: &mut Database, result: Result<T, String>) -> Result<T, St
 #[tauri::command]
 fn run_schema(state: State<'_, Open>, sql: String) -> Result<serde_json::Value, String> {
     with_db(&state, |database| {
-        database.refuse_if_read_only()?;
-        db::begin_step(database)?;
-        let result = database
-            .connection
-            .execute_batch(&sql)
-            .map_err(|e| format!("{e}"));
-        finish(database, result)?;
+        undo::step(database, Some(&sql), |connection| connection.execute_batch(&sql).map_err(|e| format!("{e}")))?;
         Ok(serde_json::json!({ "ok": true }))
     })
 }
@@ -249,10 +221,7 @@ fn run_query(
             return db::run(&database.connection, &sql, &bound);
         }
 
-        database.refuse_if_read_only()?;
-        db::begin_step(database)?;
-        let result = db::run(&database.connection, &sql, &bound);
-        finish(database, result)
+        undo::step(database, Some(&sql), |connection| db::run(connection, &sql, &bound))
     })
 }
 
@@ -260,27 +229,23 @@ fn run_query(
 
 #[tauri::command]
 fn undo(state: State<'_, Open>) -> Result<bool, String> {
-    with_db(&state, db::undo_step)
+    with_db(&state, undo::undo)
 }
 
 #[tauri::command]
 fn undo_depth(state: State<'_, Open>) -> Result<usize, String> {
-    with_db(&state, |database| Ok(database.depth))
+    with_db(&state, |database| Ok(database.undo.len()))
 }
 
 // Sharing.
 
-/// 's "prepare for sharing": compact the file and remove what is beside it.
+/// "Prepare for sharing": compact the file and remove what is beside it.
 #[tauri::command]
 fn prepare_for_sharing(state: State<'_, Open>) -> Result<serde_json::Value, String> {
     with_db(&state, |database| {
         database.refuse_if_read_only()?;
 
-        // VACUUM cannot run inside a transaction, so any open step is closed
-        // first.
-        while database.depth > 0 {
-            db::commit_step(database)?;
-        }
+        undo::clear(database);
 
         db::vacuum(&database.connection)?;
 
@@ -527,7 +492,10 @@ pub fn run() {
             runtime_info,
             read_settings,
             write_settings,
-            forget_settings
+            forget_settings,
+            grt_app::commands::print_page,
+            grt_app::commands::read_package,
+            grt_app::commands::write_package
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

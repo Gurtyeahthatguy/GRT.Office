@@ -4,12 +4,18 @@ import { runsText } from './core/editor/model.js';
 
 const LINK = /\[\[([^\]\n]+)\]\]/g;
 
+/** The note a link names: `[[Folder/Note#Heading|shown]]` names Note. */
+export function linkTarget(inner) {
+  const name = String(inner ?? '').split('|')[0].split('#')[0].trim();
+  return name.split('/').pop().replace(/\.md$/i, '');
+}
+
 /** Every `[[title]]` in a piece of text, in order, without duplicates. */
 export function linksIn(text) {
   const found = [];
   const seen = new Set();
   for (const match of String(text ?? '').matchAll(LINK)) {
-    const title = match[1].trim();
+    const title = linkTarget(match[1]);
     if (!title || seen.has(title.toLowerCase())) continue;
     seen.add(title.toLowerCase());
     found.push(title);

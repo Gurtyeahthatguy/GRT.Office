@@ -64,7 +64,7 @@ describe('Redaction removes rather than covers', () => {
     expect(doc.getPage(0).getSize().width).toBeCloseTo(600, 0);
   });
 
-  it('a highlight does NOT remove anything — it is only a mark', async () => {
+  it('a highlight does NOT remove anything: it is only a mark', async () => {
     // Stated as a test so the difference between the two is never blurred.
     const model = new DocumentModel(await makeLinedPdf(), 1);
     model.addMark(0, 'highlight', MIDDLE_BAND);

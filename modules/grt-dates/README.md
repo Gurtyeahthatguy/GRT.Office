@@ -12,7 +12,9 @@ Part of [GRT Suite](../../README.md). Design document:
 - Several calendars at once, each with its own colour, shown or hidden
 - Tasks with a due date, a priority and a done state
 - Search across titles, places and notes
-- Five themes, shared with the rest of the suite, and the `Ctrl+K` palette
+- Printing the month with every entry in it, the week, or the agenda for as
+  many days as you ask
+- Six themes, shared with the rest of the suite, and the `Ctrl+K` palette
 
 ## Where your calendars live
 

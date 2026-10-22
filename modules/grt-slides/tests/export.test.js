@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 /** What leaves the program. */
 
 import { describe, it, expect } from 'vitest';
@@ -232,5 +234,32 @@ describe('Images reach the PDF', () => {
 
     expect(page.primitives.some((p) => p.type === 'image')).toBe(false);
     expect(page.primitives.some((p) => p.type === 'rect' && p.stroke)).toBe(true);
+  });
+});
+
+describe('An element on the page', () => {
+  it('keeps its whole style, font names with quotes in them included', async () => {
+    const { elementMarkup } = await import('../src/js/export.js');
+    const model = new SlidesModel();
+    const element = model.addElement(model.slides[0].id, { kind: 'text', content: [{ text: 'Centred' }] });
+    model.setElementText(model.slides[0].id, [element.id], { valign: 'middle' });
+    const holder = document.createElement('div');
+    holder.innerHTML = elementMarkup(element, model);
+    const node = holder.firstElementChild;
+    expect(node.style.fontFamily).toContain('Segoe UI');
+    expect(node.style.display).toBe('flex');
+    expect(node.style.justifyContent).toBe('center');
+  });
+
+  it('draws a freeform shape from its outline, and turns it in the PDF as on screen', async () => {
+    const { elementMarkup, shapeOutlineOnPage } = await import('../src/js/export.js');
+    const model = new SlidesModel();
+    const element = model.addElement(model.slides[0].id, { kind: 'shape', shape: 'path', path: 'M 0 0 L 100 0 L 0 100 Z', x: 100, y: 100, w: 200, h: 100 });
+    const holder = document.createElement('div');
+    holder.innerHTML = elementMarkup(element, model);
+    expect(holder.querySelector('path').getAttribute('d')).toBe('M 0 0 L 100 0 L 0 100 Z');
+    expect(shapeOutlineOnPage(element)).toBe('M 100 100 L 300 100 L 100 200 Z');
+    element.rotation = 90;
+    expect(shapeOutlineOnPage(element)).toBe('M 250 50 L 250 250 L 150 50 Z');
   });
 });

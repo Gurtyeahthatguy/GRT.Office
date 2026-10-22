@@ -4,18 +4,24 @@ import { DocumentModel } from './document-model.js';
 import { Viewer } from './viewer.js';
 import { Thumbnails } from './thumbnails.js';
 import { UndoStack } from './core/undo.js';
-import { buildBytesFromPlan, writeBytes } from './save.js';
+import { buildBytesFromPlan } from './save.js';
+import { encodeSession, decodeSession } from './session.js';
+import { Keeper } from './core/keeper.js';
 import { inspectBytes, renderReport } from './fingerprint.js';
 import {
   loadSettings, updateSettings, settings, canPersist, forgetSettings,
 } from './settings.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
+import { printPreview, isPrintPreviewOpen } from './core/print.js';
+import { PAGE_SIZES } from './core/editor/model.js';
+import { pageRenderer, printablePages } from './printing.js';
+import { escapeHtml } from './core/panel.js';
 import {
   showPanel, readFields, isDialogOpen,
   stampForm, cropForm, metadataForm, splitForm, settingsForm,
 } from './dialogs.js';
 import {
-  pickPdfToOpen, pickPdfToSave, pickDirectory, readFileBytes, fileExists,
+  pickPdfToOpen, pickPdfToSave, pickDirectory, readFileBytes, writeFileBytes, fileExists,
   runtimeInfo, onFilesDropped, baseName, withSuffix, joinPath,
 } from './io.js';
 
@@ -56,6 +62,16 @@ function toast(message, isError = false) {
   toastTimer = setTimeout(() => ui.toast.classList.add('hidden'), 3600);
 }
 
+/** Autosave, recovery copies, and asking before unsaved work is dropped. */
+const keeper = new Keeper({
+  name: () => baseName(model?.path) ?? 'Untitled',
+  path: () => model?.path ?? null,
+  canSaveInPlace: () => !!model?.path && /\.pdf$/i.test(model.path),
+  writeCopy: (path) => writeFileBytes(encodeSession(model, exportOptions), path),
+  save: (options) => saveDocument(false, options),
+  openRecovered: (file, meta) => openRecovered(file, meta),
+}, { program: 'GRT Read', extension: 'session', toast });
+
 /** Wraps anything that can fail against a real file. */
 async function guard(label, action) {
   if (busy) return;
@@ -81,9 +97,47 @@ async function openPath(path) {
   // its size rather than being resized afterwards.
   const pageCount = await viewer.addSource(0, bytes);
   model = new DocumentModel(bytes, pageCount, path);
+  await showDocument({ watermark: null, pageNumbers: null, metadata: null });
 
+  document.title = `${baseName(path)} - GRT Read`;
+  toast(`Opened ${baseName(path)}: ${pageCount} page${pageCount === 1 ? '' : 's'}`);
+}
+
+/** Opening another PDF drops the current one: ask first if it has unsaved work. */
+async function openConfirmed(path) {
+  if (await keeper.confirmLeave()) await openPath(path);
+}
+
+/** Opens a recovery copy as the document it was, with its changes unsaved. */
+async function openRecovered(file, meta) {
+  const session = decodeSession(await readFileBytes(file));
+
+  await viewer.reset();
+  const counts = [];
+  for (const [id, source] of session.sources.entries()) {
+    counts.push(await viewer.addSource(id, source));
+  }
+  if (session.pages.some((page) => page.originalIndex >= counts[page.sourceId])) {
+    throw new Error('The recovery copy does not match its own pages');
+  }
+
+  model = new DocumentModel(session.sources[0], counts[0], meta.path ?? null);
+  for (let id = 1; id < session.sources.length; id += 1) {
+    model.appendSource(session.sources[id], counts[id]);
+  }
+  model.restore({ pages: session.pages, sourceCount: session.sources.length, dirty: true });
+  await showDocument(session.exportOptions);
+
+  const name = meta.name || 'Untitled';
+  document.title = `${name} (recovered) - GRT Read`;
+  toast(`Recovered ${name}: save it to keep the changes`);
+}
+
+/** Puts a freshly built model on screen. */
+async function showDocument(options) {
   undo = new UndoStack(model);
-  exportOptions = { watermark: null, pageNumbers: null, metadata: null };
+  keeper.watch(model);
+  exportOptions = options;
   if (viewer.markMode !== 'select') setMarkMode(viewer.markMode);
   thumbs.clearSelection();
   clearSearch();
@@ -92,8 +146,6 @@ async function openPath(path) {
   await applyOpenZoom();
 
   ui.empty.classList.add('hidden');
-  document.title = `${baseName(path)} — GRT Read`;
-  toast(`Opened ${baseName(path)} — ${pageCount} page${pageCount === 1 ? '' : 's'}`);
 }
 
 async function appendPath(path) {
@@ -329,30 +381,40 @@ async function writeWithConfirmation(bytes, path, title) {
     const approved = await showPanel(title, renderReport(report, reportContext()), 'Save');
     if (!approved) return false;
   }
-  await writeBytes(bytes, path);
+  await writeFileBytes(bytes, path);
+  return true;
+}
+
+/** Saves the document; silent, it asks and reports nothing. Resolves false when nothing was saved. */
+async function saveDocument(forceDialog, { silent = false } = {}) {
+  let path = forceDialog ? null : model.path;
+  if (!path) {
+    if (silent) return false;
+    path = await pickPdfToSave(model.path ?? 'document.pdf', 'Save PDF');
+    if (!path) return false;
+  }
+  if (silent && settings().fingerprintBeforeSave) return false;
+
+  const revision = keeper.revision;
+  const bytes = await buildBytesFromPlan(model, model.buildPlan(), buildOptions());
+  if (silent) {
+    await writeFileBytes(bytes, path);
+  } else if (!await writeWithConfirmation(bytes, path, `Fingerprint: ${baseName(path)}`)) {
+    return false;
+  }
+
+  model.path = path;
+  model.dirty = keeper.revision !== revision;
+  undo.markSaved();
+  document.title = `${baseName(path)} - GRT Read`;
+  updatePageIndicator();
+  if (!silent) toast(`Saved ${baseName(path)}`);
+  await keeper.saved();
   return true;
 }
 
 function save(forceDialog) {
-  return guard('Save', async () => {
-    let path = forceDialog ? null : model.path;
-    if (!path) {
-      path = await pickPdfToSave(model.path ?? 'document.pdf', 'Save PDF');
-      if (!path) return;
-    }
-
-    const bytes = await buildBytesFromPlan(model, model.buildPlan(), buildOptions());
-    const written = await writeWithConfirmation(
-      bytes, path, `Fingerprint — ${baseName(path)}`,
-    );
-    if (!written) return;
-
-    model.path = path;
-    model.dirty = false;
-    document.title = `${baseName(path)} — GRT Read`;
-    updatePageIndicator();
-    toast(`Saved ${baseName(path)}`);
-  });
+  return guard('Save', () => saveDocument(forceDialog));
 }
 
 function extract() {
@@ -367,7 +429,7 @@ function extract() {
       model, model.buildPlanFor(targets), buildOptions(),
     );
     const written = await writeWithConfirmation(
-      bytes, path, `Fingerprint — ${targets.length} extracted page(s)`,
+      bytes, path, `Fingerprint: ${targets.length} extracted page(s)`,
     );
     if (written) toast(`Extracted ${targets.length} page(s)`);
   });
@@ -399,7 +461,7 @@ function split() {
         model, model.buildPlanFor(indices), buildOptions(false),
       );
       const name = `${prefix}-${String(chunk + 1).padStart(width, '0')}.pdf`;
-      await writeBytes(bytes, joinPath(directory, name));
+      await writeFileBytes(bytes, joinPath(directory, name));
     }
 
     toast(`Wrote ${chunks} file${chunks === 1 ? '' : 's'} into ${baseName(directory)}`);
@@ -441,6 +503,7 @@ function editStamp() {
       }
       : null;
 
+    model.dirty = true;
     updatePageIndicator();
     toast('Applied to the next save; the pages on screen are unchanged');
   });
@@ -456,6 +519,8 @@ function editMetadata() {
     const any = ['title', 'author', 'subject', 'keywords', 'creator', 'producer']
       .some((key) => f[key]?.trim());
     exportOptions.metadata = any ? f : null;
+    model.dirty = true;
+    updatePageIndicator();
     toast(any ? 'Metadata will be written on save' : 'Metadata will stay cleared');
   });
 }
@@ -479,7 +544,9 @@ function openSettings() {
       showThumbnails: f.showThumbnails,
       openZoom: f.openZoom,
       fingerprintBeforeSave: f.fingerprintBeforeSave,
+      autosave: f.autosave,
     });
+    keeper.setMode(settings().autosave);
 
     applySettingsToUi();
     if (model && before.showThumbnails !== settings().showThumbnails) {
@@ -493,6 +560,37 @@ function openSettings() {
 // Command palette
 
 /** Every command, in one list. */
+// Printing
+
+let printSetup = { size: 'document', orientation: 'portrait', pages: '' };
+
+/** Prints the document as it would be saved: rotations, crops, marks and stamps included. */
+async function printDocument() {
+  if (!model) return;
+  const bytes = await buildBytesFromPlan(model, model.buildPlan(), buildOptions(false));
+  const renderer = await pageRenderer(bytes);
+  try {
+    const chosen = await printPreview({
+      title: 'Print',
+      setup: { ...printSetup, current: viewer.currentPage ?? 0 },
+      controls: (s) => `
+        <label>Pages<input type="text" data-print-field="pages" value="${escapeHtml(s.pages ?? '')}" placeholder="All ${renderer.count}" size="10"></label>
+        <label>Paper<select data-print-field="size">
+          <option value="document"${s.size === 'document' ? ' selected' : ''}>As the document</option>
+          ${Object.entries(PAGE_SIZES).map(([id, size]) => `<option value="${id}"${s.size === id ? ' selected' : ''}>${size.label}</option>`).join('')}
+        </select></label>
+        ${s.size === 'document' ? '' : `<label>Orientation<select data-print-field="orientation">
+          <option value="portrait"${s.orientation !== 'landscape' ? ' selected' : ''}>Portrait</option>
+          <option value="landscape"${s.orientation === 'landscape' ? ' selected' : ''}>Landscape</option>
+        </select></label>`}`,
+      build: (s) => printablePages(renderer, s),
+    });
+    printSetup = { size: chosen.size, orientation: chosen.orientation, pages: chosen.pages };
+  } finally {
+    renderer.close();
+  }
+}
+
 function commands() {
   const entry = (label, hint, run) => ({ id: label, label, hint, run });
   const needsDoc = (label, hint, run) => entry(label, hint, () => {
@@ -513,6 +611,7 @@ function commands() {
     needsDoc('Split into several files…', '', () => split()),
     needsDoc('Extract selected pages…', '', () => extract()),
     needsDoc('Fingerprint', '', () => showFingerprint()),
+    needsDoc('Print…', 'Ctrl+P', () => guard('Print', printDocument)),
 
     needsDoc('Rotate left', '', () => rotate(-90)),
     needsDoc('Rotate right', '', () => rotate(90)),
@@ -538,7 +637,7 @@ function commands() {
 
 el('btn-open').onclick = () => guard('Open', async () => {
   const path = await pickPdfToOpen();
-  if (path) await openPath(path);
+  if (path) await openConfirmed(path);
 });
 
 el('btn-merge').onclick = () => guard('Append', async () => {
@@ -557,6 +656,7 @@ el('btn-redact').onclick = () => setMarkMode('redact');
 el('btn-clear-marks').onclick = () => clearMarks();
 el('btn-metadata').onclick = () => editMetadata();
 el('btn-fingerprint').onclick = () => showFingerprint();
+el('btn-print').onclick = () => guard('Print', printDocument);
 el('btn-settings').onclick = () => openSettings();
 el('btn-commands').onclick = () => openPalette(commands());
 el('btn-undo').onclick = () => step(-1);
@@ -576,7 +676,7 @@ ui.searchInput.addEventListener('keydown', (event) => {
 document.addEventListener('keydown', (event) => {
   // While a dialog or the palette is open it owns the keyboard; each has its
   // own handler for Escape and Enter.
-  if (isDialogOpen() || isPaletteOpen()) return;
+  if (isDialogOpen() || isPaletteOpen() || isPrintPreviewOpen()) return;
 
   const typing = event.target instanceof HTMLInputElement;
   const ctrl = event.ctrlKey || event.metaKey;
@@ -587,6 +687,9 @@ document.addEventListener('keydown', (event) => {
   } else if (ctrl && event.key.toLowerCase() === 'o') {
     event.preventDefault();
     el('btn-open').click();
+  } else if (ctrl && event.key.toLowerCase() === 'p') {
+    event.preventDefault();
+    if (model) guard('Print', printDocument);
   } else if (ctrl && event.key.toLowerCase() === 's') {
     event.preventDefault();
     if (model) save(event.shiftKey);
@@ -644,9 +747,13 @@ window.addEventListener('resize', () => {
   refreshControls();
 
   // A file named on the command line opens straight away.
-  const initial = info.initialFile
+  const named = info.initialFile
     ?? new URLSearchParams(window.location.search).get('open');
-  if (initial && await fileExists(initial)) {
+  const initial = named && await fileExists(named) ? named : null;
+  const recovered = await keeper.start({
+    ephemeral: info.ephemeral, mode: settings().autosave, initialFile: initial,
+  });
+  if (initial && !recovered) {
     await guard('Open', () => openPath(initial));
   }
 }());

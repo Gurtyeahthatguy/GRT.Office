@@ -53,7 +53,18 @@ export class GridView {
       return;
     }
 
-    view.addEventListener('resize', () => this.draw());
+    this.onResize = () => this.draw();
+    view.addEventListener('resize', this.onResize);
+  }
+
+  /** Takes this view off the page, before another view replaces it. */
+  dispose() {
+    this.observer?.disconnect();
+    if (this.onResize) this.container.ownerDocument.defaultView?.removeEventListener('resize', this.onResize);
+    for (const node of [...this.pool, ...this.columnPool, ...this.rowPool]) node.remove();
+    this.pool = [];
+    this.columnPool = [];
+    this.rowPool = [];
   }
 
   // Geometry
@@ -151,6 +162,8 @@ export class GridView {
     const selection = this.sheet.selection;
     const { active } = this.sheet;
 
+    const rowBreaks = new Set(sheet.print.rowBreaks);
+    const colBreaks = new Set(sheet.print.colBreaks);
     let index = 0;
 
     for (let row = firstRow; row <= lastRow; row += 1) {
@@ -165,8 +178,7 @@ export class GridView {
         node.dataset.row = String(row);
         node.dataset.col = String(col);
 
-        // A transform, not top/left: the whole point of 's performance
-        // note.
+        // Placed with a transform rather than top and left.
         node.style.transform =
           `translate(${this.offsets.cols[col]}px, ${this.offsets.rows[row]}px)`;
         node.style.width = `${sheet.columnWidth(col)}px`;
@@ -183,6 +195,8 @@ export class GridView {
           && col >= selection.left && col <= selection.right;
         node.classList.toggle('selected', selected && !(row === active.row && col === active.col));
         node.classList.toggle('active', row === active.row && col === active.col);
+        node.classList.toggle('break-above', rowBreaks.has(row));
+        node.classList.toggle('break-left', colBreaks.has(col));
         node.hidden = false;
       }
     }

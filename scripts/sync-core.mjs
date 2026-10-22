@@ -22,5 +22,8 @@ console.log(`core → ${target}/src/js/core`);
 // Libraries every module needs go the same way.
 const vendor = join(repo, target, 'src', 'vendor');
 mkdirSync(vendor, { recursive: true });
-cpSync(join(repo, 'core', 'vendor'), vendor, { recursive: true });
+cpSync(join(repo, 'core', 'vendor'), vendor, {
+  recursive: true,
+  filter: (source) => !source.endsWith('VERSIONS.txt'),
+});
 console.log(`vendor → ${target}/src/vendor`);

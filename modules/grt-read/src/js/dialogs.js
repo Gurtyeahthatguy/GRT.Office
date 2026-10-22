@@ -1,6 +1,7 @@
 /** The modal panel and the forms shown in it. */
 
 import { THEMES } from './core/theme.js';
+import { MODES } from './core/keeper.js';
 import { showPanel, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
 
 // The panel itself lives in the shared core; this module contributes the
@@ -25,7 +26,7 @@ export function stampForm(current) {
     <div class="form-grid">
       <label for="wm-text">Text</label>
       <input id="wm-text" type="text" data-field="watermarkText"
-             value="${escape(w.text)}" placeholder="leave empty for none" />
+             value="${escapeHtml(w.text)}" placeholder="leave empty for none" />
       <label for="wm-opacity">Opacity</label>
       <input id="wm-opacity" type="number" data-field="watermarkOpacity"
              min="0.02" max="1" step="0.02" value="${w.opacity ?? 0.18}" />
@@ -37,7 +38,7 @@ export function stampForm(current) {
       <input id="pn-on" type="checkbox" data-field="numbersOn" ${n.enabled ? 'checked' : ''} />
       <label for="pn-format">Format</label>
       <input id="pn-format" type="text" data-field="numbersFormat"
-             value="${escape(n.format ?? '{n}')}" />
+             value="${escapeHtml(n.format ?? '{n}')}" />
       <label for="pn-start">Start at</label>
       <input id="pn-start" type="number" data-field="numbersStart"
              min="0" step="1" value="${n.start ?? 1}" />
@@ -73,7 +74,7 @@ export function cropForm(pageCount) {
       <input id="crop-right" type="number" data-field="right" min="0" max="45" step="1" value="0" />
     </div>
     <p class="fp-note">
-      Cropping hides material without deleting it — the content stays in the
+      Cropping hides material without deleting it: the content stays in the
       file, outside the visible box. To remove something permanently, delete
       the page instead.
     </p>
@@ -83,7 +84,7 @@ export function cropForm(pageCount) {
 export function metadataForm(current = {}) {
   const field = (id, key, label) => `
       <label for="${id}">${label}</label>
-      <input id="${id}" type="text" data-field="${key}" value="${escape(current[key])}" />`;
+      <input id="${id}" type="text" data-field="${key}" value="${escapeHtml(current[key])}" />`;
   return `
     <p class="fp-note" style="margin-top:0">
       Metadata is cleared on every save. Anything typed here is written back
@@ -162,11 +163,23 @@ export function settingsForm(current, canPersist) {
       <input type="checkbox" data-field="fingerprintBeforeSave" ${current.fingerprintBeforeSave ? 'checked' : ''} />
     </div>
 
+    <div class="setting">
+      <span class="label">Keep unsaved work
+        <span class="hint">Every couple of seconds of quiet. A recovery copy
+        is offered back if the program closes unexpectedly. Onto the file
+        saves the PDF itself, but only with the fingerprint turned off, since
+        nobody is there to approve it.</span>
+      </span>
+      <select data-field="autosave">
+        ${MODES.map((m) => option(m.id, m.label, current.autosave)).join('')}
+      </select>
+    </div>
+
     <p class="fp-note">
       ${canPersist
-    ? `Stored as a single settings.json holding these four values. There is no
-       record of which documents were opened — no recent-files list, no
-       history — so the file says how the window looks and nothing about you.`
+    ? `Stored as a single settings.json holding these five values. There is no
+       record of which documents were opened: no recent-files list, no
+       history. The file says how the window looks and nothing about you.`
     : `<strong>Ephemeral mode:</strong> changes apply now but are not written to
        disk, and nothing stored previously is being read.`}
     </p>

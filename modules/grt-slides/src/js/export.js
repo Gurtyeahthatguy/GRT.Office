@@ -2,6 +2,7 @@
 
 import { SlidesModel, fontStack } from './model.js';
 import { fontFaceRules } from './fonts.js';
+import { parsePath, mapPath, formatPath, presetOutline } from './core/paths.js';
 
 const escape = (value) => String(value ?? '')
   .replace(/[<>&"']/g, (c) => ({
@@ -26,15 +27,32 @@ function boxStyle(element) {
 /** Font stack for a name. */
 let stackFor = fontStack;
 
+/** How an element's text looks: its named style, with what the element sets for itself. */
+export function textLook(element, model) {
+  const style = model.styles[element.style] ?? model.styles.body ?? {};
+  return {
+    size: element.size ?? style.size ?? 32,
+    align: element.align ?? style.align ?? 'left',
+    valign: element.valign ?? 'top',
+    color: element.color ?? style.color ?? '#333333',
+    bold: !!style.bold,
+    italic: !!style.italic,
+    font: element.font ?? style.font,
+  };
+}
+
+const JUSTIFY = { top: 'flex-start', middle: 'center', bottom: 'flex-end' };
+
 /** Inline CSS for a text element. */
-function textStyle(style, element = {}) {
+function textStyle(look) {
   return [
-    `font-size:${style.size ?? 32}px`,
-    `color:${element.color ?? style.color ?? '#333333'}`,
-    `text-align:${style.align ?? 'left'}`,
-    `font-weight:${style.bold ? '700' : '400'}`,
-    `font-style:${style.italic ? 'italic' : 'normal'}`,
-    `font-family:${stackFor(element.font ?? style.font)}`,
+    `font-size:${look.size}px`,
+    `color:${look.color}`,
+    `text-align:${look.align}`,
+    `font-weight:${look.bold ? '700' : '400'}`,
+    `font-style:${look.italic ? 'italic' : 'normal'}`,
+    `font-family:${stackFor(look.font)}`,
+    ...(look.valign !== 'top' ? ['display:flex', 'flex-direction:column', `justify-content:${JUSTIFY[look.valign] ?? 'flex-start'}`] : []),
   ].join(';');
 }
 
@@ -55,11 +73,12 @@ export function runMarkup(run) {
  * @param {Map<string, string>} images resource path to data URL
  */
 export function elementMarkup(element, model, images = new Map()) {
-  const style = model.styles[element.style] ?? model.styles.body ?? {};
-
   if (element.kind === 'text') {
+    const look = textLook(element, model);
     const runs = (element.content ?? []).map(runMarkup).join('');
-    return `<div class="el text" style="${boxStyle(element)};${textStyle(style, element)}">${runs}</div>`;
+    // Anchored text is one block, moved as a whole inside the box.
+    const body = look.valign !== 'top' ? `<div>${runs}</div>` : runs;
+    return `<div class="el text" style="${escape(`${boxStyle(element)};${textStyle(look)}`)}">${body}</div>`;
   }
 
   if (element.kind === 'image') {
@@ -75,17 +94,16 @@ export function elementMarkup(element, model, images = new Map()) {
   }
 
   if (element.kind === 'shape') {
-    const fill = escape(element.fill ?? model.theme.accent ?? '#1f6feb');
+    const fill = escape(shapeFill(element, model));
     // Drawn as inline SVG rather than a styled div.
     return `<div class="el" style="${boxStyle(element)}">`
       + `<svg viewBox="0 0 100 100" preserveAspectRatio="none" `
-      + `style="width:100%;height:100%;display:block">`
-      + shapePath(element.shape, fill)
+      + `style="width:100%;height:100%;display:block;overflow:visible">`
+      + shapePath(element.shape, fill, element.stroke ? escape(element.stroke) : null, element.strokeWidth ?? 2, element.path)
       + '</svg></div>';
   }
 
   if (element.kind === 'table') {
-    const style = model.styles[element.style] ?? model.styles.body ?? {};
     const line = escape(model.theme.text ?? '#666666');
     const rows = (element.cells ?? []).map((row, r) => {
       const cells = row.map((cell) => {
@@ -97,7 +115,7 @@ export function elementMarkup(element, model, images = new Map()) {
       return `<tr>${cells}</tr>`;
     }).join('');
 
-    return `<div class="el table" style="${boxStyle(element)};${textStyle(style, element)}">`
+    return `<div class="el table" style="${escape(`${boxStyle(element)};${textStyle({ ...textLook(element, model), valign: 'top' })}`)}">`
       + `<table style="width:100%;height:100%;border-collapse:collapse;table-layout:fixed">`
       + `${rows}</table></div>`;
   }
@@ -110,10 +128,11 @@ export function elementMarkup(element, model, images = new Map()) {
         + `markerHeight="5" orient="auto-start-reverse">`
         + `<path d="M 0 0 L 10 5 L 0 10 z" fill="${stroke}"/></marker></defs>`
       : '';
+    const [x1, y1, x2, y2] = lineEnds({ ...element, x: 0, y: 0 });
     return `<div class="el" style="${boxStyle(element)}">`
       + `<svg viewBox="0 0 ${round(element.w)} ${round(element.h)}" `
       + `style="width:100%;height:100%;display:block;overflow:visible">${marker}`
-      + `<line x1="0" y1="0" x2="${round(element.w)}" y2="${round(element.h)}" `
+      + `<line x1="${round(x1)}" y1="${round(y1)}" x2="${round(x2)}" y2="${round(y2)}" `
       + `stroke="${stroke}" stroke-width="${thickness}"`
       + `${element.arrow ? ' marker-end="url(#ah)"' : ''}/></svg></div>`;
   }
@@ -124,17 +143,34 @@ export function elementMarkup(element, model, images = new Map()) {
 /** Transitions the exported file knows how to play (few and sober). */
 const TRANSITIONS = new Set(['none', 'fade', 'slide']);
 
+/** Where a line starts and ends; a flipped line runs across its box the other way. */
+export function lineEnds(element) {
+  const { x, y, w, h } = element;
+  return [
+    element.flipH ? x + w : x, element.flipV ? y + h : y,
+    element.flipH ? x : x + w, element.flipV ? y : y + h,
+  ];
+}
+
+/** A shape's fill, which may be none at all. */
+export function shapeFill(element, model) {
+  return element.fill ?? model.theme.accent ?? '#1f6feb';
+}
+
 /**
  * One shape, in a 0-100 box that stretches to whatever the element's size is.
  */
-export function shapePath(shape, fill) {
-  const polygon = (points) => `<polygon points="${points}" fill="${fill}"/>`;
+export function shapePath(shape, fill, stroke = null, strokeWidth = 2, path = null) {
+  const paint = `fill="${fill}"${stroke ? ` stroke="${stroke}" stroke-width="${strokeWidth}" vector-effect="non-scaling-stroke"` : ''}`;
+  const polygon = (points) => `<polygon points="${points}" ${paint}/>`;
 
   switch (shape) {
+    case 'path':
+      return `<path d="${escape(path ?? 'M0 0 L100 0 L100 100 L0 100 Z')}" ${paint}/>`;
     case 'ellipse':
-      return `<ellipse cx="50" cy="50" rx="50" ry="50" fill="${fill}"/>`;
+      return `<ellipse cx="50" cy="50" rx="50" ry="50" ${paint}/>`;
     case 'rounded':
-      return `<rect x="0" y="0" width="100" height="100" rx="10" ry="10" fill="${fill}"/>`;
+      return `<rect x="0" y="0" width="100" height="100" rx="10" ry="10" ${paint}/>`;
     case 'diamond':
       return polygon('50,0 100,50 50,100 0,50');
     case 'parallelogram':
@@ -144,7 +180,7 @@ export function shapePath(shape, fill) {
     case 'triangle':
       return polygon('50,0 100,100 0,100');
     default:
-      return `<rect x="0" y="0" width="100" height="100" fill="${fill}"/>`;
+      return `<rect x="0" y="0" width="100" height="100" ${paint}/>`;
   }
 }
 
@@ -201,7 +237,7 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;
   .slide.t-fade.current,.slide.t-slide.current{animation:none}
 }
 .el{position:absolute;box-sizing:border-box}
-.el.text{white-space:pre-wrap;overflow-hidden;line-height:1.25}
+.el.text{white-space:pre-wrap;overflow:hidden;line-height:1.25}
 .el.missing{border:2px dashed rgba(128,128,128,.6)}
 #veil{position:absolute;inset:0;display:none;z-index:999}
 #veil.on{display:block}
@@ -289,17 +325,17 @@ export function slideToSvg(model, slideId, images = new Map()) {
     }
 
     if (element.kind === 'shape') {
-      const fill = escape(element.fill ?? model.theme.accent ?? '#1f6feb');
+      const fill = escape(shapeFill(element, model));
       parts.push(`<svg x="${round(element.x)}" y="${round(element.y)}" `
         + `width="${round(element.w)}" height="${round(element.h)}" `
-        + `viewBox="0 0 100 100" preserveAspectRatio="none">`
-        + shapePath(element.shape, fill) + '</svg>');
+        + `viewBox="0 0 100 100" preserveAspectRatio="none" overflow="visible">`
+        + shapePath(element.shape, fill, element.stroke ? escape(element.stroke) : null, element.strokeWidth ?? 2, element.path) + '</svg>');
       continue;
     }
 
     if (element.kind === 'table') {
-      const style = model.styles[element.style] ?? model.styles.body ?? {};
-      const size = Math.min(style.size ?? 32, element.h / Math.max(element.rows, 1) * 0.5);
+      const look = textLook(element, model);
+      const size = Math.min(look.size, element.h / Math.max(element.rows, 1) * 0.5);
       const cw = element.w / element.cols;
       const ch = element.h / element.rows;
       const stroke = escape(model.theme.text ?? '#666666');
@@ -319,7 +355,7 @@ export function slideToSvg(model, slideId, images = new Map()) {
         parts.push(`<text x="${round(element.x + c * cw + 8)}" `
           + `y="${round(element.y + r * ch + ch / 2 + size / 3)}" `
           + `font-family="sans-serif" font-size="${round(size)}" `
-          + `fill="${escape(element.color ?? style.color ?? '#333333')}"`
+          + `fill="${escape(look.color)}"`
           + `${element.header && r === 0 ? ' font-weight="700"' : ''}>`
           + `${escape(cell)}</text>`);
       }));
@@ -328,30 +364,41 @@ export function slideToSvg(model, slideId, images = new Map()) {
 
     if (element.kind === 'line') {
       const stroke = escape(element.fill ?? model.theme.accent ?? '#1f6feb');
-      parts.push(`<line x1="${round(element.x)}" y1="${round(element.y)}" `
-        + `x2="${round(element.x + element.w)}" y2="${round(element.y + element.h)}" `
+      const [x1, y1, x2, y2] = lineEnds(element);
+      parts.push(`<line x1="${round(x1)}" y1="${round(y1)}" `
+        + `x2="${round(x2)}" y2="${round(y2)}" `
         + `stroke="${stroke}" stroke-width="${element.thickness ?? 4}"/>`);
       continue;
     }
 
     if (element.kind !== 'text') continue;
 
-    const style = model.styles[element.style] ?? model.styles.body ?? {};
-    const size = style.size ?? 32;
+    const look = textLook(element, model);
+    const { size } = look;
     const lines = wrapText(SlidesModel.plainText(element), element.w, size);
+    const top = textTop(element, look, lines.length);
+    const anchor = { left: 'start', center: 'middle', right: 'end' }[look.align] ?? 'start';
+    const x = look.align === 'center' ? element.x + element.w / 2 : look.align === 'right' ? element.x + element.w : element.x;
 
     lines.forEach((line, i) => {
-      const family = (element.font ?? style.font) === 'serif' ? 'serif'
-        : (element.font ?? style.font) === 'mono' ? 'monospace' : 'sans-serif';
-      parts.push(`<text x="${round(element.x)}" y="${round(element.y + size * (1 + i * 1.25))}" `
+      const family = look.font === 'serif' ? 'serif' : look.font === 'mono' ? 'monospace' : 'sans-serif';
+      parts.push(`<text x="${round(x)}" y="${round(top + size * (1 + i * 1.25))}" text-anchor="${anchor}" `
         + `font-family="${family}" font-size="${size}" `
-        + `fill="${escape(element.color ?? style.color ?? '#333333')}"`
-        + `${style.bold ? ' font-weight="700"' : ''}>${escape(line)}</text>`);
+        + `fill="${escape(look.color)}"`
+        + `${look.bold ? ' font-weight="700"' : ''}${look.italic ? ' font-style="italic"' : ''}>${escape(line)}</text>`);
     });
   }
 
   parts.push('</svg>');
   return `${parts.join('\n')}\n`;
+}
+
+/** Where a box's text begins, anchored at the top, middle or bottom. */
+function textTop(element, look, lineCount) {
+  const height = lineCount * look.size * 1.25;
+  if (look.valign === 'middle') return element.y + (element.h - height) / 2;
+  if (look.valign === 'bottom') return element.y + element.h - height;
+  return element.y;
 }
 
 /** Wraps text by character count. */
@@ -385,28 +432,19 @@ export function slideToPrintPage(model, slideId, imageBytes = new Map()) {
 
   for (const element of model.renderList(slideId)) {
     if (element.kind === 'shape') {
-      const fill = element.fill ?? model.theme.accent ?? '#1f6feb';
-      const points = shapeCorners(element);
-      primitives.push(points
-        ? { type: 'polygon', points, fill }
-        : {
-          type: element.shape === 'ellipse' ? 'ellipse' : 'rect',
-          ...(element.shape === 'ellipse'
-            ? {
-              cx: element.x + element.w / 2, cy: element.y + element.h / 2,
-              rx: element.w / 2, ry: element.h / 2,
-            }
-            : { x: element.x, y: element.y, w: element.w, h: element.h }),
-          fill,
-        });
+      const fill = shapeFill(element, model);
+      primitives.push({
+        type: 'path', d: shapeOutlineOnPage(element), fill: fill === 'none' ? null : fill,
+        ...(element.stroke ? { stroke: element.stroke, strokeWidth: element.strokeWidth ?? 2 } : {}),
+      });
       continue;
     }
 
     if (element.kind === 'table') {
-      const style = model.styles[element.style] ?? model.styles.body ?? {};
+      const look = textLook(element, model);
       const cw = element.w / element.cols;
       const ch = element.h / element.rows;
-      const size = Math.min(style.size ?? 32, ch * 0.45);
+      const size = Math.min(look.size, ch * 0.45);
 
       for (let r = 0; r <= element.rows; r += 1) {
         const y = element.y + r * ch;
@@ -434,16 +472,18 @@ export function slideToPrintPage(model, slideId, imageBytes = new Map()) {
           y: element.y + r * ch + ch / 2 - size / 2,
           text: cell,
           size,
-          fill: element.color ?? style.color ?? '#333333',
+          fill: look.color,
+          bold: element.header && r === 0,
         });
       }));
       continue;
     }
 
     if (element.kind === 'line') {
+      const [x1, y1, x2, y2] = lineEnds(element);
       primitives.push({
         type: 'polyline',
-        points: [[element.x, element.y], [element.x + element.w, element.y + element.h]],
+        points: [[x1, y1], [x2, y2]],
         stroke: element.fill ?? model.theme.accent ?? '#1f6feb',
         strokeWidth: element.thickness ?? 4,
       });
@@ -467,19 +507,22 @@ export function slideToPrintPage(model, slideId, imageBytes = new Map()) {
 
     if (element.kind !== 'text') continue;
 
-    const style = model.styles[element.style] ?? model.styles.body ?? {};
-    const size = style.size ?? 32;
+    const look = textLook(element, model);
+    const { size } = look;
     const lines = wrapText(SlidesModel.plainText(element), element.w, size);
+    const top = textTop(element, look, lines.length);
 
     lines.forEach((line, i) => {
       primitives.push({
         type: 'text',
-        x: style.align === 'center' ? element.x + element.w / 2 : element.x,
-        y: element.y + i * size * 1.25,
+        x: look.align === 'center' ? element.x + element.w / 2 : look.align === 'right' ? element.x + element.w : element.x,
+        y: top + i * size * 1.25,
         text: line,
         size,
-        align: style.align === 'center' ? 'center' : 'left',
-        fill: element.color ?? style.color ?? '#333333',
+        align: look.align === 'center' || look.align === 'right' ? look.align : 'left',
+        bold: look.bold,
+        italic: look.italic,
+        fill: look.color,
       });
     });
   }
@@ -487,21 +530,15 @@ export function slideToPrintPage(model, slideId, imageBytes = new Map()) {
   return { width: w, height: h, primitives };
 }
 
-/** Polygon corners for the shapes the print engine draws as polygons. */
-function shapeCorners(element) {
+/** A shape's outline where it sits on the slide, turned as it is turned. */
+export function shapeOutlineOnPage(element) {
   const { x, y, w, h } = element;
-  switch (element.shape) {
-    case 'diamond':
-      return [[x + w / 2, y], [x + w, y + h / 2], [x + w / 2, y + h], [x, y + h / 2]];
-    case 'parallelogram':
-      return [[x + w * 0.2, y], [x + w, y], [x + w * 0.8, y + h], [x, y + h]];
-    case 'hexagon':
-      return [[x + w * 0.18, y], [x + w * 0.82, y], [x + w, y + h / 2],
-        [x + w * 0.82, y + h], [x + w * 0.18, y + h], [x, y + h / 2]];
-    case 'triangle':
-      return [[x + w / 2, y], [x + w, y + h], [x, y + h]];
-    default:
-      // rect, rounded and ellipse have primitives of their own.
-      return null;
-  }
+  const angle = ((element.rotation ?? 0) * Math.PI) / 180;
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  return formatPath(mapPath(parsePath(presetOutline(element.shape, element.path)), (px, py) => {
+    const ax = x + (px / 100) * w - cx;
+    const ay = y + (py / 100) * h - cy;
+    return [cx + ax * Math.cos(angle) - ay * Math.sin(angle), cy + ax * Math.sin(angle) + ay * Math.cos(angle)];
+  }), 2);
 }

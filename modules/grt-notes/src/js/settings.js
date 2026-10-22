@@ -6,6 +6,8 @@ import { readSettings, writeSettings } from './io.js';
 export const DEFAULTS = {
   theme: 'system',
   root: null,
+  // An Obsidian vault open in place of the archive, or null.
+  vault: null,
   collapsed: [],
   showBacklinks: true,
   quickNoteNotebook: 'Inbox',
@@ -16,6 +18,7 @@ export function normalise(raw = {}) {
 
   if (isTheme(raw.theme)) settings.theme = raw.theme;
   if (typeof raw.root === 'string' && raw.root) settings.root = raw.root;
+  if (typeof raw.vault === 'string' && raw.vault) settings.vault = raw.vault;
   if (Array.isArray(raw.collapsed)) {
     settings.collapsed = raw.collapsed.filter((p) => typeof p === 'string');
   }

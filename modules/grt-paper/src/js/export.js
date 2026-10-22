@@ -1,6 +1,6 @@
 /** PDF, Markdown, HTML and plain text. */
 
-import { runsText, PAGE_SIZES } from './core/editor/model.js';
+import { runsText, pageDimensions, slotFor } from './core/editor/model.js';
 import { paginate } from './pagination.js';
 
 const escapeHtml = (value) => String(value ?? '')
@@ -180,7 +180,7 @@ export function toPlainText(model) {
  * @returns {{width: number, height: number, primitives: Object[]}[]}
  */
 export function toPrintPages(model, imageBytes = new Map()) {
-  const size = PAGE_SIZES[model.page.size] ?? PAGE_SIZES.A4;
+  const size = pageDimensions(model.page);
   const portrait = model.page.orientation !== 'landscape';
   const width = (portrait ? size.w : size.h) * MM_TO_PT;
   const height = (portrait ? size.h : size.w) * MM_TO_PT;
@@ -281,7 +281,27 @@ export function toPrintPages(model, imageBytes = new Map()) {
   }
 
   pages.push({ width, height, primitives });
+  addRunning(pages, model, left, contentWidth);
   return pages;
+}
+
+/** Headers and footers, drawn in the margins once the number of pages is known. */
+function addRunning(pages, model, left, contentWidth) {
+  const running = model.page.running;
+  const margins = model.page.margins;
+  const size = (model.styles.body?.size ?? 11) * 0.85;
+  pages.forEach((page, index) => {
+    for (const part of ['header', 'footer']) {
+      const slot = slotFor(running, part, index + 1, pages.length);
+      if (!slot) continue;
+      const x = slot.align === 'center' ? left + contentWidth / 2
+        : slot.align === 'right' ? left + contentWidth : left;
+      const y = part === 'header'
+        ? margins.top * 0.4 * MM_TO_PT
+        : page.height - margins.bottom * 0.4 * MM_TO_PT - size;
+      page.primitives.push({ type: 'text', x, y, text: slot.text, size, align: slot.align, fill: '#333333' });
+    }
+  });
 }
 
 /** Wraps a line by character count. */

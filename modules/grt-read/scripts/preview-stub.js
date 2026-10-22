@@ -54,15 +54,19 @@ function buildSamplePdf() {
 }
 
 const sample = buildSamplePdf();
+const files = new Map();
 
 // Every call is recorded, so the same fake can serve the boot test as well as
 // the browser preview.
-window.__TAURI_CALLS__ = [];
+const calls = [];
+window.__TAURI_CALLS__ = calls;
+const listeners = {};
+window.__TAURI_LISTENERS__ = listeners;
 
 window.__TAURI__ = {
   core: {
     invoke: async (command, payload, options) => {
-      window.__TAURI_CALLS__.push({ command, payload, options });
+      calls.push({ command, payload, options });
       switch (command) {
         case 'runtime_info':
           return {
@@ -76,15 +80,27 @@ window.__TAURI__ = {
         case 'write_settings': return true;
         case 'forget_settings': return undefined;
 
-        case 'read_file': return sample;
-        case 'write_file_atomic': return undefined;
+        case 'read_file': return files.get(payload.path) ?? window.__TAURI_SEED__?.[payload.path] ?? sample;
+        case 'write_file_atomic':
+          files.set(decodeURIComponent(options.headers['x-grt-path']), payload);
+          return undefined;
         case 'file_exists': return payload?.path === '/preview/sample.pdf';
+
+        // Recovery copies, and closing with unsaved work.
+        case 'recovery_begin':
+          return { id: '0123456789abcdef', path: `/recovery/0123456789abcdef.${payload.extension}` };
+        case 'recovery_list': return window.__TAURI_ORPHANS__ ?? [];
 
         default: return null;
       }
     },
   },
 
-  // Dropping a file onto the window.
-  event: { listen: async () => () => {} },
+  // Files dropped onto the window, and the request to close it.
+  event: {
+    listen: async (name, handler) => {
+      listeners[name] = handler;
+      return () => {};
+    },
+  },
 };

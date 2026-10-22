@@ -1149,9 +1149,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "grt-read"
-version = "0.1.2"
+name = "grt-app"
+version = "0.1.0"
 dependencies = [
+ "grt-container",
+ "gtk",
+ "percent-encoding",
+ "serde_json",
+ "tauri",
+ "webkit2gtk",
+]
+
+[[package]]
+name = "grt-container"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "grt-read"
+version = "0.2.0"
+dependencies = [
+ "grt-app",
  "percent-encoding",
  "serde",
  "serde_json",

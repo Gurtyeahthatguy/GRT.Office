@@ -28,9 +28,13 @@ Part of the [GRT Suite](../../README.md). Design document:
   the HTML export
 - Slide sizes: 16:9, 4:3, A4 either way, or anything you type
 - **Projection mode**: `F5`, and a **presenter view** for a second screen
-- Reads PowerPoint files, and tells you what it could not convert
+- Opens and saves PowerPoint (`.pptx`) and OpenDocument (`.odp`, `.fodp`)
+  presentations, and tells you what it could not convert
+- Unsaved work is kept: a recovery copy after a pause, offered back if the
+  program stops, or saving straight onto the file; chosen in Settings
+- Printing: slides, handouts of 2, 3, 4 or 6 slides a page, or notes pages
 - Export to a self-contained HTML file, to PDF, or to SVG
-- The same five themes and the same `Ctrl+K` palette as the rest of the suite
+- The same six themes and the same `Ctrl+K` palette as the rest of the suite
 
 ## Making it look like yours
 
@@ -90,16 +94,21 @@ you do not have for one you would not know about.
 Embedding into the HTML export is a checkbox, because it adds a few hundred
 kilobytes per family.
 
-## Reading PowerPoint files
+## PowerPoint and OpenDocument files
 
-Partial, and honest about it. Open a `.pptx` and the import reports, in a list,
-everything it could not bring across: grouped shapes, tables, charts, SmartArt,
-transitions, the theme. An import that silently drops half a deck is worse than
-one that refuses, because the loss is discovered in front of an audience.
+A `.pptx` or `.odp` opens with its placeholders where their layouts and masters
+put them, groups, tables, lines, freeform outlines, backgrounds, notes,
+transitions and sections. What a layout draws on every slide becomes one of the
+deck's masters. What could not come across is listed when the file opens:
+charts, SmartArt, animations, gradients shown as one colour, and the like. An
+import that silently drops half a deck is worse than one that refuses, because
+the loss is discovered in front of an audience. Saving over such a file asks
+first.
 
-There is no `.pptx` export, deliberately. For sending a finished presentation,
-PDF and the self-contained HTML lose nothing, because neither tries to stay
-editable.
+Both formats are also written. LibreOffice opens what Slides writes, and saves
+it back with the same slides, which the tests check. For sending a finished
+presentation, PDF and the self-contained HTML lose nothing, because neither
+tries to stay editable.
 
 ## The HTML export
 

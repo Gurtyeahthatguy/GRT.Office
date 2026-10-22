@@ -1,6 +1,6 @@
 [package]
 name = "grt-slides"
-version = "0.1.2"
+version = "0.2.0"
 description = "Local editor for presentations, with a projection mode"
 authors = ["GRT Project"]
 license = "MIT"
@@ -22,6 +22,7 @@ percent-encoding = "2"
 
 # The shared core.
 grt-container = { path = "../../../core/grt-container" }
+grt-app = { path = "../../../core/grt-app" }
 
 [profile.release]
 opt-level = "z"

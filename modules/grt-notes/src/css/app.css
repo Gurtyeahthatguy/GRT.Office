@@ -47,6 +47,21 @@
   --rule: #303338;
 }
 
+/* Sepia: the reading palette of GRT Bible. */
+:root[data-theme="sepia"] {
+  --bg: #ece2cc;
+  --bg-raised: #f6eedb;
+  --bg-sunken: #e0d3b6;
+  --border: #d3c29d;
+  --text: #3b2f20;
+  --text-dim: #68583e;
+  --accent: #8a3a1f;
+  --danger: #9e2a1c;
+  --ok: #4f5e1e;
+  --mark: #efd78f;
+  --rule: #dccfae;
+}
+
 :root[data-theme="gold"] {
   --bg: #f5efe1;
   --bg-raised: #fdfaf3;
@@ -412,7 +427,7 @@ main {
   border-radius: 5px;
 }
 
-.completion:hover { background: var(--bg-sunken); }
+.completion:hover, .completion.active { background: var(--bg-sunken); }
 
 /* Search results */
 
@@ -473,6 +488,22 @@ main {
 
 /* Panel */
 
+.toast {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 40;
+  max-width: 70vw;
+}
+
+.toast.error { border-color: var(--danger); }
+
 .overlay {
   position: fixed;
   inset: 0;
@@ -522,3 +553,20 @@ main {
   gap: 8px;
   margin-top: 14px;
 }
+
+/* Line breaks inside a paragraph. */
+.surface p, .surface blockquote, .surface li, .surface .todo-text, .surface .callout-text, .surface h1,
+.surface h2, .surface h3, .surface h4, .surface h5, .surface h6 { white-space: pre-wrap; }
+.surface pre.raw { border-left: 3px solid var(--border); opacity: 0.85; }
+.callout-body { flex: 1; min-width: 0; }
+.callout-title { font-weight: 600; margin-bottom: 2px; user-select: none; }
+.note-comment { color: var(--text-dim); opacity: 0.7; }
+
+/* A printed note: dark ink on white, whatever the theme on screen. */
+.notes-print { color: #111111; --text: #111111; --text-dim: #555555; --bg-sunken: #f2f2f2; --border: #cccccc; --accent: #1f6feb; }
+.notes-print .print-title { font-size: 20pt; margin: 0 0 10px; }
+
+.note-properties { flex: none; font-size: 12px; }
+.properties-table { width: 100%; border-collapse: collapse; }
+.properties-table td, .properties-table th { padding: 3px 4px; text-align: left; font-size: 12px; }
+.properties-table input:not([type="checkbox"]), .properties-table select { width: 100%; box-sizing: border-box; }

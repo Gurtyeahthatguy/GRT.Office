@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the editor. Network and shell access are denied: neither tauri-plugin-http nor tauri-plugin-shell is compiled in, so those permissions have nothing to attach to. Window creation stays denied to the frontend.",
+  "description": "Capabilities for the word processor: no network and no shell.",
   "windows": [
     "main"
   ],

@@ -14,6 +14,8 @@
   --danger: #c53030;
   --ok: #1a7f37;
   --page-shadow: rgba(0, 0, 0, 0.18);
+  --paper: #ffffff;
+  --ink: #111111;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -28,6 +30,8 @@
     --danger: #e5534b;
     --ok: #3fb950;
     --page-shadow: rgba(0, 0, 0, 0.5);
+    --paper: #ffffff;
+    --ink: #111111;
   }
 }
 
@@ -42,6 +46,24 @@
   --danger: #e5534b;
   --ok: #3fb950;
   --page-shadow: rgba(0, 0, 0, 0.5);
+  --paper: #ffffff;
+  --ink: #111111;
+}
+
+/* Sepia: the reading palette of GRT Bible. */
+:root[data-theme="sepia"] {
+  --bg: #ece2cc;
+  --bg-raised: #f6eedb;
+  --bg-sunken: #e0d3b6;
+  --border: #d3c29d;
+  --text: #3b2f20;
+  --text-dim: #68583e;
+  --accent: #8a3a1f;
+  --danger: #9e2a1c;
+  --ok: #4f5e1e;
+  --page-shadow: rgba(80, 60, 30, 0.25);
+  --paper: #f8f1df;
+  --ink: #3b2f20;
 }
 
 /* Gold: a warm, low-contrast light theme. */
@@ -56,6 +78,8 @@
   --danger: #a33a2a;
   --ok: #5c7a1e;
   --page-shadow: rgba(90, 70, 30, 0.22);
+  --paper: #ffffff;
+  --ink: #111111;
 }
 
 /* Purple: a deep dark theme. */
@@ -70,6 +94,8 @@
   --danger: #ff6b81;
   --ok: #5bd68a;
   --page-shadow: rgba(0, 0, 0, 0.6);
+  --paper: #ffffff;
+  --ink: #111111;
 }
 
 * { box-sizing: border-box; }
@@ -447,8 +473,8 @@ input[type="search"] {
   margin: 0 auto;
   padding: var(--mt) var(--mr) var(--mb) var(--ml);
   box-sizing: border-box;
-  background: #ffffff;
-  color: #111111;
+  background: var(--paper);
+  color: var(--ink);
   box-shadow: 0 2px 16px var(--page-shadow);
 }
 
@@ -520,3 +546,10 @@ input[type="search"] {
 
 .problem-list { margin: 0; padding-left: 18px; }
 .problem-list li { margin-bottom: 4px; font-size: 12px; }
+
+/* Two fields side by side in a form row. */
+.inline-fields { display: flex; gap: 6px; min-width: 0; }
+.inline-fields input { flex: 1; min-width: 0; }
+
+/* Printed text: the editor's look, without its editing affordances. */
+.surface.print-body { min-height: 0; color: #111111; }

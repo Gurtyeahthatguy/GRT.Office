@@ -2,16 +2,25 @@
 
 import {
   point, collapsed, isCollapsed, fromDom, toDom, clampSelection,
-  containersInRange,
+  containersInRange, normalise,
 } from './selection.js';
 import {
   insertText, splitBlock, deleteBackward, deleteForward, deleteRange,
   applyFormat, hasFormat, indentList, insertBlockAt, insertBlocks,
 } from './commands.js';
 import { TypingGroup } from './input.js';
-import { runsText } from './model.js';
+import { runsText, splitRuns, makeBlock } from './model.js';
 import { blocksFromHtml, blocksFromText } from './paste.js';
 import { UndoStack } from '../undo.js';
+
+const samePoint = (a, b) => !!a && !!b
+  && a.blockId === b.blockId && a.offset === b.offset && (a.itemIndex ?? null) === (b.itemIndex ?? null);
+
+/** Blocks whose text is lines, where Enter breaks the line. */
+const LINE_KINDS = new Set(['code', 'raw']);
+
+/** Blocks Enter goes on writing in, line after line, until it is pressed on an empty last line. */
+const CONTINUED_KINDS = new Set(['callout']);
 
 export class EditorController {
   /**
@@ -32,11 +41,14 @@ export class EditorController {
     // How a copied selection becomes clipboard data.
     this.serialiseCopy = options.serialiseCopy ?? defaultSerialiseCopy;
 
+    this.lineBreaks = !!options.lineBreaks;
+
     this.model = null;
     this.undo = null;
     this.selection = null;
     this.typing = new TypingGroup();
     this.pending = {};
+    this.pendingAt = null;
   }
 
   /** Points the controller at a document, with a fresh undo history. */
@@ -45,6 +57,7 @@ export class EditorController {
     this.undo = new UndoStack(model);
     this.selection = null;
     this.pending = {};
+    this.pendingAt = null;
     this.typing.end();
 
     const first = model.blocks[0];
@@ -128,19 +141,33 @@ export class EditorController {
     return true;
   }
 
-  /** Marks waiting to be applied to the next character typed. */
+  /** The formatting a character typed at the caret takes: that of the text before it, with any mark switched since. */
   activeMarks() {
-    const marks = {};
-    for (const [mark, on] of Object.entries(this.pending)) if (on) marks[mark] = true;
-    return marks;
+    const format = {};
+    if (!this.selection || !this.model) return format;
+
+    // Typing over a selection takes the look of its first character.
+    const range = isCollapsed(this.selection) ? null : normalise(this.selection, this.model);
+    const at = range ? range.start : this.selection.anchor;
+    const [before, after] = splitRuns(this.model.runsOf(at.blockId, at.itemIndex), at.offset);
+    const source = !range && at.offset > 0 ? before[before.length - 1] : after[0];
+    for (const [key, value] of Object.entries(source ?? {})) if (key !== 'text') format[key] = value;
+
+    if (samePoint(this.pendingAt, at)) {
+      for (const [mark, on] of Object.entries(this.pending)) {
+        if (on) format[mark] = true;
+        else delete format[mark];
+      }
+    }
+    return format;
   }
 
-  /** Whether a mark is on, either in the selection or waiting. */
+  /** Whether a mark is on, across the selection or at the caret. */
   markIsOn(mark) {
     if (this.selection && !isCollapsed(this.selection)) {
       return hasFormat(this.model, this.selection, mark);
     }
-    return Boolean(this.pending[mark]);
+    return Boolean(this.activeMarks()[mark]);
   }
 
   /** Deletes to the edge of a word. */
@@ -234,13 +261,41 @@ export class EditorController {
           () => insertText(self.model, self.selection, text, self.activeMarks()),
           { merge, typed: true },
         );
-        // Marks waiting for a character have now been used.
+        // The characters that follow take their formatting from this one.
         self.pending = {};
+        self.pendingAt = null;
       },
 
       splitBlock() {
         self.typing.end();
+        const block = self.selection ? self.model.block(self.selection.focus?.blockId ?? self.selection.anchor?.blockId) : null;
+        if (block && LINE_KINDS.has(block.kind)) {
+          this.insertText('\n');
+          return;
+        }
+        if (block && CONTINUED_KINDS.has(block.kind) && isCollapsed(self.selection)) {
+          const text = runsText(block.runs ?? []);
+          const at = self.selection.anchor.offset;
+          if (at < text.length || !text.endsWith('\n')) {
+            this.insertText('\n');
+            return;
+          }
+          // Enter on its empty last line leaves the block for a paragraph after it.
+          self.edit(() => {
+            self.model.setRuns(block.id, splitRuns(block.runs ?? [], text.length - 1)[0]);
+            return insertBlockAt(self.model, collapsed(point(block.id, text.length - 1)), makeBlock('paragraph'), { enter: true });
+          });
+          return;
+        }
         self.edit(() => splitBlock(self.model, self.selection));
+      },
+
+      lineBreak() {
+        if (!self.lineBreaks) {
+          this.splitBlock();
+          return;
+        }
+        this.insertText('\n');
       },
 
       deleteBackward(byWord = false) {
@@ -268,7 +323,10 @@ export class EditorController {
         if (isCollapsed(self.selection)) {
           // With nothing selected the mark waits for the next character,
           // which is what pressing Ctrl+B before typing means.
-          self.pending[mark] = !self.pending[mark];
+          const on = !self.markIsOn(mark);
+          if (!samePoint(self.pendingAt, self.selection.anchor)) self.pending = {};
+          self.pending[mark] = on;
+          self.pendingAt = self.selection.anchor;
           self.onChange({});
           return;
         }
@@ -280,9 +338,9 @@ export class EditorController {
         self.edit(() => indentList(self.model, self.selection, delta));
       },
 
-      insertBlock(block) {
+      insertBlock(block, options = {}) {
         self.typing.end();
-        self.edit(() => insertBlockAt(self.model, self.selection, block));
+        self.edit(() => insertBlockAt(self.model, self.selection, block, options));
       },
 
       insertBlocks(blocks) {
@@ -307,10 +365,7 @@ export class EditorController {
         self.onChange({});
       },
 
-      /**
-       * Pasting. `blocksFromHtml` returns `{blocks, dropped}` and takes the
-       * document as its second argument.
-       */
+      /** Pasting HTML or text as blocks. */
       paste({ html, text }) {
         self.typing.end();
         const result = html

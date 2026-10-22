@@ -47,6 +47,13 @@ export class UndoStack {
     return true;
   }
 
+  /** Marks the current state as the one saved. */
+  markSaved() {
+    for (const entry of [...this.past, ...this.future]) {
+      if (entry && typeof entry === 'object' && 'dirty' in entry) entry.dirty = true;
+    }
+  }
+
   clear() {
     this.past.length = 0;
     this.future.length = 0;

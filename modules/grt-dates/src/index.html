@@ -30,6 +30,7 @@
       <div class="group">
         <button id="btn-new-event" title="New event (Ctrl+N)">New event</button>
         <button id="btn-save" title="Save (Ctrl+S)">Save</button>
+        <button id="btn-print" title="Print (Ctrl+P)">Print</button>
         <button id="btn-settings" title="Settings">Settings</button>
       </div>
     </header>
@@ -57,7 +58,7 @@
     </main>
 
     <footer class="statusbar">
-      <span id="ephemeral" class="badge hidden">Ephemeral — nothing is written unless you ask</span>
+      <span id="ephemeral" class="badge hidden">Ephemeral: nothing is written unless you ask</span>
       <span id="save-state" class="save-state"></span>
       <span class="spacer"></span>
       <span class="dim">GRT Dates <span id="version"></span></span>
@@ -73,6 +74,8 @@
         </div>
       </div>
     </div>
+
+    <div id="toast" class="toast hidden" role="status"></div>
 
     <script type="module" src="js/main.js"></script>
   </body>

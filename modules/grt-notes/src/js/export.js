@@ -120,3 +120,47 @@ export function archiveToMarkdown(entries) {
 function folderPart(name) {
   return String(name).replace(/[/\\:*?"<>|]/g, '').trim() || 'Untitled';
 }
+
+/**
+ * One note as a text document, for the OpenDocument and Word writers: its
+ * title first, then its blocks as a word processor has them.
+ * @returns {{document: object, lost: string[]}}
+ */
+export function noteToDocument(note) {
+  const lost = new Set();
+  const blocks = [];
+  if (note.title) {
+    blocks.push({ id: 'title', kind: 'heading', level: 1, style: 'h1', align: 'left', runs: [{ text: note.title }] });
+  }
+  if (note.tags?.length) {
+    blocks.push({ id: 'tags', kind: 'paragraph', style: 'body', align: 'left', runs: [{ text: note.tags.map((t) => `#${t}`).join(' '), italic: true }] });
+  }
+  for (const block of note.blocks ?? []) {
+    switch (block.kind) {
+      case 'todo':
+        blocks.push({ ...block, kind: 'paragraph', style: 'body', runs: [{ text: block.done ? '☑ ' : '☐ ' }, ...(block.runs ?? [])] });
+        break;
+      case 'callout': {
+        const label = block.title || String(block.calloutType ?? block.tone ?? 'note').toUpperCase();
+        blocks.push({ ...block, kind: 'quote', style: 'quote', runs: [{ text: `${label}: `, bold: true }, ...(block.runs ?? [])] });
+        break;
+      }
+      case 'embed':
+        lost.add('links to other documents, kept as their path');
+        blocks.push({ ...block, kind: 'paragraph', style: 'body', runs: [{ text: String(block.target ?? '') }] });
+        break;
+      case 'raw':
+        blocks.push({ ...block, kind: 'code', style: 'code' });
+        break;
+      case 'heading':
+        blocks.push({ ...block, level: Math.min((block.level ?? 1) + 1, 6), style: `h${Math.min((block.level ?? 1) + 1, 4)}` });
+        break;
+      default:
+        blocks.push(block);
+    }
+  }
+  return {
+    document: { version: 1, type: 'paper', page: note.page, styles: note.styles, fonts: note.fonts ?? [], blocks },
+    lost: [...lost],
+  };
+}

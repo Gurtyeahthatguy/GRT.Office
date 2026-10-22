@@ -201,7 +201,7 @@ function pointFromDom(root, node, offset) {
   const itemAttribute = host.dataset.item;
   let count = 0;
 
-  const walker = host.ownerDocument.createTreeWalker(host, 4 /** SHOW_TEXT. */);
+  const walker = textWalker(host);
   let current = walker.nextNode();
   while (current) {
     if (current === node) {
@@ -272,7 +272,7 @@ export function domPositionFor(root, at) {
   if (!host) return null;
 
   let remaining = at.offset;
-  const walker = host.ownerDocument.createTreeWalker(host, 4 /** SHOW_TEXT. */);
+  const walker = textWalker(host);
 
   let node = walker.nextNode();
   let last = null;
@@ -284,7 +284,16 @@ export function domPositionFor(root, at) {
   }
 
   if (last) return { node: last, offset: last.nodeValue.length };
-  // An empty block has no text node at all; the element itself is the
-  // position.
-  return { node: host, offset: 0 };
+  // An empty block has no text node at all; the element its text goes in is the position.
+  return { node: host.querySelector('[data-block-text]') ?? host, offset: 0 };
+}
+
+/** The text a block's caret can be in, leaving out marks drawn beside it such as a callout's icon. */
+function textWalker(host) {
+  return host.ownerDocument.createTreeWalker(host, 4 /** SHOW_TEXT. */, {
+    acceptNode: (node) => {
+      const mark = node.parentElement?.closest('[contenteditable="false"]');
+      return mark && host.contains(mark) ? 3 /** FILTER_SKIP. */ : 1 /** FILTER_ACCEPT. */;
+    },
+  });
 }

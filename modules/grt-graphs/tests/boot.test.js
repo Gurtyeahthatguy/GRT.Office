@@ -2,7 +2,7 @@
 
 /** Start the actual program and use it. */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -33,7 +33,6 @@ async function ready(extra = () => true) {
   // Startup is several awaits deep before there is anything to look at.
   for (let i = 0; i < 12; i += 1) await (i % 4 === 3 ? tick() : settle());
 
-  // Then until the backend stops being called.
   let seen = -1;
   return until(() => {
     const calls = window.__TAURI_CALLS__?.length ?? 0;
@@ -247,6 +246,18 @@ describe('connecting two nodes', () => {
   });
 });
 
+describe('adding nodes', () => {
+  it('a second node does not land on top of the first', async () => {
+    el('btn-add').click();
+    await settle();
+    el('btn-add').click();
+    await settle();
+    const [a, b] = [...nodes()].map((n) => n.querySelector('rect, path, ellipse, polygon')?.getAttribute('x') ?? n.getAttribute('transform'));
+    expect(nodes().length).toBe(2);
+    expect(a).not.toBe(b);
+  });
+});
+
 describe('text in a node', () => {
   it('a double-click opens the editor over the node', async () => {
     el('btn-add').click();
@@ -256,6 +267,32 @@ describe('text in a node', () => {
     await settle();
 
     expect(el('text-editor').classList.contains('hidden')).toBe(false);
+  });
+
+  it('opens on the second press alone, which is all WebKitGTK sends after a redraw', async () => {
+    el('btn-add').click();
+    await settle();
+
+    for (const detail of [1, 2]) {
+      nodes()[0].dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, button: 0, detail }));
+      window.dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true, button: 0, detail }));
+      await settle();
+    }
+
+    expect(el('text-editor').classList.contains('hidden')).toBe(false);
+  });
+
+  it('a double-click on empty canvas makes one node, even when dblclick follows', async () => {
+    const canvas = el('canvas');
+    for (const detail of [1, 2]) {
+      canvas.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, button: 0, detail }));
+      window.dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true, button: 0, detail }));
+      await settle();
+    }
+    canvas.dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true, detail: 2 }));
+    await settle();
+
+    expect(nodes().length).toBe(1);
   });
 
   it('Enter keeps what was typed and closes the editor', async () => {
@@ -338,5 +375,126 @@ describe('saving', () => {
     await until(() => commands().some((c) => c.includes('save') || c === 'write_grt'));
 
     expect(commands().some((c) => c.includes('save') || c === 'write_grt')).toBe(true);
+  });
+});
+
+describe('keeping unsaved work', () => {
+  const closeRequested = () => window.__TAURI_LISTENERS__['grt://close-requested']();
+  const dialogOpen = () => !el('overlay').classList.contains('hidden');
+  const choose = (id) => document.querySelector(`[data-choice="${id}"]`).click();
+  const called = (command) => window.__TAURI_CALLS__.filter((call) => call.command === command);
+
+  afterEach(() => {
+    delete window.__TAURI_ORPHANS__;
+    delete window.__TAURI_SEED__;
+  });
+
+  it('CANARY: a diagram nobody touched closes without asking', async () => {
+    await closeRequested();
+    expect(commands()).toContain('close_window');
+  });
+
+  it('asks before New drops a change, and Cancel keeps it', async () => {
+    el('btn-add').click();
+    await settle();
+    el('btn-new').click();
+    await until(dialogOpen);
+    expect(el('panel-title').textContent).toBe('Save changes to “Untitled”?');
+    choose('cancel');
+    await until(() => !dialogOpen());
+    expect(nodes().length).toBe(1);
+  });
+
+  it('asks before closing, and Don’t save closes', async () => {
+    el('btn-add').click();
+    await settle();
+    const closing = closeRequested();
+    await until(dialogOpen);
+    choose('discard');
+    await closing;
+    expect(commands()).toContain('recovery_discard');
+    expect(commands()).toContain('close_window');
+  });
+
+  it('writes a recovery copy after a pause', async () => {
+    el('btn-add').click();
+    await until(() => called('recovery_saved').length > 0, 4000);
+    const copy = called('write_grt').find((call) => call.payload.path.startsWith('/recovery/'));
+    expect(JSON.parse(copy.payload.parts['content/main.json']).nodes).toHaveLength(1);
+  }, 15000);
+
+  it('offers back the work of a run that crashed', async () => {
+    const { GraphModel } = await import('../src/js/model.js');
+    const graph = new GraphModel();
+    graph.addNode({ x: 0, y: 0, text: 'one' });
+    graph.addNode({ x: 300, y: 0, text: 'two' });
+    const orphan = {
+      id: 'fedcba9876543210',
+      path: '/recovery/fedcba9876543210.grt',
+      meta: { path: '/docs/plan.grt', name: 'plan.grt' },
+    };
+    window.__TAURI_ORPHANS__ = [orphan];
+    window.__TAURI_SEED__ = { [orphan.path]: { 'content/main.json': JSON.stringify(graph.toJSON()) } };
+
+    await boot();
+    await until(dialogOpen);
+    expect(el('panel-title').textContent).toBe('Recover “plan.grt”?');
+    choose('recover');
+    await until(() => called('recovery_remove').length > 0);
+    expect(nodes().length).toBe(2);
+    expect(el('status').textContent).toMatch(/unsaved changes/);
+  });
+});
+
+describe('other programs’ diagrams, and printing', () => {
+  const dialogOpen = () => !el('overlay').classList.contains('hidden');
+  const preview = () => document.getElementById('print-view');
+  const canvasFile = '{\n\t"nodes":[\n'
+    + '\t\t{"id":"a1","type":"text","text":"From Obsidian","x":0,"y":0,"width":250,"height":60},\n'
+    + '\t\t{"id":"b2","type":"text","text":"Next","x":400,"y":0,"width":250,"height":60}\n'
+    + '\t],\n\t"edges":[\n\t\t{"id":"e1","fromNode":"a1","toNode":"b2"}\n\t]\n}';
+
+  it('opens a canvas, saves it back unchanged, and saves it as an OpenDocument drawing', async () => {
+    window.__TAURI_FILES__ = { '/tmp/ideas.canvas': canvasFile };
+    window.__TAURI_PICK__ = { open: '/tmp/ideas.canvas' };
+    el('btn-open').click();
+    await until(() => document.title.includes('ideas.canvas'));
+    expect(el('canvas').textContent).toContain('From Obsidian');
+
+    el('btn-save').click();
+    await until(() => window.__TAURI_WRITTEN__?.['/tmp/ideas.canvas']);
+    expect(new TextDecoder().decode(window.__TAURI_WRITTEN__['/tmp/ideas.canvas'])).toBe(canvasFile);
+    await until(() => el('toast').textContent.startsWith('Saved'));
+    await tick();
+
+    window.__TAURI_PICK__ = { save: '/tmp/ideas.odg' };
+    el('btn-save-as').click();
+    await until(dialogOpen);
+    document.querySelector('[data-field="format"]').value = 'odg';
+    el('panel-confirm').click();
+    await until(() => window.__TAURI_WRITTEN__?.['/tmp/ideas.odg']);
+    const { decodeBlock } = await import('../src/js/core/package.js');
+    const { readOdg } = await import('../src/js/core/formats/odg.js');
+    const drawing = readOdg(decodeBlock(window.__TAURI_WRITTEN__['/tmp/ideas.odg'])).document;
+    expect(drawing.nodes.map((n) => n.text)).toEqual(['From Obsidian', 'Next']);
+    expect(drawing.edges).toHaveLength(1);
+  });
+
+  it('prints on one page, or at full size across pages', async () => {
+    window.__TAURI_FILES__ = { '/tmp/wide.canvas': canvasFile.replace('"x":400', '"x":3000') };
+    window.__TAURI_PICK__ = { open: '/tmp/wide.canvas' };
+    el('btn-open').click();
+    await until(() => document.title.includes('wide.canvas'));
+    el('btn-print').click();
+    await until(() => preview()?.querySelector('.print-page'));
+    expect(preview().querySelectorAll('.print-page')).toHaveLength(1);
+    const mode = preview().querySelector('[data-print-field="mode"]');
+    mode.value = 'tiled';
+    mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await until(() => preview().querySelectorAll('.print-page').length === 4);
+    expect(preview().querySelector('.print-footer').textContent).toBe('Row 1 of 1, column 1 of 4');
+    preview().querySelector('[data-print="go"]').click();
+    await until(() => commands().includes('print_page'));
+    expect(window.__TAURI_CALLS__.find((c) => c.command === 'print_page').payload).toEqual({ width: 297, height: 210 });
   });
 });

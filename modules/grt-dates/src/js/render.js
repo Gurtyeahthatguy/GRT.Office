@@ -24,7 +24,7 @@ export function viewTitle(model, weekStart = 1) {
   if (model.view === 'day') return longDate(model.cursor);
   if (model.view === 'agenda') return `From ${longDate(model.cursor)}`;
   const { first, last } = weekLayout(model, model.cursor, { weekStart });
-  return `${shortDate(first)} — ${shortDate(last)} ${parseDate(last).year}`;
+  return `${shortDate(first)} to ${shortDate(last)} ${parseDate(last).year}`;
 }
 
 /** Draws whichever view is current into `surface`. */

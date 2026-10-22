@@ -16,8 +16,19 @@ Part of [GRT Suite](../../README.md). Design document:
 - **`[[links]]` between notes**, with completion while typing and a panel
   showing what points here
 - **Quick note** for writing something down without deciding where it goes
-- Markdown export, of one note or of the whole archive
-- Five themes, shared with the rest of the suite, and the `Ctrl+K` palette
+- **An Obsidian vault**, opened in place of the archive when it is in Documents
+  or Downloads, the folders this program may write in; anywhere else, Notes
+  says so. Notes are the vault's own Markdown files: a note saved without
+  changes stays the same file, and one that changed is rewritten only where it
+  did. Properties keep their types (text, number, date, checkbox, list), and
+  highlights, comments, callouts, `[[note|alias]]`, `[[note#heading]]` and
+  footnotes come and go. What the editor has no block for is kept as the lines
+  it was written as
+- Shift+Enter breaks a line inside a paragraph, as Markdown keeps it
+- Export of one note to Markdown, OpenDocument text or Word, and of the whole
+  archive to Markdown
+- Printing the note open
+- Six themes, shared with the rest of the suite, and the `Ctrl+K` palette
 
 Saving is automatic. There is no Save button.
 

@@ -201,19 +201,19 @@ export function renderReport(report, context = {}) {
   if (context.redactions > 0) {
     rows.push([
       'Redactions',
-      clean(`${context.redactions} region(s) — content deleted from the file`),
+      clean(`${context.redactions} region(s): content deleted from the file`),
     ]);
   }
   if (context.highlights > 0) {
     rows.push([
       'Highlights',
-      `${context.highlights} region(s) — drawn over the page, nothing removed`,
+      `${context.highlights} region(s): drawn over the page, nothing removed`,
     ]);
   }
   if (context.cropped > 0) {
     rows.push([
       'Cropped pages',
-      `${context.cropped} — hidden outside the visible box, still in the file`,
+      `${context.cropped}: hidden outside the visible box, still in the file`,
     ]);
   }
 
@@ -244,7 +244,7 @@ export function renderReport(report, context = {}) {
     'Images carrying EXIF',
     report.imagesWithExif === 0
       ? clean('none')
-      : dirty(`${report.imagesWithExif} — camera and GPS data may survive`),
+      : dirty(`${report.imagesWithExif}: camera and GPS data may survive`),
   ]);
 
   rows.push([
@@ -252,7 +252,7 @@ export function renderReport(report, context = {}) {
     report.auditHits.length === 0
       ? (report.deepScan
         ? clean('no known fingerprints')
-        : `${clean('nothing on the surface')} — compressed streams not inspected`)
+        : `${clean('nothing on the surface')}; compressed streams not inspected`)
       : dirty(escape(report.auditHits.join(', '))),
   ]);
 

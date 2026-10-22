@@ -302,28 +302,6 @@ fn write_grt(
     atomic_write(Path::new(&path), &bytes)
 }
 
-/// Reads the parts of any ZIP-based document.
-#[tauri::command]
-fn read_zip(path: String) -> Result<serde_json::Value, String> {
-    let bytes = fs::read(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
-    let entries = grt_container::read_archive(&bytes)
-        .map_err(|e| format!("{path} is not a readable archive: {e}"))?;
-
-    let mut parts = serde_json::Map::new();
-    let mut binaries = Vec::new();
-
-    for entry in entries {
-        match std::str::from_utf8(&entry.data) {
-            Ok(text) => {
-                parts.insert(entry.name, serde_json::Value::String(text.to_string()));
-            }
-            Err(_) => binaries.push(serde_json::Value::String(entry.name)),
-        }
-    }
-
-    Ok(serde_json::json!({ "parts": parts, "binaries": binaries }))
-}
-
 /// Opens the presenter window on a second screen.
 #[tauri::command]
 fn open_presenter(app: AppHandle) -> Result<(), String> {
@@ -337,7 +315,7 @@ fn open_presenter(app: AppHandle) -> Result<(), String> {
         "presenter",
         tauri::WebviewUrl::App("present.html".into()),
     )
-    .title("GRT Slides — presenter view")
+    .title("GRT Slides - presenter view")
     .inner_size(1100.0, 700.0)
     .build()
     .map_err(|e| format!("Cannot open the presenter view: {e}"))?;
@@ -357,9 +335,23 @@ fn close_presenter(app: AppHandle) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(grt_app::CloseGuard::default())
+        .manage(grt_app::Recovery::default())
+        .on_window_event(grt_app::on_window_event)
         .manage(Staged::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            grt_app::commands::set_close_guard,
+            grt_app::commands::close_ack,
+            grt_app::commands::close_window,
+            grt_app::commands::print_page,
+            grt_app::commands::recovery_begin,
+            grt_app::commands::recovery_saved,
+            grt_app::commands::recovery_discard,
+            grt_app::commands::recovery_list,
+            grt_app::commands::recovery_remove,
+            grt_app::commands::read_package,
+            grt_app::commands::write_package,
             read_file,
             write_file_atomic,
             file_exists,
@@ -373,8 +365,7 @@ pub fn run() {
             stage_part,
             clear_staged,
             open_presenter,
-            close_presenter,
-            read_zip
+            close_presenter
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -155,7 +155,7 @@ describe('Crop', () => {
     expect(page.getCropBox().height).toBeCloseTo(842, 0);
   });
 
-  it('cropping hides but does not remove — the text is still in the file', async () => {
+  it('cropping hides but does not remove: the text is still in the file', async () => {
     // Documented behaviour, not an oversight.
     const model = new DocumentModel(await makeTestPdf(['CROPPEDAWAYTEXT']), 1);
     model.cropPages([0], { top: 0.4, bottom: 0.4, left: 0, right: 0 });

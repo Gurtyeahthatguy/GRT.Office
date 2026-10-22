@@ -16,6 +16,9 @@ import * as settingsStore from './settings.js';
 import { showPanel, readFields, escapeHtml, isDialogOpen } from './core/panel.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
 import { THEMES, applyTheme } from './core/theme.js';
+import { SaveBeforeClose } from './core/closing.js';
+import { printPreview, pageControls, isPrintPreviewOpen } from './core/print.js';
+import { printablePages } from './printing.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -25,6 +28,30 @@ let runtime = { ephemeral: false, version: '0.0.0', defaultDirectory: null };
 
 /** Which entry the open panel is editing. */
 let editing = null;
+
+let toastTimer = null;
+function toast(message, isError = false) {
+  const node = el('toast');
+  node.textContent = message;
+  node.classList.toggle('error', isError);
+  node.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => node.classList.add('hidden'), 3400);
+}
+
+/** Why the last save failed, for the question asked when closing. */
+let saveProblem = null;
+
+/** Closing waits for the calendars being written to reach their files. */
+const closing = new SaveBeforeClose({
+  pending: () => !runtime.ephemeral
+    && model.calendars.some((calendar) => calendar.dirty && calendar.path),
+  flush: async () => {
+    if (await saveDirty()) return true;
+    throw new Error(saveProblem ?? 'a calendar was not written');
+  },
+  toast,
+});
 
 // Startup
 
@@ -42,6 +69,7 @@ async function start() {
 
   wire();
   wireSafetyNet();
+  await closing.start();
   refresh();
   showSaveState(runtime.ephemeral ? 'unsaved' : 'idle');
 }
@@ -69,7 +97,7 @@ async function loadCalendars() {
       });
       calendar.visible = !settings.hiddenCalendars.includes(calendar.name);
       if (parsed.unsupported.length > 0) {
-        console.info(`${found.name}: components kept but not shown — ${parsed.unsupported.join(', ')}`);
+        console.info(`${found.name}: components kept but not shown: ${parsed.unsupported.join(', ')}`);
       }
     } catch (error) {
       console.warn(`Cannot read ${found.path}: ${error}`);
@@ -130,7 +158,15 @@ function showSaveState(state) {
  * Writes every calendar that has changed, now.
  * @param {{silent?: boolean}} options `silent` false reports failures in a
  */
-async function saveDirty({ silent = true } = {}) {
+async function saveDirty(options = {}) {
+  try {
+    return await writeDirty(options);
+  } finally {
+    closing.update();
+  }
+}
+
+async function writeDirty({ silent = true } = {}) {
   const pending = model.calendars.filter((calendar) => calendar.dirty && calendar.path);
 
   if (pending.length === 0) {
@@ -143,9 +179,11 @@ async function saveDirty({ silent = true } = {}) {
 
   for (const calendar of pending) {
     try {
+      const text = io.calendarText(calendar);
       await io.writeCalendar(calendar.path, calendar);
-      calendar.dirty = false;
+      if (io.calendarText(calendar) === text) calendar.dirty = false;
     } catch (error) {
+      saveProblem = `${calendar.name}: ${error?.message ?? error}`;
       showSaveState('failed');
       if (!silent) await io.notify(`Cannot save ${calendar.name}.\n\n${error}`, 'Save failed');
       return false;
@@ -159,6 +197,7 @@ async function saveDirty({ silent = true } = {}) {
 
 /** Called after every change that touched the model. */
 function autoSave() {
+  closing.update();
   if (runtime.ephemeral) {
     showSaveState('unsaved');
     return;
@@ -333,7 +372,7 @@ async function editEvent(uid, occurrenceDate) {
   editing = { uid, date: occurrenceDate };
 
   const confirmed = await showPanel(
-    repeating ? `Event — ${longDate(occurrenceDate)}` : 'Event',
+    repeating ? `Event, ${longDate(occurrenceDate)}` : 'Event',
     eventForm(entry, calendar.id)
       + (repeating ? '<p class="hint">Changes apply to the whole series. Use Delete to remove just this one.</p>' : '')
       + '<button type="button" id="panel-delete" class="danger">Delete</button>',
@@ -517,6 +556,7 @@ function wire() {
     refresh();
   };
   el('btn-settings').onclick = () => openSettings();
+  el('btn-print').onclick = () => printCalendar();
 
   for (const button of document.querySelectorAll('[data-view]')) {
     button.onclick = () => setView(button.dataset.view);
@@ -531,6 +571,27 @@ function wire() {
   el('calendars').addEventListener('click', onCalendarsClick);
   el('tasks').addEventListener('click', onTasksClick);
   document.addEventListener('keydown', onKey);
+}
+
+// Printing
+
+let printSetup = { what: 'month', span: 14, size: 'A4', orientation: 'landscape' };
+
+async function printCalendar() {
+  const what = model.view === 'agenda' ? 'agenda' : model.view === 'month' ? 'month' : 'week';
+  printSetup = await printPreview({
+    title: 'Print',
+    setup: { ...printSetup, what, orientation: what === 'agenda' ? 'portrait' : printSetup.orientation },
+    controls: (s) => `
+      <label>Print<select data-print-field="what">
+        <option value="month"${s.what === 'month' ? ' selected' : ''}>The month</option>
+        <option value="week"${s.what === 'week' ? ' selected' : ''}>The week</option>
+        <option value="agenda"${s.what === 'agenda' ? ' selected' : ''}>The agenda</option>
+      </select></label>
+      ${s.what === 'agenda' ? `<label>Days<input type="number" data-print-field="span" min="1" max="366" value="${s.span}" style="width:4.5em"></label>` : ''}
+      ${pageControls(s)}`,
+    build: (s) => printablePages(model, s, settings.weekStart),
+  });
 }
 
 function onSurfaceClick(event) {
@@ -608,7 +669,7 @@ async function editTask(uid) {
 }
 
 function onKey(event) {
-  if (isDialogOpen() || isPaletteOpen()) return;
+  if (isDialogOpen() || isPaletteOpen() || isPrintPreviewOpen()) return;
   if (event.target instanceof HTMLInputElement
     || event.target instanceof HTMLTextAreaElement) return;
 
@@ -618,6 +679,7 @@ function onKey(event) {
   if (control && event.key === 'n') { event.preventDefault(); newEvent(); return; }
   if (control && event.key === 's') { event.preventDefault(); el('btn-save').click(); return; }
   if (control && event.key === 'f') { event.preventDefault(); el('search').focus(); return; }
+  if (control && event.key === 'p') { event.preventDefault(); printCalendar(); return; }
   if (control) return;
 
   const keys = {
@@ -646,6 +708,7 @@ function commands() {
     { label: 'Week view', run: () => setView('week') },
     { label: 'Day view', run: () => setView('day') },
     { label: 'Agenda view', run: () => setView('agenda') },
+    { label: 'Print…', run: () => printCalendar() },
     { label: 'Settings', run: () => openSettings() },
   ];
 }

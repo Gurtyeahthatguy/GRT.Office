@@ -16,7 +16,7 @@
  * @returns {(keep: boolean) => void}    finishes the edit from outside
  */
 export function editInPlace(node, {
-  className, seed, read, changed, commit, after, keys = () => false, selectAll = false,
+  className, seed, read, changed, commit, after, keys = () => false, selectAll = false, replace = false,
 }) {
   node.classList.add(className);
   node.contentEditable = 'true';
@@ -26,7 +26,7 @@ export function editInPlace(node, {
   if (selectAll) {
     const selection = window.getSelection();
     selection.selectAllChildren(node);
-    selection.collapseToEnd();
+    if (!replace) selection.collapseToEnd();
   }
 
   // Blur fires while the edit is being torn down.

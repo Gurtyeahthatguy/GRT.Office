@@ -4,6 +4,18 @@ const { invoke } = window.__TAURI__.core;
 
 export const FILTERS = {
   grt: [{ name: 'GRT document', extensions: ['grt'] }],
+  odt: [{ name: 'OpenDocument text', extensions: ['odt'] }],
+  fodt: [{ name: 'Flat OpenDocument text', extensions: ['fodt'] }],
+  docx: [{ name: 'Word document', extensions: ['docx'] }],
+  rtf: [{ name: 'Rich Text Format', extensions: ['rtf'] }],
+  documents: [
+    { name: 'Documents', extensions: ['grt', 'odt', 'fodt', 'docx', 'rtf', 'md', 'markdown'] },
+    { name: 'GRT document', extensions: ['grt'] },
+    { name: 'OpenDocument text', extensions: ['odt', 'fodt'] },
+    { name: 'Word document', extensions: ['docx'] },
+    { name: 'Rich Text Format', extensions: ['rtf'] },
+    { name: 'Markdown', extensions: ['md', 'markdown'] },
+  ],
   pdf: [{ name: 'PDF document', extensions: ['pdf'] }],
   html: [{ name: 'Web page', extensions: ['html'] }],
   md: [{ name: 'Markdown', extensions: ['md'] }],
@@ -70,6 +82,11 @@ export async function readFileBytes(path) {
   return new Uint8Array(await invoke('read_file', { path }));
 }
 
+/** A text file, as UTF-8 without its byte-order mark. */
+export async function readText(path) {
+  return new TextDecoder('utf-8').decode(await readFileBytes(path)).replace(/^\uFEFF/, '');
+}
+
 export async function fileExists(path) {
   return invoke('file_exists', { path });
 }
@@ -104,7 +121,7 @@ export function mediaTypeFor(name) {
   const extension = String(name).toLowerCase().split('.').pop();
   return {
     png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-    gif: 'image/gif', webp: 'image/webp',
+    gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp',
   }[extension] ?? 'application/octet-stream';
 }
 

@@ -10,6 +10,14 @@ export const FILTERS = {
   png: [{ name: 'PNG image', extensions: ['png'] }],
   image: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
   pptx: [{ name: 'PowerPoint presentation', extensions: ['pptx'] }],
+  odp: [{ name: 'OpenDocument presentation', extensions: ['odp'] }],
+  fodp: [{ name: 'Flat OpenDocument presentation', extensions: ['fodp'] }],
+  presentations: [
+    { name: 'Presentations', extensions: ['grt', 'odp', 'fodp', 'pptx'] },
+    { name: 'GRT document', extensions: ['grt'] },
+    { name: 'OpenDocument presentation', extensions: ['odp', 'fodp'] },
+    { name: 'PowerPoint presentation', extensions: ['pptx'] },
+  ],
   font: [{ name: 'Font', extensions: ['ttf', 'otf', 'woff', 'woff2'] }],
 };
 
@@ -36,11 +44,6 @@ export async function pickToSave(defaultPath, filters = FILTERS.grt, title = 'Sa
 /** Reads the text parts of a document, plus the names of its resources. */
 export async function readDocument(path) {
   return invoke('read_grt', { path });
-}
-
-/** Reads any ZIP-based document, used by the PowerPoint import. */
-export async function readZip(path) {
-  return invoke('read_zip', { path });
 }
 
 /** Reads one resource as raw bytes. */
@@ -77,6 +80,11 @@ export async function writeBytes(path, bytes) {
 
 export async function readFileBytes(path) {
   return new Uint8Array(await invoke('read_file', { path }));
+}
+
+/** A text file, as UTF-8 without its byte-order mark. */
+export async function readText(path) {
+  return new TextDecoder('utf-8').decode(await readFileBytes(path)).replace(/^\uFEFF/, '');
 }
 
 export async function fileExists(path) {

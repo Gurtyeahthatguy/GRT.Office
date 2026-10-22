@@ -19,10 +19,18 @@ Part of the [GRT Suite](../../README.md). Design document:
 - Imports Mermaid `graph` and `flowchart` text, pasted or from a file
 - Tree layout, as a command you run rather than a behaviour that fires
 - Undo and redo, where one drag is one entry
+- Opens and saves OpenDocument drawings (`.odg`, `.fodg`), connectors still
+  joined to their shapes in LibreOffice Draw, and JSON Canvas (`.canvas`), the
+  open format Obsidian keeps canvases in: a canvas Graphs did not change goes
+  back byte for byte, and one it did changes only where it did. Cards that
+  point at a web page stay in the file and are never opened
+- Unsaved work is kept: a recovery copy after a pause, offered back if the
+  program stops, or saving straight onto the file; chosen in Settings
+- Printing: the diagram on one page, or at full size across several
 - Export to SVG, PNG, PDF and JSON, and import JSON back
 - PDF goes through the suite's shared print engine, the same code that clears
   metadata in GRT Read, so there is one place to audit rather than two
-- The same five themes as the rest of the suite
+- The same six themes as the rest of the suite
 
 ## The `data` field
 

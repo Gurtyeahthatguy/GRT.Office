@@ -10,6 +10,16 @@ const PDF_FILTER = [{ name: 'PDF document', extensions: ['pdf'] }];
 
 export const FILTERS = {
   grt: GRT_FILTER, svg: SVG_FILTER, png: PNG_FILTER, json: JSON_FILTER, pdf: PDF_FILTER,
+  odg: [{ name: 'OpenDocument drawing', extensions: ['odg'] }],
+  fodg: [{ name: 'Flat OpenDocument drawing', extensions: ['fodg'] }],
+  canvas: [{ name: 'JSON Canvas', extensions: ['canvas'] }],
+  diagrams: [
+    { name: 'Diagrams', extensions: ['grt', 'odg', 'fodg', 'canvas', 'json'] },
+    { name: 'GRT document', extensions: ['grt'] },
+    { name: 'OpenDocument drawing', extensions: ['odg', 'fodg'] },
+    { name: 'JSON Canvas', extensions: ['canvas'] },
+    { name: 'JSON', extensions: ['json'] },
+  ],
 };
 
 function toPath(result) {

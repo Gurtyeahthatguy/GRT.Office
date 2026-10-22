@@ -213,7 +213,6 @@ describe('Deleting across blocks', () => {
 
 describe('Undo restores the text AND the cursor', () => {
   it('after deleting a range across three blocks', () => {
-    // 's first requirement, and 's reason for it.
     const model = threeParagraphs();
     const undo = new UndoStack(model);
 

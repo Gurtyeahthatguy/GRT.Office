@@ -32,7 +32,7 @@ describe('Named styles reach everything', () => {
     const { model } = deck();
     model.setStyle('title', { font: 'mono' });
 
-    expect(toHtml(model)).toContain(fontStack('mono'));
+    expect(toHtml(model)).toContain(fontStack('mono').replace(/"/g, '&quot;'));
   });
 
   it('every offered font has a stack behind it', () => {
@@ -77,7 +77,7 @@ describe('Element overrides beat the style', () => {
     model.setElementFont(slide.id, [text.id], 'serif');
 
     expect(elementMarkup(model.element(slide.id, text.id), model))
-      .toContain(fontStack('serif'));
+      .toContain(fontStack('serif').replace(/"/g, '&quot;'));
   });
 
   it('an unknown font is refused rather than written through', () => {

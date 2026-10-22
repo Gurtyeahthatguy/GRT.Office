@@ -14,8 +14,16 @@ Part of [GRT Suite](../../README.md). Design document:
 - Insert and delete rows and columns, with every formula rewritten
 - Copy and paste with formulas translated, fill down with series
 - Undo and redo
+- Opens and saves OpenDocument (`.ods`, `.fods`) and Excel (`.xlsx`), formulas
+  translated both ways; what a workbook holds that Grid cannot is listed when
+  it opens
+- Unsaved work is kept: a recovery copy after a pause, offered back if the
+  program stops, or saving straight onto the file; chosen in Settings
+- Printing and PDF export: print area, page breaks, rows repeated on every
+  page, fit to the page width, gridlines, the sheet's name and page numbers;
+  these come and go with `.ods` and `.xlsx` files
 - CSV import and export
-- Five themes, shared with the rest of the suite, and the `Ctrl+K` palette
+- Six themes, shared with the rest of the suite, and the `Ctrl+K` palette
 
 ## The four parts
 
@@ -62,8 +70,8 @@ effects, which is what makes the library testable in isolation.
 
 ## Not yet
 
-Charts, conditional formatting, sorting, filters, frozen panes, `.xlsx` import
-and PDF export are in §11 and are not built. Steps 1 to 12 and 16 are, which is
+Charts, conditional formatting, sorting and filters are in §11 and are not
+built. Steps 1 to 12 and 16 are, which is
 past the milestone the document names, "a working spreadsheet".
 
 ## Building

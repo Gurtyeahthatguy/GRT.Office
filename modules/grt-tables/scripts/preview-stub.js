@@ -18,7 +18,7 @@ for (const [name, note] of [['Ada Lovelace', 'first'], ['Grace Hopper', 'second'
 
 window.__TAURI__ = {
   core: {
-    invoke: async (command, payload) => {
+    invoke: async (command, payload, options) => {
       switch (command) {
         case 'runtime_info':
           return { ephemeral: false, version: 'preview', initialFile: null };
@@ -98,8 +98,22 @@ window.__TAURI__ = {
         case 'undo': return true;
         case 'undo_depth': return 1;
         case 'prepare_for_sharing': return { removed: [] };
-        case 'read_file': return new Uint8Array();
-        case 'write_file_atomic': case 'export_grt': return undefined;
+        case 'read_file': return new TextEncoder().encode(window.__TAURI_FILES__?.[payload.path] ?? '');
+        case 'write_file_atomic':
+          (window.__TAURI_WRITTEN__ ??= {})[decodeURIComponent(options.headers['x-grt-path'])] = payload;
+          return undefined;
+        case 'export_grt': return undefined;
+        case 'read_package': {
+          const block = window.__TAURI_PACKAGES__?.[payload.path];
+          if (!block) throw new Error(`No file at ${payload.path}`);
+          return block;
+        }
+        case 'write_package':
+          (window.__TAURI_WRITTEN__ ??= {})[decodeURIComponent(options.headers['x-grt-path'])] = payload;
+          return undefined;
+        case 'plugin:dialog|open': return window.__TAURI_PICK__?.open ?? null;
+        case 'plugin:dialog|save': return window.__TAURI_PICK__?.save ?? null;
+        case 'plugin:dialog|message': case 'plugin:dialog|ask': return true;
         case 'file_exists': return false;
         default: return null;
       }

@@ -33,8 +33,17 @@ holds together and one that has to be rewritten.
 - Find and replace, with regular expressions
 - Table of contents built from the headings
 - Word and character count
+- Page size, orientation and margins; headers and footers, with a different
+  first page and different even pages, `{page}` and `{pages}` filled in
+- Opens and saves OpenDocument text (`.odt`, `.fodt`) and Word (`.docx`); opens
+  RTF and Markdown. What a file holds that Paper cannot is listed when it
+  opens, and saving over it asks first
+- Unsaved work is kept: a recovery copy after a pause, offered back if the
+  program stops, or saving straight onto the file; chosen in Settings
+- Printing, through a preview of the pages as they will come out of the
+  printer, cut between lines, never through one
 - Export to PDF, HTML, Markdown and plain text
-- The same five themes and the same `Ctrl+K` palette as the rest of the suite
+- The same six themes and the same `Ctrl+K` palette as the rest of the suite
 
 ## Checking the claims
 

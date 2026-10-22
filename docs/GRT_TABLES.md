@@ -237,8 +237,12 @@ It is the natural bridge between the two modules, and it needs no shared code.
 In the other modules undo works on a model held in memory. Here the changes
 are already written into the database.
 
-**The approach: transactions with savepoints.** Every operation the user
-performs is a SQLite transaction; undo rolls back to the previous savepoint.
+**The approach: changes recorded and played backwards.** Every operation the
+user performs is its own transaction, written to the file at once. While it
+runs, SQLite's session extension records the rows it changes, cascades
+included, and keeps the inverse. A statement that can drop or alter a table
+first copies that table into memory, so undo can rebuild it with its rows,
+indexes and triggers. The last hundred operations can be taken back.
 
 **Limits to accept and to document:**
 - Undo does not survive closing the program
@@ -324,9 +328,6 @@ With this module the GRT suite is specified in full:
 | GRT Notes / Dates | `GRT_NOTES_DATES.md` |
 | GRT Grid | `GRT_GRID.md` |
 | GRT Tables | this document |
-
-Outside the suite, as separate projects: **GRT Assistant** (which exists, and
-is to be ported to Tauri) and **GRT Text** (decentralised messaging).
 
 The design is complete. What is missing is the code, and the measure remains
 the one the suite set at the start: the goal is not to finish the suite, but

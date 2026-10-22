@@ -44,6 +44,20 @@
   --page-shadow: rgba(0, 0, 0, 0.5);
 }
 
+/* Sepia: the reading palette of GRT Bible. */
+:root[data-theme="sepia"] {
+  --bg: #ece2cc;
+  --bg-raised: #f6eedb;
+  --bg-sunken: #e0d3b6;
+  --border: #d3c29d;
+  --text: #3b2f20;
+  --text-dim: #68583e;
+  --accent: #8a3a1f;
+  --danger: #9e2a1c;
+  --ok: #4f5e1e;
+  --page-shadow: rgba(80, 60, 30, 0.25);
+}
+
 /* Gold: a warm, low-contrast light theme. */
 :root[data-theme="gold"] {
   --bg: #f5efe1;
@@ -483,6 +497,8 @@ input[type="search"] {
 
 .el { position: absolute; box-sizing: border-box; }
 .el.text { white-space: pre-wrap; overflow: hidden; line-height: 1.25; cursor: move; }
+/* Anchored text is laid out as one block; while it is typed into, as plain text. */
+.el.text.editing { display: block !important; }
 .el.missing { border: 2px dashed rgba(128, 128, 128, 0.6); }
 .el.from-master { opacity: 0.95; }
 

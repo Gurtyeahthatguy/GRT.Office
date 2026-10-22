@@ -56,6 +56,57 @@ describe('display formats', () => {
   });
 });
 
+describe('formats from other programs', () => {
+  it('keeps text and currency symbols around the number', () => {
+    expect(formatValue(1234.5, '#,##0.00 "€"')).toBe('1,234.50 €');
+    expect(formatValue(1234.5, '[$€-410] #,##0.00')).toBe('€ 1,234.50');
+    expect(formatValue(1234.5, '\\$#,##0')).toBe('$1,235');
+  });
+
+  it('uses the section for negative numbers and for zero', () => {
+    expect(formatValue(-1234.5, '#,##0.00;[Red]-#,##0.00')).toBe('-1,234.50');
+    expect(formatValue(-5, '0;(0)')).toBe('(5)');
+    expect(formatValue(0, '0.0;-0.0;"nil"')).toBe('nil');
+  });
+
+  it('writes scientific notation and thousands', () => {
+    expect(formatValue(1234.5, '0.00E+00')).toBe('1.23E+03');
+    expect(formatValue(0.00012, '0.0E+0')).toBe('1.2E-4');
+    expect(formatValue(1234567, '#,##0,')).toBe('1,235');
+  });
+
+  it('keeps quoted words inside a date', () => {
+    const serial = 45356;
+    expect(formatValue(serial, 'd "de" mmmm yyyy')).toBe('5 de March 2024');
+    expect(formatValue(serial, 'DD/MM/YYYY')).toBe('05/03/2024');
+  });
+
+  it('shows General and @ as plain numbers', () => {
+    expect(formatValue(0.5, 'General')).toBe('0.5');
+    expect(formatValue(3, '@')).toBe('3');
+  });
+});
+
+describe('times', () => {
+  const serial = 45356 + (13 * 3600 + 7 * 60 + 9) / 86400;
+
+  it('reads mm after hours, or before seconds, as minutes', () => {
+    expect(formatValue(serial, 'hh:mm')).toBe('13:07');
+    expect(formatValue(serial, 'hh:mm:ss')).toBe('13:07:09');
+    expect(formatValue(serial, 'mm:ss')).toBe('07:09');
+    expect(formatValue(serial, 'd mmm yyyy h:mm')).toBe('5 Mar 2024 13:07');
+  });
+
+  it('CANARY: reads mm in a date as the month', () => {
+    expect(formatValue(serial, 'yyyy-mm-dd')).toBe('2024-03-05');
+    expect(formatValue(serial, 'dd/mm/yy')).toBe('05/03/24');
+  });
+
+  it('rounds to the second without spilling into the next day', () => {
+    expect(formatValue(45356 + 0.9999999, 'hh:mm:ss')).toBe('23:59:59');
+  });
+});
+
 describe('reading what was typed', () => {
   it('recognises a formula', () => {
     expect(parseInput('=A1+1')).toEqual({ kind: 'formula', value: '=A1+1' });
@@ -306,6 +357,17 @@ describe('the sparse model', () => {
 
   it('has no bounds when it is empty', () => {
     expect(new GridModel().sheet.usedBounds()).toBeNull();
+  });
+
+  it('formatting alone does not stretch the used area', () => {
+    const model = new GridModel();
+    for (let col = 0; col < 999; col += 1) model.sheet.set(0, col, { s: 'header' });
+    model.sheet.set(0, 0, { v: 'Name' });
+    model.sheet.set(3, 2, { v: 7 });
+    expect(model.sheet.usedBounds()).toEqual({ top: 0, left: 0, bottom: 3, right: 2 });
+    model.sheet.set(0, 0, { v: null });
+    model.sheet.set(3, 2, { v: null });
+    expect(model.sheet.usedBounds()).toBeNull();
   });
 
   it('opens a large sparse sheet quickly', () => {

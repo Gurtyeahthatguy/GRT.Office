@@ -22,4 +22,15 @@ core/*/target/
 modules/*/src/js/core/
 modules/*/src/vendor/pdf-lib.esm.js
 modules/*/src/vendor/LICENSE.pdf-lib
+modules/*/src/vendor/markdown-it.min.js
+modules/*/src/vendor/LICENSE.markdown-it
 modules/*/src-tauri/icons/ios/
+
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore

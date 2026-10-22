@@ -308,7 +308,7 @@ meaning, and that is right: it means it works with any engine.
 
 A node is a state. A connector is a transition. `data` holds the condition.
 
-Useful for enemy behaviour, for AI, for interface flows.
+Useful for enemy behaviour, for characters in a game, for interface flows.
 
 ### Skill trees
 

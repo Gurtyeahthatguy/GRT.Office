@@ -1,6 +1,6 @@
 [package]
 name = "grt-grid"
-version = "0.1.2"
+version = "0.2.0"
 description = "Local spreadsheet with formulas, recalculation and charts"
 authors = ["GRT Project"]
 license = "MIT"
@@ -20,8 +20,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 percent-encoding = "2"
 
-# The shared container.
+# The shared core.
 grt-container = { path = "../../../core/grt-container" }
+grt-app = { path = "../../../core/grt-app" }
 
 # No scripting engine, and there never will be one.
 

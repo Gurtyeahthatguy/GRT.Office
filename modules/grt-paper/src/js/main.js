@@ -1,6 +1,8 @@
 /** Application wiring. */
 
-import { PaperModel, PAGE_SIZES } from './core/editor/model.js';
+import {
+  PaperModel, PAGE_SIZES, SLOT_ALIGNMENTS, pageDimensions,
+} from './core/editor/model.js';
 import { Renderer } from './core/editor/render.js';
 import { InputCapture } from './core/editor/input.js';
 import { EditorController } from './core/editor/controller.js';
@@ -10,20 +12,29 @@ import {
 } from './export.js';
 import { point, collapsed, toDom } from './core/editor/selection.js';
 import {
-  hasFormat,
   setBlockKind,
   setBlockStyle,
   setAlign,
   insertBlockAt,
   blocksInRange,
 } from './core/editor/commands.js';
-import { showPanel, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
+import { showPanel, showChoice, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
+import { readPackage, writePackage } from './core/package.js';
+import { readOdt } from './core/formats/odt-read.js';
+import { writeOdt } from './core/formats/odt-write.js';
+import { readDocx } from './core/formats/docx-read.js';
+import { writeDocx } from './core/formats/docx-write.js';
+import { readRtf } from './core/formats/rtf-read.js';
+import { readMarkdown } from './core/formats/markdown-read.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
 import { THEMES, applyTheme, isTheme } from './core/theme.js';
-import { renderToPdf } from './core/pdf.js';
+import { renderToPdf, mergePdfPages } from './core/pdf.js';
+import { printPreview, isPrintPreviewOpen } from './core/print.js';
+import { printablePages } from './printing.js';
+import { Keeper, MODES, isMode } from './core/keeper.js';
 import {
   pickToOpen, pickToSave, readDocument, readResource, writeDocument, writeText,
-  writeBytes, readFileBytes, stagePart, clearStaged, fileExists, runtimeInfo,
+  writeBytes, readFileBytes, readText, stagePart, clearStaged, fileExists, runtimeInfo,
   onFilesDropped, baseName, withExtension, toDataUrl, FILTERS,
 } from './io.js';
 
@@ -37,6 +48,21 @@ const measurer = new Measurer();
 
 let model = new PaperModel();
 let images = new Map();
+
+/** Formats a document can be saved back into. */
+const WRITABLE = new Set(['grt', 'odt', 'fodt', 'docx']);
+const OPENABLE = /\.(grt|odt|fodt|docx|rtf|md|markdown)$/i;
+
+function formatOf(path) {
+  const extension = (/\.([^.\\/]+)$/.exec(path ?? '')?.[1] ?? '').toLowerCase();
+  return extension === 'markdown' ? 'md' : extension || null;
+}
+
+/**
+ * What the open file is: its format, what did not come across when it was
+ * read, and whether saving over it anyway was agreed to.
+ */
+let file = { format: 'grt', losses: [], confirmed: false };
 
 /** Everything between a keystroke and the model. */
 const editor = new EditorController(surface, renderer, {
@@ -53,6 +79,7 @@ let busy = false;
 
 let settings = {
   theme: 'system', showOutline: false, spellcheck: false, showMargins: true,
+  autosave: 'recovery',
 };
 
 // Notifications
@@ -66,6 +93,17 @@ function toast(message, isError = false) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => node.classList.add('hidden'), 3400);
 }
+
+/** Autosave, recovery copies, and asking before unsaved work is dropped. */
+const keeper = new Keeper({
+  name: () => baseName(model.path) ?? 'Untitled',
+  path: () => model.path ?? null,
+  canSaveInPlace: () => !!model.path && WRITABLE.has(file.format)
+    && (file.losses.length === 0 || file.confirmed),
+  writeCopy: (path) => writeDocument(path, documentParts()),
+  save: (options) => save(false, options),
+  openRecovered: (file, meta) => openRecovered(file, meta),
+}, { program: 'GRT Paper', extension: 'grt', toast });
 
 async function guard(label, action) {
   if (busy) return;
@@ -98,7 +136,7 @@ function refresh() {
 
   for (const [id, mark] of [['btn-bold', 'bold'], ['btn-italic', 'italic'],
     ['btn-underline', 'underline'], ['btn-strike', 'strike']]) {
-    el(id).setAttribute('aria-pressed', String(hasFormat(model, editor.selection, mark)));
+    el(id).setAttribute('aria-pressed', String(editor.markIsOn(mark)));
   }
 
   const block = model.block(editor.selection.anchor.blockId);
@@ -143,11 +181,7 @@ const repaginate = new Deferred(() => {
 
 const handlers = editor.handlers;
 
-/**
- * Undo and redo. The controller restores the model and the editor.selection;
- * the measurements cached for pagination belong to this module, so they are
- * dropped here.
- */
+/** Undo and redo, dropping the cached page measurements. */
 function step(direction) {
   measurer.invalidate();
   editor.step(direction);
@@ -328,20 +362,41 @@ function drawOutline() {
 
 async function pageSetup() {
   const page = model.page;
+  const running = page.running;
+  const custom = pageDimensions(page);
+  const sizes = [
+    ...Object.entries(PAGE_SIZES).map(([id, s]) => [id, `${s.label}, ${s.w}×${s.h} mm`]),
+    ['custom', 'Its own size'],
+  ];
+  const slot = (part, which, label) => {
+    const value = running[part][which];
+    return `
+      <label for="r-${part}-${which}">${label}</label>
+      <div class="inline-fields">
+        <input id="r-${part}-${which}" type="text" data-field="${part}-${which}"
+               value="${escapeHtml(value?.text ?? '')}" />
+        <select data-field="${part}-${which}-align" aria-label="${label} alignment">
+          ${SLOT_ALIGNMENTS.map((a) => `<option value="${a}"${(value?.align ?? 'center') === a ? ' selected' : ''}>${a}</option>`).join('')}
+        </select>
+      </div>`;
+  };
   const confirmed = await showPanel('Page', `
     <div class="form-grid">
       <label for="p-size">Size</label>
       <select id="p-size" data-field="size">
-        ${Object.entries(PAGE_SIZES).map(([id, s]) =>
-    `<option value="${id}"${page.size === id ? ' selected' : ''}>`
-    + `${s.label} — ${s.w}×${s.h} mm</option>`).join('')}
+        ${sizes.map(([id, label]) => `<option value="${id}"${page.size === id ? ' selected' : ''}>${label}</option>`).join('')}
       </select>
+      <label for="p-width">Own size (mm)</label>
+      <div class="inline-fields">
+        <input id="p-width" type="number" data-field="width" min="25" max="1200" step="0.1" value="${custom.w}" aria-label="Width" />
+        <input id="p-height" type="number" data-field="height" min="25" max="1200" step="0.1" value="${custom.h}" aria-label="Height" />
+      </div>
       <label for="p-orientation">Orientation</label>
       <select id="p-orientation" data-field="orientation">
         <option value="portrait"${page.orientation === 'portrait' ? ' selected' : ''}>Portrait</option>
         <option value="landscape"${page.orientation === 'landscape' ? ' selected' : ''}>Landscape</option>
       </select>
-      <label for="p-top">Margins (mm)</label>
+      <label for="p-top">Margins (mm), top</label>
       <input id="p-top" type="number" data-field="top" min="5" max="60" value="${page.margins.top}" />
       <label for="p-right">Right</label>
       <input id="p-right" type="number" data-field="right" min="5" max="60" value="${page.margins.right}" />
@@ -349,15 +404,44 @@ async function pageSetup() {
       <input id="p-bottom" type="number" data-field="bottom" min="5" max="60" value="${page.margins.bottom}" />
       <label for="p-left">Left</label>
       <input id="p-left" type="number" data-field="left" min="5" max="60" value="${page.margins.left}" />
-    </div>`, 'Apply');
+      ${slot('header', 'default', 'Header')}
+      ${slot('footer', 'default', 'Footer')}
+    </div>
+    <div class="setting">
+      <span class="label">A different first page</span>
+      <input type="checkbox" data-field="firstDifferent" ${running.firstDifferent ? 'checked' : ''} />
+    </div>
+    <div class="form-grid">
+      ${slot('header', 'first', 'First header')}
+      ${slot('footer', 'first', 'First footer')}
+    </div>
+    <div class="setting">
+      <span class="label">Different even pages</span>
+      <input type="checkbox" data-field="evenDifferent" ${running.evenDifferent ? 'checked' : ''} />
+    </div>
+    <div class="form-grid">
+      ${slot('header', 'even', 'Even header')}
+      ${slot('footer', 'even', 'Even footer')}
+    </div>
+    <p class="fp-note">{page} and {pages} in a header or footer become the page
+    number and the number of pages. They show on paper and in the PDF.</p>`, 'Apply');
   if (!confirmed) return;
 
   const f = readFields();
+  const slotFrom = (part, which) => ({ text: f[`${part}-${which}`] ?? '', align: f[`${part}-${which}-align`] });
   edit(() => {
     model.setPage({
       size: f.size,
+      width: f.width,
+      height: f.height,
       orientation: f.orientation,
       margins: { top: f.top, right: f.right, bottom: f.bottom, left: f.left },
+      running: {
+        firstDifferent: f.firstDifferent,
+        evenDifferent: f.evenDifferent,
+        header: { default: slotFrom('header', 'default'), first: slotFrom('header', 'first'), even: slotFrom('header', 'even') },
+        footer: { default: slotFrom('footer', 'default'), first: slotFrom('footer', 'first'), even: slotFrom('footer', 'even') },
+      },
     });
     return editor.selection;
   });
@@ -385,8 +469,10 @@ function applyPageToSheet() {
 
 function newDocument() {
   model = new PaperModel();
+  file = { format: 'grt', losses: [], confirmed: false };
   images = new Map();
   editor.attach(model);
+  keeper.watch(model);
   imageBytes = new Map();
   measurer.invalidate();
   clearStaged().catch(() => {});
@@ -395,14 +481,24 @@ function newDocument() {
   draw();
 }
 
-async function openPath(path) {
+/** New and Open drop the current document: ask first if it has unsaved work. */
+async function newDocumentConfirmed() {
+  if (await keeper.confirmLeave()) newDocument();
+}
+
+async function openConfirmed(path) {
+  if (await keeper.confirmLeave()) await openPath(path);
+}
+
+/** Reads a document into the editor, without naming it. */
+async function loadDocument(path) {
   const { parts, resources } = await readDocument(path);
   const raw = parts['content/main.json'];
   if (!raw) throw new Error('This document has no text content');
 
   model = new PaperModel(JSON.parse(raw));
-  model.path = path;
   editor.attach(model);
+  keeper.watch(model);
   measurer.invalidate();
 
   images = new Map();
@@ -419,35 +515,192 @@ async function openPath(path) {
   // Point the controller at the document before anything is drawn.
   editor.attach(model);
   drawOutline();
-
-  document.title = `${baseName(path)} — GRT Paper`;
-  toast(`Opened ${baseName(path)} — ${model.counts().words} words`);
 }
 
-async function save(forceDialog) {
-  let path = forceDialog ? null : model.path;
-  if (!path) {
-    path = await pickToSave(model.path ?? 'document.grt', FILTERS.grt, 'Save document');
-    if (!path) return;
+async function openPath(path) {
+  const format = formatOf(path);
+  if (format !== 'grt') {
+    await importDocument(path, format);
+    return;
+  }
+  await loadDocument(path);
+  model.path = path;
+  file = { format: 'grt', losses: [], confirmed: false };
+  document.title = `${baseName(path)} - GRT Paper`;
+  toast(`Opened ${baseName(path)}: ${model.counts().words} words`);
+}
+
+/** Reads a document in another program's format, and says what did not come across. */
+async function importDocument(path, format) {
+  let result;
+  if (format === 'odt') result = readOdt(await readPackage(path));
+  else if (format === 'docx') result = readDocx(await readPackage(path));
+  else if (format === 'fodt') result = readOdt(await readText(path));
+  else if (format === 'rtf') result = readRtf(await readFileBytes(path));
+  else if (format === 'md') {
+    const folder = path.replace(/[^\\/]*$/, '');
+    result = await readMarkdown(await readText(path), (src) => (/^([a-z]:)?[\\/]/i.test(src)
+      ? readFileBytes(src) : readFileBytes(`${folder}${src}`)).catch(() => null));
+  } else {
+    throw new Error(`GRT Paper does not open .${format} files`);
   }
 
+  model = new PaperModel(result.document);
+  editor.attach(model);
+  keeper.watch(model);
+  measurer.invalidate();
+  images = new Map();
+  imageBytes = new Map();
+  await clearStaged();
+  for (const [name, bytes] of result.images) {
+    images.set(name, toDataUrl(bytes, name));
+    imageBytes.set(name, bytes);
+    await stagePart(name, bytes);
+  }
+  model.path = path;
+  file = { format, losses: result.losses.lines(), confirmed: false };
+  applyPageToSheet();
+  editor.attach(model);
+  drawOutline();
+  document.title = `${baseName(path)} - GRT Paper`;
+
+  if (result.losses.empty) {
+    toast(`Opened ${baseName(path)}: ${model.counts().words} words`);
+    return;
+  }
+  await showPanel(`Opened ${escapeHtml(baseName(path))}`, `
+    <p class="fp-note" style="margin-top:0">${model.counts().words} words. What follows did
+    not come across, listed rather than dropped quietly.</p>
+    ${result.losses.html()}
+    <p class="fp-note">Saving over the file would lose these for good, so it
+    asks first; saving as a GRT document keeps everything that did come across.</p>`);
+}
+
+/** Opens a recovery copy as the document it was, with its changes unsaved. */
+async function openRecovered(copy, meta) {
+  await loadDocument(copy);
+  model.path = meta.path ?? null;
+  const format = formatOf(meta.path) ?? 'grt';
+  file = {
+    format,
+    losses: format === 'grt' ? [] : ['Anything the program could not read when the file was first opened'],
+    confirmed: false,
+  };
+  model.dirty = true;
+  const name = meta.name || 'Untitled';
+  document.title = `${name} (recovered) - GRT Paper`;
+  refresh();
+  toast(`Recovered ${name}: save it to keep the changes`);
+}
+
+/** The text parts of a saved document; images travel as staged parts. */
+function documentParts() {
   const manifest = {
     kind: 'paper',
     format_version: 1,
     parts: [{ path: 'content/main.json', media_type: 'application/json' }],
     links: [],
   };
-
-  await writeDocument(path, {
+  return {
     'manifest.json': `${JSON.stringify(manifest, null, 2)}\n`,
     'content/main.json': `${JSON.stringify(model.toJSON(), null, 2)}\n`,
-  });
+  };
+}
 
+const FORMAT_NAMES = {
+  grt: 'GRT document (.grt)',
+  odt: 'OpenDocument text (.odt)',
+  docx: 'Word document (.docx)',
+  fodt: 'Flat OpenDocument text (.fodt)',
+};
+
+/** Asks which format to save in, then where. */
+async function chooseSaveTarget() {
+  const current = WRITABLE.has(file.format) ? file.format : 'grt';
+  const confirmed = await showPanel('Save as', `
+    <div class="form-grid">
+      <label for="s-format">Format</label>
+      <select id="s-format" data-field="format">
+        ${Object.entries(FORMAT_NAMES).map(([id, label]) =>
+    `<option value="${id}"${id === current ? ' selected' : ''}>${label}</option>`).join('')}
+      </select>
+    </div>
+    <p class="fp-note">A GRT document keeps everything this program can do.
+    The others open in LibreOffice and Word; what they cannot hold is said
+    before anything is written.</p>`, 'Choose file');
+  if (!confirmed) return null;
+  const { format } = readFields();
+  const chosen = await pickToSave(withExtension(model.path ?? 'document', format), FILTERS[format], 'Save document');
+  return chosen ? { path: withExtension(chosen, format), format } : null;
+}
+
+/** Writes the document in a format, and says what that format could not hold. */
+async function writeAs(path, format) {
+  if (format === 'grt') {
+    await writeDocument(path, documentParts());
+    return [];
+  }
+  const json = model.toJSON();
+  if (format === 'fodt') {
+    const { text, losses } = writeOdt(json, imageBytes, { flat: true });
+    await writeText(path, text);
+    return losses.lines();
+  }
+  const { entries, losses } = format === 'odt' ? writeOdt(json, imageBytes) : writeDocx(json, imageBytes);
+  await writePackage(path, entries);
+  return losses.lines();
+}
+
+/**
+ * Saves the document, in its own format when it can be written back. Silent,
+ * it asks nothing and reports nothing, which is how autosave writes onto the
+ * file. Resolves false when nothing was saved.
+ */
+async function save(forceDialog, { silent = false } = {}) {
+  let path = forceDialog ? null : model.path;
+  let format = file.format;
+  if (path && !WRITABLE.has(format)) {
+    if (silent) return false;
+    path = null;
+  }
+  if (!path) {
+    if (silent) return false;
+    const chosen = await chooseSaveTarget();
+    if (!chosen) return false;
+    ({ path, format } = chosen);
+  } else if (file.losses.length > 0 && !file.confirmed) {
+    if (silent) return false;
+    const choice = await showChoice(`Save over “${baseName(path)}”?`, `
+      <p>When it was opened, these did not come across. Saving over the file
+      drops them from it for good:</p>
+      <ul class="problem-list">${file.losses.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`, [
+      { id: 'cancel', label: 'Cancel' },
+      { id: 'copy', label: 'Save a copy…', primary: true },
+      { id: 'over', label: 'Save over it' },
+    ]);
+    if (choice === 'copy') return save(true);
+    if (choice !== 'over') return false;
+    file.confirmed = true;
+  }
+
+  const revision = keeper.revision;
+  const lost = await writeAs(path, format);
+
+  const sameFile = path === model.path && format === file.format;
   model.path = path;
-  model.dirty = false;
-  document.title = `${baseName(path)} — GRT Paper`;
+  file = sameFile ? file : { format, losses: [], confirmed: false };
+  model.dirty = keeper.revision !== revision;
+  editor.undo.markSaved();
+  document.title = `${baseName(path)} - GRT Paper`;
   refresh();
-  toast(`Saved ${baseName(path)}`);
+  if (!silent) toast(lost.length > 0 ? `Saved ${baseName(path)}, without: ${lost.join('; ')}` : `Saved ${baseName(path)}`);
+  await keeper.saved();
+  return true;
+}
+
+async function printDocument() {
+  await printPreview({ title: 'Print', setup: {}, build: () => printablePages(model, images) });
+  surface.focus();
 }
 
 async function exportDocument() {
@@ -455,15 +708,15 @@ async function exportDocument() {
     <div class="form-grid">
       <label for="e-format">Format</label>
       <select id="e-format" data-field="format">
-        <option value="pdf">PDF — what the pages look like</option>
-        <option value="html">HTML — one file, images inlined</option>
+        <option value="pdf">PDF: what the pages look like</option>
+        <option value="html">HTML: one file, images inlined</option>
         <option value="md">Markdown</option>
         <option value="txt">Plain text</option>
       </select>
     </div>
     <p class="fp-note">
       The PDF goes through the suite's shared print engine, the same code that
-      clears metadata in GRT Read. Markdown will say what it could not carry —
+      clears metadata in GRT Read. Markdown will say what it could not carry:
       it has no pages, no margins and no alignment.
     </p>`, 'Choose file');
   if (!confirmed) return;
@@ -474,9 +727,12 @@ async function exportDocument() {
 
   if (format === 'pdf') {
     const pages = toPrintPages(model, imageBytes);
-    const rendered = await Promise.all(pages.map((page) => renderToPdf(page, { audit: false })));
+    const report = { replaced: 0 };
+    const rendered = await Promise.all(pages.map((page) => renderToPdf(page, { audit: false, report })));
     await writeBytes(path, await mergePdfPages(rendered));
-    toast(`Exported ${pages.length} page(s)`);
+    toast(report.replaced > 0
+      ? `Exported ${pages.length} page(s), ${report.replaced} character(s) the PDF font cannot draw, replaced; printing to PDF keeps them`
+      : `Exported ${pages.length} page(s)`, report.replaced > 0);
     return;
   }
 
@@ -489,7 +745,7 @@ async function exportDocument() {
     await writeText(path, text);
     await showPanel('Exported as Markdown', `
       <p class="fp-note" style="margin-top:0">
-        Written. What follows is what Markdown cannot represent — listed rather
+        Written. What follows is what Markdown cannot represent, listed rather
         than dropped quietly, because a conversion that loses things silently is
         discovered at the worst moment.
       </p>
@@ -499,22 +755,6 @@ async function exportDocument() {
   }
 
   toast(`Exported ${baseName(path)}`);
-}
-
-/** Joins single-page PDFs, keeping the regeneration guarantee. */
-async function mergePdfPages(pages) {
-  const { PDFDocument } = await import('../vendor/pdf-lib.esm.js');
-  const { stripMetadata } = await import('./core/metadata.js');
-
-  const output = await PDFDocument.create({ updateMetadata: false });
-  for (const bytes of pages) {
-    const source = await PDFDocument.load(bytes, { updateMetadata: false });
-    const copied = await output.copyPages(source, source.getPageIndices());
-    for (const page of copied) output.addPage(page);
-  }
-
-  stripMetadata(output);
-  return output.save({ useObjectStreams: true, addDefaultPage: false });
 }
 
 // Settings
@@ -527,6 +767,7 @@ async function loadSettings(ephemeral) {
     } catch { /** first run. */ }
   }
   if (!isTheme(settings.theme)) settings.theme = 'system';
+  if (!isMode(settings.autosave)) settings.autosave = 'recovery';
   applyTheme(settings.theme);
   el('outline-panel').classList.toggle('hidden', !settings.showOutline);
   surface.spellcheck = !!settings.spellcheck;
@@ -543,7 +784,8 @@ async function openSettings() {
     <div class="setting">
       <span class="label">Theme
         <span class="hint">The window's own colours. The page stays white,
-        because that is what it will be on paper.</span>
+        because that is what it will be on paper; only Sepia tints it, and
+        only on screen.</span>
       </span>
       <select data-field="theme">
         ${THEMES.map((t) =>
@@ -567,11 +809,24 @@ async function openSettings() {
         webview. Nothing is sent anywhere.</span>
       </span>
       <input type="checkbox" data-field="spellcheck" ${settings.spellcheck ? 'checked' : ''} />
+    </div>
+    <div class="setting">
+      <span class="label">Keep unsaved work
+        <span class="hint">Every couple of seconds of quiet. A recovery copy
+        is offered back if the program closes unexpectedly; onto the file
+        saves the document itself, once it has a name.</span>
+      </span>
+      <select data-field="autosave">
+        ${MODES.map((m) =>
+    `<option value="${m.id}"${settings.autosave === m.id ? ' selected' : ''}>${m.label}</option>`)
+    .join('')}
+      </select>
     </div>`, 'Apply');
   if (!confirmed) return;
 
   settings = { ...settings, ...readFields() };
   applyTheme(settings.theme);
+  keeper.setMode(settings.autosave);
   applyPageToSheet();
   el('outline-panel').classList.toggle('hidden', !settings.showOutline);
   surface.spellcheck = !!settings.spellcheck;
@@ -586,11 +841,12 @@ function commands() {
   const entry = (label, hint, run) => ({ id: label, label, hint, run });
 
   return [
-    entry('New document', 'Ctrl+N', () => newDocument()),
+    entry('New document', 'Ctrl+N', () => el('btn-new').click()),
     entry('Open…', 'Ctrl+O', () => el('btn-open').click()),
     entry('Save', 'Ctrl+S', () => guard('Save', () => save(false))),
     entry('Save as…', 'Ctrl+Shift+S', () => guard('Save', () => save(true))),
     entry('Export…', '', () => guard('Export', exportDocument)),
+    entry('Print…', 'Ctrl+P', () => guard('Print', printDocument)),
 
     ...['body', 'h1', 'h2', 'h3', 'h4', 'quote', 'code'].map((style) =>
       entry(`Style: ${style}`, '', () => applyStyle(style))),
@@ -642,14 +898,19 @@ document.addEventListener('selectionchange', () => {
   }
 });
 
-el('btn-new').onclick = () => newDocument();
+// Toolbar buttons leave the caret in the text.
+document.querySelector('.toolbar').addEventListener('mousedown', (event) => {
+  if (event.target.closest('button')) event.preventDefault();
+});
+el('btn-new').onclick = () => guard('New', newDocumentConfirmed);
 el('btn-open').onclick = () => guard('Open', async () => {
-  const path = await pickToOpen(FILTERS.grt, 'Open document');
-  if (path) await openPath(path);
+  const path = await pickToOpen(FILTERS.documents, 'Open document');
+  if (path) await openConfirmed(path);
 });
 el('btn-save').onclick = () => guard('Save', () => save(false));
 el('btn-save-as').onclick = () => guard('Save', () => save(true));
 el('btn-export').onclick = () => guard('Export', exportDocument);
+el('btn-print').onclick = () => guard('Print', printDocument);
 el('btn-undo').onclick = () => step(-1);
 el('btn-redo').onclick = () => step(1);
 el('btn-bold').onclick = () => handlers.toggleMark('bold');
@@ -672,7 +933,7 @@ el('btn-commands').onclick = () => openPalette(commands());
 el('style-picker').onchange = (event) => applyStyle(event.target.value);
 
 document.addEventListener('keydown', (event) => {
-  if (isDialogOpen() || isPaletteOpen()) return;
+  if (isDialogOpen() || isPaletteOpen() || isPrintPreviewOpen()) return;
 
   const ctrl = event.ctrlKey || event.metaKey;
   if (!ctrl) return;
@@ -689,10 +950,13 @@ document.addEventListener('keydown', (event) => {
     el('btn-open').click();
   } else if (key === 'n') {
     event.preventDefault();
-    newDocument();
+    el('btn-new').click();
   } else if (key === 'f') {
     event.preventDefault();
     guard('Find', findReplace);
+  } else if (key === 'p') {
+    event.preventDefault();
+    guard('Print', printDocument);
   } else if (event.key === ',') {
     event.preventDefault();
     guard('Settings', openSettings);
@@ -700,8 +964,8 @@ document.addEventListener('keydown', (event) => {
 });
 
 onFilesDropped((paths) => guard('Open', async () => {
-  const found = paths.find((p) => /\.grt$/i.test(p));
-  if (found) await openPath(found);
+  const found = paths.find((p) => OPENABLE.test(p));
+  if (found) await openConfirmed(found);
 }));
 
 // Startup
@@ -714,10 +978,16 @@ onFilesDropped((paths) => guard('Open', async () => {
   applyPageToSheet();
   // Point the controller at the document before anything is drawn.
   editor.attach(model);
+  keeper.watch(model);
   drawOutline();
   surface.focus();
 
-  if (info.initialFile && await fileExists(info.initialFile)) {
-    await guard('Open', () => openPath(info.initialFile));
+  const initial = info.initialFile && OPENABLE.test(info.initialFile) && await fileExists(info.initialFile)
+    ? info.initialFile : null;
+  const recovered = await keeper.start({
+    ephemeral: info.ephemeral, mode: settings.autosave, initialFile: initial,
+  });
+  if (initial && !recovered) {
+    await guard('Open', () => openPath(initial));
   }
 }());

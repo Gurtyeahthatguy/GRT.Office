@@ -180,12 +180,15 @@ export function shiftRangeForStructuralChange(range, change) {
   const removed = -count;
   if (low >= at && high < at + removed) return null;    // entirely removed.
 
-  const clamp = (ref) => {
+  // An edge inside the removed rows lands on the nearest row that is left, inside the range.
+  const move = (ref, far) => {
     const index = pick(ref);
-    if (index < at) return ref;
-    const moved = Math.max(at, index - removed);
+    const moved = index < at ? index
+      : index >= at + removed ? index - removed
+        : far ? at - 1 : at;
     return axis === 'row' ? { ...ref, row: moved } : { ...ref, col: moved };
   };
+  const fromIsFar = pick(from) > pick(to);
 
-  return { from: clamp(from), to: clamp(to) };
+  return { from: move(from, fromIsFar), to: move(to, !fromIsFar) };
 }

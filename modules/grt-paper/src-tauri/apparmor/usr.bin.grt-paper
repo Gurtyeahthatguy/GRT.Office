@@ -75,6 +75,10 @@ profile grt-paper /usr/bin/grt-paper {
        peer=(name=org.freedesktop.DBus),
   owner /run/user/@{uid}/doc/{,**} rw,
 
+  include <abstractions/cups-client>
+  /usr/lib/@{multiarch}/gtk-3.0/3.0.0/printbackends/{,*.so} mr,
+  /etc/papersize r,
+
   /dev/dri/* rw,
   /sys/devices/**/drm/** r,
   /sys/bus/pci/devices/ r,

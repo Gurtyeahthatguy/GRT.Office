@@ -5,3 +5,6 @@ rustflags = [
   "--remap-path-prefix=/home=/redacted",
   "--remap-path-prefix=/Users=/redacted",
 ]
+
+[env]
+LIBSQLITE3_FLAGS = "-DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK"

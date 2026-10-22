@@ -2,7 +2,7 @@
 #
 # Every entry needs a reason. The point of the network check is to catch an
 # endpoint the program could actually contact, so anything listed here must be
-# demonstrably inert — a source comment, a local origin, a schema identifier.
+# demonstrably inert: a source comment, a local origin, a schema identifier.
 # If you cannot write the reason, do not add the line.
 
 # Tauri, wry and muda embed source comments and panic messages that cite their

@@ -71,13 +71,8 @@ const concat = (state) => binaryLevel(state, ['&'], additive);
 const additive = (state) => binaryLevel(state, ['+', '-'], multiplicative);
 const multiplicative = (state) => binaryLevel(state, ['*', '/'], exponent);
 
-/** `2^3^2` is `2^(3^2)`, right to left, as in every spreadsheet. */
-function exponent(state) {
-  const left = unary(state);
-  if (!operatorAhead(state, ['^'])) return left;
-  next(state);
-  return { type: NODE.binary, op: '^', left, right: exponent(state) };
-}
+/** `2^3^2` is `(2^3)^2`, left to right, as LibreOffice and Excel compute it. */
+const exponent = (state) => binaryLevel(state, ['^'], unary);
 
 function unary(state) {
   if (operatorAhead(state, ['-', '+'])) {

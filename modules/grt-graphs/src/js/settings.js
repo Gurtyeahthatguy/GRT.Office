@@ -1,6 +1,7 @@
 /** Interface preferences. */
 
 import { isTheme, applyTheme } from './core/theme.js';
+import { isMode } from './core/keeper.js';
 
 export { THEMES, applyTheme } from './core/theme.js';
 
@@ -11,6 +12,7 @@ export const DEFAULTS = {
   snapToGrid: true,
   showGrid: true,
   defaultRouting: 'orthogonal',
+  autosave: 'recovery',
 };
 
 let current = { ...DEFAULTS };
@@ -42,6 +44,7 @@ export async function loadSettings(ephemeral) {
   }
 
   if (!isTheme(current.theme)) current.theme = DEFAULTS.theme;
+  if (!isMode(current.autosave)) current.autosave = DEFAULTS.autosave;
   if (!['orthogonal', 'straight', 'curved'].includes(current.defaultRouting)) {
     current.defaultRouting = DEFAULTS.defaultRouting;
   }

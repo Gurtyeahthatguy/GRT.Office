@@ -26,6 +26,20 @@ function run(formula, fill = {}) {
   return model.sheet.valueAt(100, 0);
 }
 
+describe('operators and logical values as LibreOffice computes them', () => {
+  it('raises to a power from left to right, after a sign', () => {
+    expect(run('=2^3^2')).toBe(64);
+    expect(run('=-2^2')).toBe(4);
+    expect(run('=-2^0.5')).toBe('#NUM!');
+  });
+
+  it('knows TRUE() and FALSE(), which LibreOffice writes for the logical values', () => {
+    expect(run('=TRUE()+1')).toBe(2);
+    expect(run('=1<2=TRUE()')).toBe(true);
+    expect(run('=FALSE()')).toBe(false);
+  });
+});
+
 describe('the type rules', () => {
   it('treats a blank cell as zero in arithmetic', () => {
     expect(run('=A1+1')).toBe(1);

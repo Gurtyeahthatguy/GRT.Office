@@ -54,16 +54,16 @@ REAL=$(echo "$ALL_URLS" | grep -Ei "^https?://([a-zA-Z0-9-]+\.)*$KNOWN_TLDS(:[0-
 FRAGMENTS=$(echo "$ALL_URLS" | grep -Eiv "^https?://([a-zA-Z0-9-]+\.)*$KNOWN_TLDS(:[0-9]+)?(/|$)" | grep -v '^$')
 
 if [[ -n "$REAL" ]]; then
-  echo "  FAIL — addresses not in allowed-strings.txt:"
+  echo "  FAIL: addresses not in allowed-strings.txt:"
   echo "$REAL" | head -20 | sed 's/^/    /'
   FAILED=1
 else
-  echo "  OK — no contactable address outside the allow list"
+  echo "  OK: no contactable address outside the allow list"
 fi
 
 if [[ -n "$FRAGMENTS" ]]; then
   COUNT=$(echo "$FRAGMENTS" | wc -l)
-  echo "  REVIEW — $COUNT string(s) with no recognisable TLD (expected: brotli dictionary)"
+  echo "  REVIEW: $COUNT string(s) with no recognisable TLD (expected: brotli dictionary)"
   echo "$FRAGMENTS" | head -8 | sed 's/^/    /'
   [[ $COUNT -gt 8 ]] && echo "    ... $((COUNT - 8)) more"
 fi
@@ -87,7 +87,7 @@ fi
 echo "[4/4] Debug symbols..."
 if command -v file >/dev/null 2>&1; then
   if file "$BINARY" | grep -q 'not stripped'; then
-    echo "  WARNING: symbols present — set strip = true"
+    echo "  WARNING: symbols present; set strip = true"
     FAILED=1
   else
     echo "  OK"

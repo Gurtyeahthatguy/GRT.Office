@@ -6,6 +6,12 @@ import {
   alterationsPossible,
 } from './schema.js';
 import { showPanel, readFields, escapeHtml, isDialogOpen } from './core/panel.js';
+import { readPackage, writePackage } from './core/package.js';
+import { readOds, writeOds } from './core/formats/ods.js';
+import { readXlsx, writeXlsx } from './core/formats/xlsx.js';
+import { printPreview, pageControls, isPrintPreviewOpen } from './core/print.js';
+import { sheetRows, tablesAsSpreadsheet } from './spreadsheets.js';
+import { printablePages } from './printing.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
 import { THEMES, applyTheme, isTheme } from './core/theme.js';
 import * as io from './io.js';
@@ -117,7 +123,7 @@ function drawData() {
   }));
 
   el('page-label').textContent =
-    `${page.total} row(s) — page ${sheet.pageNumber} of ${sheet.pageCount}`;
+    `${page.total} row(s), page ${sheet.pageNumber} of ${sheet.pageCount}`;
   el('btn-prev-page').disabled = sheet.pageNumber <= 1;
   el('btn-next-page').disabled = sheet.pageNumber >= sheet.pageCount;
 
@@ -345,7 +351,7 @@ async function dropCurrentTable() {
   const name = designing?.name;
   if (!name) return;
 
-  // a destructive schema change is confirmed, and the statement is shown.
+  // A destructive schema change is confirmed, and the statement is shown.
   const sure = await io.confirm(
     `${dropTableSql(name)}\n\nEvery row in ${name} goes with it. `
     + 'It can be undone while the program is open, and not afterwards.',
@@ -445,7 +451,7 @@ async function runQuery() {
 
   const what = await sheet.inspect(sql);
 
-  // a statement that would change everything is pointed out first.
+  // A statement that would change everything is pointed out first.
   if (what.unbounded) {
     const sure = await io.confirm(
       `${sql}\n\nThis has no WHERE clause, so it applies to every row. Run it?`,
@@ -491,38 +497,84 @@ async function openPath(path) {
   }
 }
 
-async function importCsv() {
-  const source = await io.pickToOpen(io.FILTERS.csv, 'Import CSV');
+/** Imports a CSV file or a spreadsheet's sheets, each as a new table. */
+async function importFile() {
+  const source = await io.pickToOpen(io.FILTERS.importable, 'Import');
   if (!source) return;
+  if (/\.(ods|fods|xlsx)$/i.test(source)) await importSpreadsheet(source);
+  else await importCsv(source);
+}
 
+async function importCsv(source) {
   const text = await io.readText(source);
   const plan = sheet.planCsvImport(text, {
-    tableName: io.baseName(source).replace(/\.[^.]+$/, '').replace(/[^\w]/g, '_'),
+    tableName: tableNameFrom(io.baseName(source).replace(/\.[^.]+$/, '')),
   });
+  await confirmAndImport(plan, 'Import CSV');
+}
 
-  // the types are proposed with their evidence, and confirmed.
+const tableNameFrom = (name) => String(name ?? '').replace(/[^\w]/g, '_') || 'imported';
+
+async function importSpreadsheet(source) {
+  let result;
+  try {
+    if (/\.xlsx$/i.test(source)) result = readXlsx(await readPackage(source));
+    else if (/\.fods$/i.test(source)) result = readOds(await io.readText(source));
+    else result = readOds(await readPackage(source));
+  } catch (error) {
+    await io.notify(String(error?.message ?? error), 'Cannot read that spreadsheet');
+    return;
+  }
+  const sheets = result.document.sheets
+    .map((each) => ({ name: each.name, rows: sheetRows(each, result.document.styles) }))
+    .filter((each) => each.rows.length > 0);
+  if (sheets.length === 0) {
+    await io.notify('Every sheet in it is empty.', 'Nothing to import');
+    return;
+  }
+  let chosen = sheets;
+  if (sheets.length > 1) {
+    const confirmed = await showPanel('Import spreadsheet', `
+      <p class="hint">Each sheet chosen becomes a table of its own.</p>
+      ${sheets.map((each, i) => `
+        <label class="inline"><input type="checkbox" data-field="sheet_${i}" checked>
+        ${escapeHtml(each.name)} <span class="hint">${each.rows.length} row(s)</span></label>`).join('')}
+    `, 'Next');
+    if (!confirmed) return;
+    const fields = readFields();
+    chosen = sheets.filter((_, i) => fields[`sheet_${i}`]);
+  }
+  for (const each of chosen) {
+    const plan = sheet.planRowsImport(each.rows, { tableName: tableNameFrom(each.name) });
+    if (!await confirmAndImport(plan, `Import “${escapeHtml(each.name)}”`)) return;
+  }
+}
+
+/** Shows the columns and types a plan proposes, lets them be changed, and imports. */
+async function confirmAndImport(plan, title) {
+  // The types are proposed with their evidence, and confirmed.
   const rows = plan.columns.map((column, index) => `
     <tr>
       <td><input data-field="name_${index}" value="${escapeHtml(column.name)}"></td>
       <td><select data-field="type_${index}">
         ${TYPES.map((type) => `<option value="${type.id}"${type.id === column.type ? ' selected' : ''}>${type.label}</option>`).join('')}
       </select></td>
-      <td class="hint">${escapeHtml(column.sample.join(', ') || '—')}</td>
+      <td class="hint">${escapeHtml(column.sample.join(', ') || '-')}</td>
       <td class="hint">${column.confident ? '' : 'few values'}</td>
     </tr>`).join('');
 
-  const confirmed = await showPanel('Import CSV', `
+  const confirmed = await showPanel(title, `
     <p class="hint">${escapeHtml(plan.reason)}</p>
     <label>Table name<input data-field="table" value="${escapeHtml(plan.table.name)}"></label>
     <label class="inline"><input type="checkbox" data-field="header"${plan.header ? ' checked' : ''}> The first row is column names</label>
-    <p class="hint">${plan.rowCount} row(s). These types are a guess from the first rows — change any that are wrong.</p>
+    <p class="hint">${plan.rowCount} row(s). These types are a guess from the first rows; change any that are wrong.</p>
     <table class="design-table">
       <tr><th>Column</th><th>Type</th><th>Examples</th><th></th></tr>
       ${rows}
     </table>
   `, 'Import');
 
-  if (!confirmed) return;
+  if (!confirmed) return false;
 
   const fields = readFields();
   plan.header = Boolean(fields.header);
@@ -537,24 +589,85 @@ async function importCsv() {
     const result = await sheet.importCsv(plan);
     if (!result.ran) {
       await io.notify(result.problems.join('\n'), 'That table cannot be created');
-      return;
+      return false;
     }
-    await io.notify(`${result.imported} row(s) imported.`, 'Imported');
+    await io.notify(`${result.imported} row(s) imported into ${plan.table.name}.`, 'Imported');
+    return true;
   } catch (error) {
     await io.notify(String(error?.message ?? error), 'Import failed');
+    return false;
   }
 }
 
-async function exportCsv() {
-  const fromQuery = view === 'query' && sheet.queryResult;
-  const suggested = fromQuery ? 'query.csv' : `${sheet.table ?? 'table'}.csv`;
-
-  const destination = await io.pickToSave(suggested, io.FILTERS.csv, 'Export CSV');
+/** Exports the table, the query's result or every table, as CSV or as a spreadsheet. */
+async function exportData() {
+  const hasQuery = !!sheet.queryResult;
+  const confirmed = await showPanel('Export', `
+    <div class="form-grid">
+      <label>What<select data-field="what">
+        <option value="table"${view !== 'query' || !hasQuery ? ' selected' : ''}${sheet.table ? '' : ' disabled'}>This table</option>
+        <option value="query"${view === 'query' && hasQuery ? ' selected' : ''}${hasQuery ? '' : ' disabled'}>The query's result</option>
+        <option value="all"${sheet.tables.length > 0 ? '' : ' disabled'}>Every table, a sheet each</option>
+      </select></label>
+      <label>Format<select data-field="format">
+        <option value="ods">OpenDocument spreadsheet (.ods)</option>
+        <option value="xlsx">Excel workbook (.xlsx)</option>
+        <option value="csv">CSV, one table only</option>
+      </select></label>
+    </div>
+    <p class="hint">Rows go out as they are filtered and sorted now. Dates stored as text become dates in a spreadsheet.</p>
+  `, 'Choose file');
+  if (!confirmed) return;
+  const { what, format } = readFields();
+  if (format === 'csv' && what === 'all') {
+    await io.notify('A CSV file holds one table. Choose a spreadsheet to export them all.', 'Export');
+    return;
+  }
+  const suggested = what === 'query' ? 'query' : what === 'all' ? 'database' : sheet.table ?? 'table';
+  const destination = await io.pickToSave(`${suggested}.${format}`, io.FILTERS[format], 'Export');
   if (!destination) return;
+  const path = io.withExtension(destination, format);
 
-  const text = await sheet.exportCsv({ fromQuery });
-  await io.writeText(io.withExtension(destination, 'csv'), text);
-  await io.notify('Saved. It opens in GRT Grid.', 'Exported');
+  if (format === 'csv') {
+    await io.writeText(path, await sheet.exportCsv({ fromQuery: what === 'query' }));
+    await io.notify('Saved. It opens in GRT Grid.', 'Exported');
+    return;
+  }
+  const tables = what === 'all'
+    ? await Promise.all(sheet.tables.map((table) => sheet.allRows({ table: table.name ?? table })))
+    : [await sheet.allRows({ fromQuery: what === 'query' })];
+  const document = tablesAsSpreadsheet(tables);
+  const { entries } = format === 'xlsx' ? writeXlsx(document) : writeOds(document);
+  await writePackage(path, entries);
+  await io.notify(`${tables.reduce((n, t) => n + t.rows.length, 0)} row(s) saved. It opens in GRT Grid.`, 'Exported');
+}
+
+// Printing
+
+let printSetup = { what: 'table', size: 'A4', orientation: 'portrait', margin: 12 };
+
+async function printData() {
+  const hasQuery = !!sheet.queryResult;
+  if (!sheet.table && !hasQuery) {
+    await io.notify('Open a table, or run a query, to have something to print.', 'Print');
+    return;
+  }
+  const loaded = new Map();
+  const rowsFor = async (what) => {
+    if (!loaded.has(what)) loaded.set(what, await sheet.allRows({ fromQuery: what === 'query' }));
+    return loaded.get(what);
+  };
+  printSetup = await printPreview({
+    title: 'Print',
+    setup: { ...printSetup, what: view === 'query' && hasQuery ? 'query' : sheet.table ? 'table' : 'query' },
+    controls: (s) => `
+      <label>Print<select data-print-field="what">
+        <option value="table"${s.what === 'table' ? ' selected' : ''}${sheet.table ? '' : ' disabled'}>This table</option>
+        <option value="query"${s.what === 'query' ? ' selected' : ''}${hasQuery ? '' : ' disabled'}>The query's result</option>
+      </select></label>
+      ${pageControls(s, { margins: true })}`,
+    build: async (s) => printablePages(await rowsFor(s.what), s),
+  });
 }
 
 async function exportArchive() {
@@ -657,13 +770,13 @@ function wire() {
 
     const row = event.target.closest('tr[data-rowid]');
     if (!row) return;
+    // The second click of a double click opens the row.
+    if (event.detail === 2) {
+      editRow(Number(row.dataset.rowid));
+      return;
+    }
     sheet.selectedRow = Number(row.dataset.rowid);
     redraw();
-  });
-
-  el('data-grid').addEventListener('dblclick', (event) => {
-    const row = event.target.closest('tr[data-rowid]');
-    if (row) editRow(Number(row.dataset.rowid));
   });
 
   el('btn-new').onclick = async () => {
@@ -713,8 +826,7 @@ function wire() {
   el('btn-next-page').onclick = () => sheet.nextPage();
 
   el('filter-value').oninput = () => {
-    sheet.filter(el('filter-column').value || sheet.displayColumns[0] || null,
-      el('filter-value').value);
+    sheet.filter(el('filter-column').value || null, el('filter-value').value);
   };
   el('filter-column').onchange = () => {
     if (el('filter-value').value) el('filter-value').dispatchEvent(new Event('input'));
@@ -728,19 +840,21 @@ function wire() {
     }
   });
 
-  el('btn-import-csv').onclick = () => importCsv();
-  el('btn-export-csv').onclick = () => exportCsv();
+  el('btn-import-csv').onclick = () => importFile();
+  el('btn-export-csv').onclick = () => exportData();
+  el('btn-print').onclick = () => printData();
   el('btn-export-grt').onclick = () => exportArchive();
   el('btn-import-grt').onclick = () => importArchive();
   el('btn-share').onclick = () => prepareForSharing();
   el('btn-settings').onclick = () => openSettings();
 
   document.addEventListener('keydown', (event) => {
-    if (isDialogOpen() || isPaletteOpen()) return;
+    if (isDialogOpen() || isPaletteOpen() || isPrintPreviewOpen()) return;
     const control = event.ctrlKey || event.metaKey;
     if (!control) return;
 
     if (event.key === 'k') { event.preventDefault(); openPalette(commands()); }
+    else if (event.key === 'p') { event.preventDefault(); printData(); }
     else if (event.key === 'z') { event.preventDefault(); el('btn-undo').click(); }
   });
 }
@@ -753,8 +867,9 @@ function commands() {
     entry('New table', '', () => el('btn-new-table').click()),
     entry('Add row', '', () => addRow()),
     entry('Run query', 'Ctrl+Enter', () => setView('query')),
-    entry('Import CSV', '', () => importCsv()),
-    entry('Export CSV', '', () => exportCsv()),
+    entry('Import CSV or a spreadsheet…', '', () => importFile()),
+    entry('Export as a spreadsheet or CSV…', '', () => exportData()),
+    entry('Print…', 'Ctrl+P', () => printData()),
     entry('Export readable archive', '', () => exportArchive()),
     entry('Import readable archive', '', () => importArchive()),
     entry('Prepare for sharing', '', () => prepareForSharing()),

@@ -1,6 +1,7 @@
 /** Interface preferences. */
 
 import { isTheme, applyTheme } from './core/theme.js';
+import { isMode } from './core/keeper.js';
 
 export { THEMES, applyTheme } from './core/theme.js';
 
@@ -11,6 +12,7 @@ export const DEFAULTS = {
   snapToGrid: true,
   showNotes: true,
   autoShrinkText: false,
+  autosave: 'recovery',
 };
 
 let current = { ...DEFAULTS };
@@ -36,6 +38,7 @@ export async function loadSettings(ephemeral) {
     current[key] = value;
   }
   if (!isTheme(current.theme)) current.theme = DEFAULTS.theme;
+  if (!isMode(current.autosave)) current.autosave = DEFAULTS.autosave;
 
   applyTheme(current.theme);
   return current;

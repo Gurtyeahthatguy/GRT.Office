@@ -4,7 +4,17 @@ const { invoke } = window.__TAURI__.core;
 
 export const FILTERS = {
   grt: [{ name: 'GRT spreadsheet', extensions: ['grt'] }],
+  ods: [{ name: 'OpenDocument spreadsheet', extensions: ['ods'] }],
+  fods: [{ name: 'Flat OpenDocument spreadsheet', extensions: ['fods'] }],
+  xlsx: [{ name: 'Excel workbook', extensions: ['xlsx'] }],
+  spreadsheets: [
+    { name: 'Spreadsheets', extensions: ['grt', 'ods', 'fods', 'xlsx'] },
+    { name: 'GRT spreadsheet', extensions: ['grt'] },
+    { name: 'OpenDocument spreadsheet', extensions: ['ods', 'fods'] },
+    { name: 'Excel workbook', extensions: ['xlsx'] },
+  ],
   csv: [{ name: 'Comma-separated values', extensions: ['csv', 'tsv', 'txt'] }],
+  pdf: [{ name: 'PDF', extensions: ['pdf'] }],
 };
 
 function toPath(result) {
@@ -27,7 +37,7 @@ export async function pickToSave(defaultPath, filters = FILTERS.grt, title = 'Sa
 
 export async function confirm(message, title = 'GRT Grid') {
   try {
-    return await invoke('plugin:dialog|ask', { options: { message, title, kind: 'warning' } });
+    return await invoke('plugin:dialog|message', { message, title, kind: 'warning', buttons: 'YesNo' }) === 'Yes';
   } catch {
     return false;
   }
@@ -35,7 +45,7 @@ export async function confirm(message, title = 'GRT Grid') {
 
 export async function notify(message, title = 'GRT Grid') {
   try {
-    await invoke('plugin:dialog|message', { options: { message, title } });
+    await invoke('plugin:dialog|message', { message, title });
   } catch { /** a dialog that will not open must not stop the program. */ }
 }
 
@@ -60,6 +70,12 @@ export async function readText(path) {
 
 export async function writeText(path, text) {
   await invoke('write_file_atomic', new TextEncoder().encode(text), {
+    headers: { 'x-grt-path': encodeURIComponent(path) },
+  });
+}
+
+export async function writeBytes(path, bytes) {
+  await invoke('write_file_atomic', bytes, {
     headers: { 'x-grt-path': encodeURIComponent(path) },
   });
 }

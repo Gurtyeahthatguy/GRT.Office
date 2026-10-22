@@ -329,7 +329,6 @@ describe('copying formulas', () => {
     expect(engine.translateFormula('=SUM(A1:A5)', 2, 0)).toBe('=SUM(A3:A7)');
   });
 
-  /** names this one specifically. */
   it('does NOT touch something that looks like a reference inside a string', () => {
     expect(engine.translateFormula('="see A1 for details"', 5, 0))
       .toBe('="see A1 for details"');

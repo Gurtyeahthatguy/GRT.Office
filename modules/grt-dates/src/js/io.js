@@ -36,9 +36,7 @@ export async function pickDirectory(title = 'Choose calendar folder') {
 
 export async function confirm(message, title = 'GRT Dates') {
   try {
-    return await invoke('plugin:dialog|ask', {
-      options: { message, title, kind: 'warning' },
-    });
+    return await invoke('plugin:dialog|message', { message, title, kind: 'warning', buttons: 'YesNo' }) === 'Yes';
   } catch {
     return false;
   }
@@ -46,7 +44,7 @@ export async function confirm(message, title = 'GRT Dates') {
 
 export async function notify(message, title = 'GRT Dates') {
   try {
-    await invoke('plugin:dialog|message', { options: { message, title } });
+    await invoke('plugin:dialog|message', { message, title });
   } catch {
     // A dialog that will not open must not stop the program.
   }
@@ -66,8 +64,13 @@ export async function readCalendar(path) {
 }
 
 /** Writes a calendar back, whole. */
+/** The file a calendar is written as. */
+export function calendarText(calendar) {
+  return serialise({ name: calendar.name, entries: calendar.entries });
+}
+
 export async function writeCalendar(path, calendar) {
-  const text = serialise({ name: calendar.name, entries: calendar.entries });
+  const text = calendarText(calendar);
   await invoke('write_file_atomic', new TextEncoder().encode(text), {
     headers: { 'x-grt-path': encodeURIComponent(path) },
   });

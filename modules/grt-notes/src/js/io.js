@@ -1,6 +1,6 @@
 /** The only bridge between the interface and the filesystem. */
 
-import { fromParts, toParts } from './note.js';
+import { fromParts, toParts, fromMarkdown, toMarkdown } from './note.js';
 
 const { invoke } = window.__TAURI__.core;
 
@@ -35,7 +35,7 @@ export async function pickDirectory(title = 'Choose the archive folder') {
 
 export async function confirm(message, title = 'GRT Notes') {
   try {
-    return await invoke('plugin:dialog|ask', { options: { message, title, kind: 'warning' } });
+    return await invoke('plugin:dialog|message', { message, title, kind: 'warning', buttons: 'YesNo' }) === 'Yes';
   } catch {
     return false;
   }
@@ -43,7 +43,7 @@ export async function confirm(message, title = 'GRT Notes') {
 
 export async function notify(message, title = 'GRT Notes') {
   try {
-    await invoke('plugin:dialog|message', { options: { message, title } });
+    await invoke('plugin:dialog|message', { message, title });
   } catch {
     // A dialog that will not open must not stop the program.
   }
@@ -69,13 +69,34 @@ export async function deleteEntry(path) {
 
 // Notes
 
+const isMarkdown = (path) => /\.md$/i.test(path);
+const stem = (path) => String(path).split(/[/\\]/).pop().replace(/\.md$/i, '');
+
 export async function readNote(path) {
+  if (isMarkdown(path)) return fromMarkdown(await readText(path), stem(path));
   const { parts } = await invoke('read_grt', { path });
   return fromParts(parts);
 }
 
 export async function writeNote(path, note) {
+  if (isMarkdown(path)) return writeText(path, toMarkdown(note));
   return invoke('write_grt', { path, parts: toParts(note) });
+}
+
+export async function readText(path) {
+  const bytes = new Uint8Array(await invoke('read_file', { path }));
+  return new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes);
+}
+
+// A vault
+
+/** Says whether a folder may be opened as a vault, and why not when it may not. */
+export async function checkVault(path) {
+  return invoke('check_vault', { path });
+}
+
+export async function readVault(root) {
+  return invoke('read_vault', { root });
 }
 
 export async function writeText(path, text) {

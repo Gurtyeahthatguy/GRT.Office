@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { EditorController } from '../src/js/core/editor/controller.js';
 import { NotesRenderer } from '../src/js/render-notes.js';
-import { NoteDocument, makeTodo } from '../src/js/note.js';
+import { NoteDocument, makeTodo, makeCallout } from '../src/js/note.js';
 import { makeBlock, runsText } from '../src/js/core/editor/model.js';
 
 let note;
@@ -191,11 +191,51 @@ describe('formatting', () => {
     expect(firstBlock().runs[firstBlock().runs.length - 1].bold).toBe(true);
   });
 
-  it('stops holding the mark once it has been used', () => {
+  it('keeps the mark for the characters typed after it', () => {
     caretAt(firstBlock().id, 5);
     editor.handlers.toggleMark('bold');
-    editor.handlers.insertText('!');
+    editor.handlers.insertText(' w');
+    caretAt(firstBlock().id, 7);
+    editor.handlers.insertText('o');
+    caretAt(firstBlock().id, 8);
+    editor.handlers.insertText('rld');
+    expect(firstBlock().runs).toEqual([{ text: 'hello' }, { text: ' world', bold: true }]);
+    expect(editor.markIsOn('bold')).toBe(true);
+  });
+
+  it('types inside bold text in bold', () => {
+    selectRange(firstBlock().id, 0, 5);
+    editor.handlers.toggleMark('bold');
+    caretAt(firstBlock().id, 2);
+    editor.handlers.insertText('XY');
+    expect(firstBlock().runs).toEqual([{ text: 'heXYllo', bold: true }]);
+  });
+
+  it('switches a mark off for what follows', () => {
+    selectRange(firstBlock().id, 0, 5);
+    editor.handlers.toggleMark('bold');
+    caretAt(firstBlock().id, 5);
+    expect(editor.markIsOn('bold')).toBe(true);
+    editor.handlers.toggleMark('bold');
     expect(editor.markIsOn('bold')).toBe(false);
+    editor.handlers.insertText(' plain');
+    expect(firstBlock().runs).toEqual([{ text: 'hello', bold: true }, { text: ' plain' }]);
+  });
+
+  it('forgets a waiting mark once the caret moves elsewhere', () => {
+    caretAt(firstBlock().id, 5);
+    editor.handlers.toggleMark('bold');
+    caretAt(firstBlock().id, 0);
+    editor.handlers.insertText('>');
+    expect(firstBlock().runs).toEqual([{ text: '>hello' }]);
+  });
+
+  it('typing over a selection takes the look of its first character', () => {
+    selectRange(firstBlock().id, 0, 2);
+    editor.handlers.toggleMark('italic');
+    selectRange(firstBlock().id, 0, 5);
+    editor.handlers.insertText('bye');
+    expect(firstBlock().runs).toEqual([{ text: 'bye', italic: true }]);
   });
 });
 
@@ -334,6 +374,73 @@ describe('inserting blocks', () => {
     caretAt(firstBlock().id, 0);
     editor.handlers.insertBlock(makeBlock('code'));
     expect(surface.querySelector('pre')).toBeTruthy();
+  });
+
+  it('a block for typing takes the caret, and the empty line it was asked for in', () => {
+    caretAt(firstBlock().id, 0);
+    editor.handlers.insertBlock(makeTodo(), { enter: true });
+    expect(note.blocks[0].kind).toBe('todo');
+    editor.handlers.insertText('Buy eggs');
+    expect(runsText(note.blocks[0].runs)).toBe('Buy eggs');
+  });
+
+  it('after a line with words, the new block comes next and takes the caret', () => {
+    caretAt(firstBlock().id, 0);
+    editor.handlers.insertText('Shopping');
+    editor.handlers.insertBlock(makeBlock('code'), { enter: true });
+    editor.handlers.insertText('x = 1');
+    expect(note.blocks.map((b) => b.kind).slice(0, 2)).toEqual(['paragraph', 'code']);
+    expect(runsText(note.blocks[1].runs)).toBe('x = 1');
+  });
+});
+
+describe('a callout, whose icon is drawn beside its text', () => {
+  it('takes what is typed into its text, not its icon', () => {
+    caretAt(firstBlock().id, 0);
+    editor.handlers.insertBlock(makeCallout('note'), { enter: true });
+    editor.readSelection();
+    editor.handlers.insertText('Inside');
+    const callout = note.blocks.find((b) => b.kind === 'callout');
+    expect(runsText(callout.runs)).toBe('Inside');
+    expect(surface.querySelector('.callout-text').textContent).toBe('Inside');
+  });
+
+  it('reads the caret inside its text without counting the icon', () => {
+    caretAt(firstBlock().id, 0);
+    editor.handlers.insertBlock(makeCallout('note'), { enter: true });
+    editor.handlers.insertText('abcd');
+    const text = surface.querySelector('.callout-text').firstChild;
+    const range = document.createRange();
+    range.setStart(text, 2);
+    range.collapse(true);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+
+    editor.handlers.insertText('X');
+    const callout = note.blocks.find((b) => b.kind === 'callout');
+    expect(runsText(callout.runs)).toBe('abXcd');
+  });
+});
+
+describe('Enter in a callout', () => {
+  it('goes on writing in the same callout, and an empty last line leaves it', () => {
+    caretAt(firstBlock().id, 0);
+    editor.handlers.insertBlock(makeCallout('note'), { enter: true });
+    editor.handlers.insertText('one');
+    editor.handlers.splitBlock();
+    editor.handlers.insertText('two');
+    const callouts = () => note.blocks.filter((b) => b.kind === 'callout');
+    expect(callouts()).toHaveLength(1);
+    expect(runsText(callouts()[0].runs)).toBe('one\ntwo');
+
+    editor.handlers.splitBlock();
+    editor.handlers.splitBlock();
+    editor.handlers.insertText('after');
+    expect(callouts()).toHaveLength(1);
+    expect(runsText(callouts()[0].runs)).toBe('one\ntwo');
+    const next = note.blocks[note.blocks.indexOf(callouts()[0]) + 1];
+    expect(next.kind).toBe('paragraph');
+    expect(runsText(next.runs)).toBe('after');
   });
 });
 

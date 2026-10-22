@@ -1,4 +1,4 @@
-//! The tests asks for that can only live on this side.
+//! The database side of the program, tested against SQLite itself.
 
 use std::fs;
 
@@ -7,6 +7,7 @@ use grt_tables_lib::db::{
     list_tables, quote_ident, select_page, update_row, Database,
 };
 use grt_tables_lib::export;
+use grt_tables_lib::undo;
 
 use std::collections::HashMap;
 
@@ -34,7 +35,7 @@ fn contacts(database: &Database) {
         .expect("a table");
 }
 
-// injection.
+// Injection.
 
 #[test]
 fn a_value_full_of_punctuation_survives_unchanged() {
@@ -97,6 +98,34 @@ fn impossible_names_are_refused_early() {
 }
 
 #[test]
+fn a_filter_with_no_column_looks_in_every_column() {
+    let database = memory();
+    contacts(&database);
+    for (name, note) in [("Pencil", "wood"), ("Notebook", "paper"), ("Eraser", "rubber, pencil friend")] {
+        insert_row(
+            &database.connection,
+            "contacts",
+            &values(&[("name", serde_json::json!(name)), ("note", serde_json::json!(note))]),
+        )
+        .unwrap();
+    }
+    let total = |column: Option<&str>, value: &str| {
+        select_page(&database.connection, "contacts", 10, 0, None, false, column, Some(value)).unwrap()["total"].clone()
+    };
+    assert_eq!(total(None, "pencil"), serde_json::json!(2));
+    assert_eq!(total(Some("name"), "pencil"), serde_json::json!(1));
+}
+
+#[test]
+fn an_empty_filter_keeps_rows_with_nothing_in_the_column() {
+    let database = memory();
+    contacts(&database);
+    insert_row(&database.connection, "contacts", &values(&[("name", serde_json::json!("no note"))])).unwrap();
+    let page = select_page(&database.connection, "contacts", 10, 0, None, false, Some("note"), Some("")).unwrap();
+    assert_eq!(page["total"], serde_json::json!(1));
+}
+
+#[test]
 fn a_filter_value_is_bound_and_not_pasted() {
     let database = memory();
     contacts(&database);
@@ -132,7 +161,7 @@ fn a_filter_value_is_bound_and_not_pasted() {
     assert_eq!(remaining, 2);
 }
 
-// pagination.
+// Pagination.
 
 #[test]
 fn a_large_table_is_read_a_page_at_a_time() {
@@ -278,63 +307,228 @@ fn foreign_keys_are_switched_on() {
     .is_err());
 }
 
-// rollback.
+// Undo.
+
+fn names(database: &Database, table: &str) -> Vec<String> {
+    let mut statement = database
+        .connection
+        .prepare(&format!("SELECT name FROM {} ORDER BY rowid", quote_ident(table)))
+        .unwrap();
+    let rows = statement.query_map([], |row| row.get(0)).unwrap();
+    rows.map(Result::unwrap).collect()
+}
+
+fn add(database: &mut Database, name: &str) -> i64 {
+    undo::step(database, None, |connection| {
+        insert_row(connection, "contacts", &values(&[("name", serde_json::json!(name))]))
+    })
+    .unwrap()
+}
+
+fn schema(database: &mut Database, sql: &str) {
+    undo::step(database, Some(sql), |connection| connection.execute_batch(sql).map_err(|e| format!("{e}"))).unwrap();
+}
 
 #[test]
-fn undo_restores_the_previous_state_exactly() {
+fn undo_takes_back_an_added_row_and_keeps_the_ones_before() {
     let mut database = memory();
     contacts(&database);
-    insert_row(
-        &database.connection,
-        "contacts",
-        &values(&[("name", serde_json::json!("kept"))]),
-    )
+    add(&mut database, "kept");
+    add(&mut database, "undone");
+
+    assert!(undo::undo(&mut database).unwrap());
+    assert_eq!(names(&database, "contacts"), vec!["kept"]);
+    assert!(undo::undo(&mut database).unwrap());
+    assert!(names(&database, "contacts").is_empty());
+    assert!(!undo::undo(&mut database).unwrap());
+}
+
+#[test]
+fn undo_puts_back_a_changed_value_and_a_deleted_row() {
+    let mut database = memory();
+    contacts(&database);
+    let ada = add(&mut database, "Ada");
+    let alan = add(&mut database, "Alan");
+
+    undo::step(&mut database, None, |connection| {
+        update_row(connection, "contacts", ada, &values(&[("name", serde_json::json!("Countess"))]))
+    })
     .unwrap();
+    undo::step(&mut database, None, |connection| delete_row(connection, "contacts", alan)).unwrap();
+    assert_eq!(names(&database, "contacts"), vec!["Countess"]);
 
-    db::begin_step(&mut database).unwrap();
-    insert_row(
-        &database.connection,
-        "contacts",
-        &values(&[("name", serde_json::json!("undone"))]),
-    )
+    undo::undo(&mut database).unwrap();
+    assert_eq!(names(&database, "contacts"), vec!["Countess", "Alan"]);
+    undo::undo(&mut database).unwrap();
+    assert_eq!(names(&database, "contacts"), vec!["Ada", "Alan"]);
+}
+
+#[test]
+fn undo_brings_back_rows_a_cascade_removed() {
+    let mut database = memory();
+    schema(
+        &mut database,
+        "CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT);
+         CREATE TABLE child (id INTEGER PRIMARY KEY, name TEXT, parent_id INTEGER REFERENCES parent(id) ON DELETE CASCADE);
+         INSERT INTO parent VALUES (1, 'p');
+         INSERT INTO child VALUES (1, 'c1', 1), (2, 'c2', 1);",
+    );
+    undo::step(&mut database, None, |connection| delete_row(connection, "parent", 1)).unwrap();
+    assert!(names(&database, "child").is_empty());
+
+    undo::undo(&mut database).unwrap();
+    assert_eq!(names(&database, "parent"), vec!["p"]);
+    assert_eq!(names(&database, "child"), vec!["c1", "c2"]);
+}
+
+#[test]
+fn undo_takes_back_a_query_that_changed_every_row() {
+    let mut database = memory();
+    contacts(&database);
+    for name in ["a", "b", "c"] {
+        add(&mut database, name);
+    }
+    undo::step(&mut database, Some("DELETE FROM contacts"), |connection| {
+        db::run(connection, "DELETE FROM contacts", &[])
+    })
     .unwrap();
+    assert!(names(&database, "contacts").is_empty());
 
-    assert!(db::undo_step(&mut database).unwrap());
+    undo::undo(&mut database).unwrap();
+    assert_eq!(names(&database, "contacts"), vec!["a", "b", "c"]);
+}
 
-    let names: Vec<String> = {
-        let mut statement = database
-            .connection
-            .prepare("SELECT name FROM contacts ORDER BY id")
-            .unwrap();
+#[test]
+fn undo_takes_back_a_created_table() {
+    let mut database = memory();
+    schema(&mut database, "CREATE TABLE fresh (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO fresh (name) VALUES ('x');");
+    assert_eq!(list_tables(&database.connection).unwrap().len(), 1);
+
+    undo::undo(&mut database).unwrap();
+    assert_eq!(list_tables(&database.connection).unwrap().len(), 0);
+}
+
+#[test]
+fn undo_brings_back_a_dropped_table_with_its_rows_index_and_trigger() {
+    let mut database = memory();
+    contacts(&database);
+    database
+        .connection
+        .execute_batch(
+            "CREATE INDEX by_name ON contacts(name);
+             CREATE TABLE log (what TEXT);
+             CREATE TRIGGER noted AFTER INSERT ON contacts BEGIN INSERT INTO log VALUES (new.name); END;",
+        )
+        .unwrap();
+    add(&mut database, "first");
+    add(&mut database, "second");
+
+    schema(&mut database, "DROP TABLE \"contacts\";");
+    assert_eq!(list_tables(&database.connection).unwrap().len(), 1);
+
+    undo::undo(&mut database).unwrap();
+    assert_eq!(names(&database, "contacts"), vec!["first", "second"]);
+    let objects: i64 = database
+        .connection
+        .query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('by_name', 'noted')", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(objects, 2);
+    let ids: Vec<i64> = {
+        let mut statement = database.connection.prepare("SELECT id FROM contacts ORDER BY id").unwrap();
         let rows = statement.query_map([], |row| row.get(0)).unwrap();
         rows.map(Result::unwrap).collect()
     };
-    assert_eq!(names, vec!["kept".to_string()]);
+    assert_eq!(ids, vec![1, 2]);
 }
 
 #[test]
-fn undo_restores_the_schema_too() {
+fn undo_takes_back_an_added_column() {
     let mut database = memory();
     contacts(&database);
+    add(&mut database, "Ada");
+    schema(&mut database, "ALTER TABLE contacts ADD COLUMN age INTEGER; UPDATE contacts SET age = 36;");
 
-    db::begin_step(&mut database).unwrap();
-    database
+    undo::undo(&mut database).unwrap();
+    let columns: i64 = database
         .connection
-        .execute_batch("DROP TABLE contacts;")
+        .query_row("SELECT count(*) FROM pragma_table_info('contacts')", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(list_tables(&database.connection).unwrap().len(), 0);
-
-    db::undo_step(&mut database).unwrap();
-    assert_eq!(list_tables(&database.connection).unwrap().len(), 1);
+    assert_eq!(columns, 3);
+    assert_eq!(names(&database, "contacts"), vec!["Ada"]);
 }
 
 #[test]
-fn undo_does_nothing_when_there_is_nothing_to_undo() {
+fn undo_follows_a_table_without_a_primary_key() {
     let mut database = memory();
-    assert!(!db::undo_step(&mut database).unwrap());
+    database.connection.execute_batch("CREATE TABLE loose (name TEXT);").unwrap();
+    undo::step(&mut database, None, |connection| {
+        insert_row(connection, "loose", &values(&[("name", serde_json::json!("x"))]))
+    })
+    .unwrap();
+
+    undo::undo(&mut database).unwrap();
+    assert!(names(&database, "loose").is_empty());
 }
 
-// a file from elsewhere.
+#[test]
+fn a_change_that_fails_leaves_nothing_behind_and_nothing_to_undo() {
+    let mut database = memory();
+    contacts(&database);
+    let failed = undo::step(&mut database, None, |connection| {
+        insert_row(connection, "contacts", &values(&[("note", serde_json::json!("no name"))]))
+    });
+    assert!(failed.is_err());
+    assert!(names(&database, "contacts").is_empty());
+    assert!(!undo::undo(&mut database).unwrap());
+}
+
+#[test]
+fn every_change_is_on_disk_at_once() {
+    let dir = std::env::temp_dir().join(format!("grt-tables-durable-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("durable.sqlite");
+    let _ = fs::remove_file(&path);
+
+    let mut database = Database::create(Some(&path)).unwrap();
+    contacts(&database);
+    add(&mut database, "written");
+
+    let other = rusqlite::Connection::open(&path).unwrap();
+    let count: i64 = other.query_row("SELECT count(*) FROM contacts", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 1);
+
+    drop(other);
+    drop(database);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn undo_reaches_back_a_hundred_changes_and_no_further() {
+    let mut database = memory();
+    contacts(&database);
+    for i in 0..105 {
+        add(&mut database, &format!("n{i}"));
+    }
+    let mut undone = 0;
+    while undo::undo(&mut database).unwrap() {
+        undone += 1;
+    }
+    assert_eq!(undone, 100);
+    assert_eq!(names(&database, "contacts").len(), 5);
+}
+
+#[test]
+fn the_statement_names_what_it_drops_or_alters() {
+    let found = undo::dropped_or_altered(
+        "drop table if exists main.\"Old \"\"one\"\"\"; ALTER TABLE [Two] ADD x; -- drop table nope
+         SELECT 'drop table quoted'; /* alter table hidden */ DROP TABLE three",
+    );
+    let mut found: Vec<_> = found.into_iter().collect();
+    found.sort();
+    assert_eq!(found, vec!["old \"one\"", "three", "two"]);
+}
+
+// A file from elsewhere.
 
 #[test]
 fn an_opened_database_is_read_only_until_it_is_unlocked() {
@@ -351,7 +545,7 @@ fn an_opened_database_is_read_only_until_it_is_unlocked() {
     let mut opened = Database::open(&path).unwrap();
     assert!(opened.read_only);
     assert!(opened.refuse_if_read_only().is_err());
-    assert!(db::begin_step(&mut opened).is_err());
+    assert!(undo::step(&mut opened, None, |_| Ok(())).is_err());
 
     opened.read_only = false;
     assert!(opened.refuse_if_read_only().is_ok());
@@ -368,7 +562,7 @@ fn a_created_database_is_writable_at_once() {
     assert!(database.refuse_if_read_only().is_ok());
 }
 
-// no journal files left behind.
+// No journal files left behind.
 
 #[test]
 fn a_clean_close_leaves_no_wal_or_shm() {
@@ -459,7 +653,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-// what a statement is.
+// What a statement is.
 
 #[test]
 fn a_statement_is_recognised_as_reading_or_writing() {
@@ -534,7 +728,7 @@ fn sqlite_bookkeeping_tables_are_not_offered_for_editing() {
     assert!(!names.iter().any(|name| name.starts_with("sqlite_")));
 }
 
-// two exports are byte-identical.
+// Two exports are byte-identical.
 
 #[test]
 fn two_exports_of_the_same_database_are_identical() {

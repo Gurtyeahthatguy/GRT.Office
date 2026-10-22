@@ -10,10 +10,10 @@ pub struct Database {
     pub connection: Connection,
     pub path: Option<PathBuf>,
     pub read_only: bool,
-    /// How many savepoints are open, which is how deep undo can go.
-    pub depth: usize,
-    /// Savepoints that have been rolled back and can be redone.
-    pub redo: Vec<Vec<String>>,
+    /// The changes that can be taken back, newest last.
+    pub undo: Vec<crate::undo::Step>,
+    /// How many table copies undo has made, to name the next one.
+    pub copies: u64,
 }
 
 impl Database {
@@ -33,8 +33,8 @@ impl Database {
             connection,
             path: path.map(Path::to_path_buf),
             read_only: false,
-            depth: 0,
-            redo: Vec::new(),
+            undo: Vec::new(),
+            copies: 0,
         })
     }
 
@@ -52,8 +52,8 @@ impl Database {
             connection,
             path: Some(path.to_path_buf()),
             read_only: true,
-            depth: 0,
-            redo: Vec::new(),
+            undo: Vec::new(),
+            copies: 0,
         })
     }
 
@@ -73,13 +73,12 @@ fn prepare(connection: &Connection) -> Result<(), String> {
         .execute_batch(
             "PRAGMA foreign_keys = ON;
              PRAGMA journal_mode = DELETE;
-             PRAGMA secure_delete = ON;",
+             PRAGMA secure_delete = ON;
+             PRAGMA temp_store = MEMORY;",
         )
         .map_err(|e| format!("Cannot prepare the database: {e}"))?;
     Ok(())
 }
-
-/* `journal_mode = DELETE` rather than WAL, and `secure_delete = ON`. */
 
 // Identifiers.
 
@@ -212,6 +211,16 @@ pub fn describe_table(connection: &Connection, table: &str) -> Result<serde_json
     }))
 }
 
+fn column_names(connection: &Connection, table: &str) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_info(?1)")
+        .map_err(|e| format!("Cannot read {table}: {e}"))?;
+    let names = statement
+        .query_map([table], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("Cannot read {table}: {e}"))?;
+    names.collect::<Result<_, _>>().map_err(|e| format!("Cannot read {table}: {e}"))
+}
+
 /// One page of a table.
 pub fn select_page(
     connection: &Connection,
@@ -229,10 +238,21 @@ pub fn select_page(
     let mut where_clause = String::new();
     let mut params: Vec<Value> = Vec::new();
 
-    if let (Some(column), Some(value)) = (filter_column, filter_value) {
-        check_ident(column)?;
-        // The column name is quoted; the value is bound.
-        where_clause = format!(" WHERE CAST({} AS TEXT) LIKE ?1", quote_ident(column));
+    // An empty value filters nothing; no column means any of them.
+    if let Some(value) = filter_value.filter(|value| !value.is_empty()) {
+        let columns = match filter_column {
+            Some(column) => {
+                check_ident(column)?;
+                vec![column.to_string()]
+            }
+            None => column_names(connection, table)?,
+        };
+        // The column names are quoted; the value is bound.
+        let tests: Vec<String> = columns
+            .iter()
+            .map(|column| format!("CAST({} AS TEXT) LIKE ?1", quote_ident(column)))
+            .collect();
+        where_clause = if tests.is_empty() { " WHERE 0".to_string() } else { format!(" WHERE {}", tests.join(" OR ")) };
         params.push(Value::Text(format!("%{value}%")));
     }
 
@@ -478,53 +498,9 @@ pub fn run(
     Ok(serde_json::json!({ "columns": names, "rows": out, "changed": 0 }))
 }
 
-// Undo.
-
-/* the other modules undo against a model held in memory. */
-
-pub fn begin_step(database: &mut Database) -> Result<(), String> {
-    database.refuse_if_read_only()?;
-    let name = format!("step{}", database.depth);
-    database
-        .connection
-        .execute_batch(&format!("SAVEPOINT {name};"))
-        .map_err(|e| format!("Cannot start a change: {e}"))?;
-    database.depth += 1;
-    Ok(())
-}
-
-pub fn commit_step(database: &mut Database) -> Result<(), String> {
-    if database.depth == 0 {
-        return Ok(());
-    }
-    let name = format!("step{}", database.depth - 1);
-    database
-        .connection
-        .execute_batch(&format!("RELEASE {name};"))
-        .map_err(|e| format!("Cannot finish a change: {e}"))?;
-    database.depth -= 1;
-    Ok(())
-}
-
-/// Undoes the last change by rolling back to its savepoint.
-pub fn undo_step(database: &mut Database) -> Result<bool, String> {
-    database.refuse_if_read_only()?;
-    if database.depth == 0 {
-        return Ok(false);
-    }
-    let name = format!("step{}", database.depth - 1);
-    database
-        .connection
-        .execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name};"))
-        .map_err(|e| format!("Cannot undo: {e}"))?;
-    database.depth -= 1;
-    Ok(true)
-}
-
 // Preparing to share.
 
-/// 's "prepare for sharing".
-/// allows.
+/// Rewrites the file so that deleted rows are gone from its bytes.
 pub fn vacuum(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch("VACUUM;")

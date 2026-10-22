@@ -32,6 +32,7 @@ export function monthLayout(model, cursor, weekStart = 1) {
       inMonth: parseDate(date).month === month,
       isToday: date === now,
       isWeekend: isWeekend(date, weekStart),
+      entries: all,
       shown: all.slice(0, CELL_CAPACITY),
       hidden: Math.max(0, all.length - CELL_CAPACITY),
       total: all.length,

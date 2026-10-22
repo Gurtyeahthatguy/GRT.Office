@@ -1,6 +1,7 @@
 /** The three blocks a note has and a document does not. */
 
 import { Renderer, runElements, styleCss } from './core/editor/render.js';
+import { linkTarget } from './links.js';
 
 const TONE_MARK = { note: 'i', warning: '!', idea: '*' };
 
@@ -16,13 +17,22 @@ export class NotesRenderer extends Renderer {
 
   blockElement(block, model, images) {
     if (block.kind === 'embed') return this.embedElement(block);
+    if (block.kind === 'raw') {
+      const element = super.blockElement({ ...block, kind: 'code', style: 'code' }, model, images);
+      element.classList.add('raw');
+      element.title = 'Markdown kept as it was written';
+      return element;
+    }
 
     const element = block.kind === 'todo' ? this.todoElement(block, model)
       : block.kind === 'callout' ? this.calloutElement(block, model)
         : super.blockElement(block, model, images);
 
     // Links are marked here, once, on whatever the renderer produced.
-    if (block.kind !== 'code') markLinks(element, this.resolveLink);
+    if (block.kind !== 'code') {
+      markLinks(element, this.resolveLink);
+      markComments(element);
+    }
 
     return element;
   }
@@ -74,7 +84,21 @@ export class NotesRenderer extends Renderer {
     text.dataset.blockText = block.id;
     text.append(...runElements(block.runs));
 
-    box.append(mark, text);
+    box.append(mark);
+    // Obsidian's callouts have a type and a title, shown above the text.
+    if (block.calloutType || block.title) {
+      const heading = document.createElement('div');
+      heading.className = 'callout-title';
+      heading.setAttribute('contenteditable', 'false');
+      const type = String(block.calloutType ?? block.tone ?? 'note');
+      heading.textContent = block.title || type.charAt(0).toUpperCase() + type.slice(1);
+      const body = document.createElement('div');
+      body.className = 'callout-body';
+      body.append(heading, text);
+      box.append(body);
+    } else {
+      box.append(text);
+    }
     return box;
   }
 
@@ -121,17 +145,42 @@ function markLinks(root, resolveLink) {
         continue;
       }
 
-      const title = match[1].trim();
+      const title = linkTarget(match[1]);
       const target = resolveLink(title);
       const link = document.createElement('span');
       link.className = target ? 'note-link' : 'note-link unresolved';
       link.dataset.action = 'open-link';
       link.dataset.title = title;
       link.textContent = piece;
-      link.title = target ? title : `${title} — no note with this title yet`;
+      link.title = target ? title : `${title}: no note with this title yet`;
       fragment.append(link);
     }
 
+    node.replaceWith(fragment);
+  }
+}
+
+/** Obsidian's comments, `%%…%%`, shown faintly: they are in the file but not in the reading. */
+function markComments(root) {
+  const walker = document.createTreeWalker(root, 4 /** NodeFilter.SHOW_TEXT. */);
+  const targets = [];
+  while (walker.nextNode()) {
+    if (walker.currentNode.nodeValue.includes('%%')) targets.push(walker.currentNode);
+  }
+  for (const node of targets) {
+    const pieces = String(node.nodeValue).split(/(%%[^%]*%%)/g);
+    if (pieces.length === 1) continue;
+    const fragment = document.createDocumentFragment();
+    for (const piece of pieces) {
+      if (/^%%[^%]*%%$/.test(piece)) {
+        const span = document.createElement('span');
+        span.className = 'note-comment';
+        span.textContent = piece;
+        fragment.append(span);
+      } else if (piece) {
+        fragment.append(document.createTextNode(piece));
+      }
+    }
     node.replaceWith(fragment);
   }
 }

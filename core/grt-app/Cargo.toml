@@ -1,0 +1,20 @@
+[package]
+name = "grt-app"
+version = "0.1.0"
+description = "What every GRT program's backend shares: the close guard, recovery copies and packages"
+authors = ["GRT Project"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json = "1"
+percent-encoding = "2"
+grt-container = { path = "../grt-container" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+webkit2gtk = "2.0"

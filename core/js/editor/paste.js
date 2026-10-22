@@ -60,8 +60,13 @@ export function blocksFromHtml(html, document) {
     target.push({ text, ...marks });
   };
 
-  const walk = (node, marks, listContext) => {
+  const walk = (node, marks, listContext, inPre = false) => {
     if (node.nodeType === 3) {
+      // Code keeps its lines and spaces as they were.
+      if (inPre) {
+        addRun(node.nodeValue.replace(/\r\n?/g, '\n'), marks);
+        return;
+      }
       // Collapse whitespace the way HTML does, or a pasted page arrives full
       // of the newlines and indentation of its source.
       const text = node.nodeValue.replace(/\s+/g, ' ');
@@ -79,7 +84,7 @@ export function blocksFromHtml(html, document) {
     }
 
     if (tag === 'br') {
-      addRun(' ', marks);
+      addRun(inPre ? '\n' : ' ', marks);
       return;
     }
 
@@ -101,9 +106,11 @@ export function blocksFromHtml(html, document) {
     }
 
     if (tag === 'ul' || tag === 'ol') {
-      const block = open('list', { listType: tag === 'ol' ? 'number' : 'bullet' });
-      block.items = [];
-      const level = (listContext?.level ?? -1) + 1;
+      // A list inside an item adds deeper items to the same list.
+      const outer = listContext?.block ?? null;
+      const block = outer ?? open('list', { listType: tag === 'ol' ? 'number' : 'bullet' });
+      if (!outer) block.items = [];
+      const level = Math.min((listContext?.level ?? -1) + 1, 5);
 
       for (const child of node.children) {
         if (child.nodeName.toLowerCase() !== 'li') continue;
@@ -111,6 +118,7 @@ export function blocksFromHtml(html, document) {
         walk(child, marks, { block, level });
       }
 
+      if (outer) return;
       if (block.items.length === 0) block.items.push({ level: 0, runs: [{ text: '' }] });
       current = null;
       return;
@@ -124,7 +132,7 @@ export function blocksFromHtml(html, document) {
     const asBlock = BLOCK_TAGS[tag];
     if (asBlock) {
       open(asBlock.kind, asBlock);
-      for (const child of node.childNodes) walk(child, marks, listContext);
+      for (const child of node.childNodes) walk(child, marks, listContext, inPre || tag === 'pre');
       current = null;
       return;
     }
@@ -140,7 +148,7 @@ export function blocksFromHtml(html, document) {
       dropped.add(tag);
     }
 
-    for (const child of node.childNodes) walk(child, next, listContext);
+    for (const child of node.childNodes) walk(child, next, listContext, inPre);
   };
 
   for (const child of parsed.body.childNodes) walk(child, {}, null);

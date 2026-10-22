@@ -101,6 +101,7 @@ export class SlidesModel {
 
     if (document) this.load(document);
     if (this.slides.length === 0) this.addSlide();
+    this.dirty = false;
   }
 
   // Slides
@@ -239,7 +240,9 @@ export class SlidesModel {
         ? { resource: element.resource ?? null, fit: element.fit ?? 'contain' }
         : {}),
       ...(element.kind === 'shape'
-        ? { shape: SHAPES.includes(element.shape) ? element.shape : 'rect' }
+        ? (element.shape === 'path' && typeof element.path === 'string'
+          ? { shape: 'path', path: element.path }
+          : { shape: SHAPES.includes(element.shape) ? element.shape : 'rect' })
         : {}),
       ...(element.kind === 'line'
         ? { thickness: element.thickness ?? 4, arrow: element.arrow ?? false }
@@ -381,6 +384,26 @@ export class SlidesModel {
       if (this.styles[style]) this.styles[style] = { ...this.styles[style], ...patch };
     }
     // Slides carrying their own background keep it.
+    this.dirty = true;
+  }
+
+  /** Text size, alignment and anchoring for elements that need their own; null follows the style. */
+  setElementText(slideId, ids, { size = undefined, align = undefined, valign = undefined } = {}) {
+    const slide = this.slide(slideId);
+    if (!slide) return;
+    const chosen = new Set(ids);
+    for (const element of slide.elements) {
+      if (!chosen.has(element.id) || !['text', 'table'].includes(element.kind)) continue;
+      if (size !== undefined) {
+        if (size > 0) element.size = Math.round(size); else delete element.size;
+      }
+      if (align !== undefined) {
+        if (ALIGNMENTS.includes(align)) element.align = align; else delete element.align;
+      }
+      if (valign !== undefined && element.kind === 'text') {
+        if (['middle', 'bottom'].includes(valign)) element.valign = valign; else delete element.valign;
+      }
+    }
     this.dirty = true;
   }
 

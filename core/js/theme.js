@@ -3,6 +3,7 @@
 export const THEMES = [
   { id: 'system', label: 'System' },
   { id: 'light', label: 'Light' },
+  { id: 'sepia', label: 'Sepia' },
   { id: 'dark', label: 'Dark' },
   { id: 'gold', label: 'Gold' },
   { id: 'purple', label: 'Purple' },

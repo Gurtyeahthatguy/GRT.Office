@@ -4,7 +4,7 @@ pub mod manifest;
 pub mod zip;
 
 pub use manifest::{Link, Manifest, Part};
-pub use zip::{read_archive, write_archive, Entry};
+pub use zip::{read_archive, recover_archive, write_archive, write_zip, Entry, Item, Recovered};
 
 /// Text placed first in every archive, in the clear.
 pub const README_NAME: &str = "README.txt";

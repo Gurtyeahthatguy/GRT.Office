@@ -13,8 +13,13 @@ Part of [GRT Suite](../../README.md). Design document:
 - A data grid, paginated in the engine rather than in the window
 - Sorting, filtering and search by column
 - A SQL editor, with a warning before anything that would change every row
-- Undo, as a rollback to a savepoint
-- CSV import with proposed column types, and CSV export
+- Undo of the last hundred changes, rows, queries and tables alike, each one
+  written to the file as it is made
+- Import of CSV files and of spreadsheets' sheets (`.ods`, `.xlsx`) as tables,
+  with proposed column types
+- Export of a table, a query's result or every table to CSV, OpenDocument or
+  Excel
+- Printing a table or a query's result, the column names on every page
 - A readable `.grt` archive of schema and data
 - "Prepare for sharing", which compacts the file so deleted rows are gone
 
@@ -71,9 +76,9 @@ Coarser than the document imagines, and it errs towards asking.
 
 ## Not yet
 
-Forms, reports, PDF export and the visual query builder, §7 steps 11, 12, 15
-and 16. Steps 1 to 10 are done, plus 13 and 14, which is past the milestone the
-document names.
+Forms, reports and the visual query builder, from §7 of the design document.
+Steps 1 to 10 are done, plus 13 and 14, which is past the milestone the document
+names, and printing and spreadsheet import and export have joined them.
 
 ## Building
 

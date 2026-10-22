@@ -26,6 +26,46 @@ async function embedImage(doc, bytes) {
   return null;
 }
 
+/** The characters the standard PDF fonts can draw: Latin-1 and Windows-1252's extras. */
+const WIN_ANSI_EXTRA = new Set([...'€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ']);
+const SUBSTITUTES = {
+  '→': '->', '←': '<-', '↔': '<->', '⇒': '=>', '≤': '<=', '≥': '>=', '≠': '!=', '−': '-', '‐': '-',
+  '‑': '-', '‒': '-', '―': '-', '′': "'", '″': '"', '✓': 'v', '✔': 'v', '✗': 'x', '☐': '[ ]', '☑': '[x]',
+};
+
+const drawable = (char) => {
+  const code = char.codePointAt(0);
+  return (code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff) || WIN_ANSI_EXTRA.has(char);
+};
+
+/**
+ * Text the standard fonts can draw: a close equivalent, or the letter
+ * without its accent, or a question mark, for every character they cannot.
+ * @returns {{text: string, replaced: number}}
+ */
+export function drawableText(text) {
+  let out = '';
+  let replaced = 0;
+  for (const char of String(text ?? '')) {
+    if (drawable(char)) {
+      out += char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      out += ' ';
+      continue;
+    }
+    replaced += 1;
+    if (SUBSTITUTES[char]) {
+      out += SUBSTITUTES[char];
+      continue;
+    }
+    const bare = char.normalize('NFKD').replace(/\p{M}/gu, '');
+    out += [...bare].every(drawable) && bare !== '' ? bare : '?';
+  }
+  return { text: out, replaced };
+}
+
 const colour = (value, fallback = undefined) => {
   if (!value || value === 'none') return fallback;
   const hex = String(value).replace('#', '');
@@ -41,15 +81,24 @@ const colour = (value, fallback = undefined) => {
 /**
  * Draws a page and returns the PDF bytes.
  * @param {{width: number, height: number, primitives: Primitive[]}} page
- * @param {{audit?: boolean}} [options]
+ * @param {{audit?: boolean, report?: {replaced: number}}} [options] `report`
+ *        counts the characters the PDF font could not draw
  * @returns {Promise<Uint8Array>}
  */
 export async function renderToPdf(page, options = {}) {
-  const { audit = true } = options;
+  const { audit = true, report = null } = options;
 
   const doc = await PDFDocument.create({ updateMetadata: false });
   const pdfPage = doc.addPage([page.width, page.height]);
-  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const fonts = new Map();
+  const fontFor = async (bold, italic) => {
+    const name = bold && italic ? StandardFonts.HelveticaBoldOblique
+      : bold ? StandardFonts.HelveticaBold
+        : italic ? StandardFonts.HelveticaOblique
+          : StandardFonts.Helvetica;
+    if (!fonts.has(name)) fonts.set(name, await doc.embedFont(name));
+    return fonts.get(name);
+  };
 
   // Callers work in screen coordinates; PDF counts upwards from the bottom.
   const flip = (y) => page.height - y;
@@ -92,6 +141,18 @@ export async function renderToPdf(page, options = {}) {
           color: colour(item.fill),
           borderColor: colour(item.stroke),
           borderWidth: item.strokeWidth ?? 0,
+        });
+        break;
+      }
+
+      case 'path': {
+        if (!item.d) break;
+        pdfPage.drawSvgPath(item.d, {
+          x: 0,
+          y: page.height,
+          color: colour(item.fill),
+          borderColor: colour(item.stroke),
+          borderWidth: item.stroke ? item.strokeWidth ?? 1 : 0,
         });
         break;
       }
@@ -145,12 +206,26 @@ export async function renderToPdf(page, options = {}) {
 
       case 'text': {
         const size = item.size ?? 12;
-        const width = font.widthOfTextAtSize(item.text ?? '', size);
+        const font = await fontFor(!!item.bold, !!item.italic);
+        const drawable = drawableText(item.text);
+        if (report) report.replaced += drawable.replaced;
+        let { text } = drawable;
+        if (item.maxWidth > 0 && font.widthOfTextAtSize(text, size) > item.maxWidth) {
+          let low = 0;
+          let high = text.length;
+          while (low < high) {
+            const middle = (low + high + 1) >> 1;
+            if (font.widthOfTextAtSize(text.slice(0, middle), size) <= item.maxWidth) low = middle;
+            else high = middle - 1;
+          }
+          text = text.slice(0, low);
+        }
+        const width = font.widthOfTextAtSize(text, size);
         const x = item.align === 'center' ? item.x - width / 2
           : item.align === 'right' ? item.x - width
             : item.x;
 
-        pdfPage.drawText(item.text ?? '', {
+        pdfPage.drawText(text, {
           x,
           // drawText places the baseline; callers give the text's top edge.
           y: flip(item.y) - size * 0.8,
@@ -179,4 +254,16 @@ export async function renderToPdf(page, options = {}) {
   }
 
   return bytes;
+}
+
+/** Joins single-page PDFs into one, metadata stripped like every PDF the suite writes. */
+export async function mergePdfPages(pages) {
+  const output = await PDFDocument.create({ updateMetadata: false });
+  for (const bytes of pages) {
+    const source = await PDFDocument.load(bytes, { updateMetadata: false });
+    const copied = await output.copyPages(source, source.getPageIndices());
+    for (const page of copied) output.addPage(page);
+  }
+  stripMetadata(output);
+  return output.save({ useObjectStreams: true, addDefaultPage: false });
 }

@@ -43,6 +43,8 @@
       </div>
 
       <div class="group">
+        <button id="btn-print" title="Print (Ctrl+P)">Print</button>
+        <button id="btn-vault" title="Open a folder of Markdown notes, an Obsidian vault, in place of the archive">Open vault</button>
         <button id="btn-settings" title="Settings">Settings</button>
       </div>
     </header>
@@ -65,6 +67,7 @@
         <div class="note-head">
           <input id="note-title" class="note-title" placeholder="Untitled note" />
           <input id="note-tags" class="note-tags" placeholder="#tags" />
+          <button id="btn-properties" class="note-properties" title="Properties">Properties</button>
         </div>
 
         <div
@@ -83,7 +86,7 @@
     </main>
 
     <footer class="statusbar">
-      <span id="ephemeral" class="badge hidden">Ephemeral — nothing is written unless you ask</span>
+      <span id="ephemeral" class="badge hidden">Ephemeral: nothing is written unless you ask</span>
       <span id="save-state" class="save-state"></span>
       <span class="spacer"></span>
       <span class="dim">GRT Notes <span id="version"></span></span>
@@ -99,6 +102,8 @@
         </div>
       </div>
     </div>
+
+    <div id="toast" class="toast hidden" role="status"></div>
 
     <script type="module" src="js/main.js"></script>
   </body>

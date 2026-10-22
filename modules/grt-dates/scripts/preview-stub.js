@@ -56,12 +56,15 @@ function offsetDay(days) {
 
 // Every call is recorded, so the same fake can serve the boot test as well as
 // the browser preview.
-window.__TAURI_CALLS__ = [];
+const calls = [];
+window.__TAURI_CALLS__ = calls;
+const listeners = {};
+window.__TAURI_LISTENERS__ = listeners;
 
 window.__TAURI__ = {
   core: {
     invoke: async (command, payload, options) => {
-      window.__TAURI_CALLS__.push({ command, payload, options });
+      calls.push({ command, payload, options });
       switch (command) {
         case 'runtime_info':
           return {
@@ -92,6 +95,13 @@ window.__TAURI__ = {
 
         default: return null;
       }
+    },
+  },
+  // The request to close the window.
+  event: {
+    listen: async (name, handler) => {
+      listeners[name] = handler;
+      return () => {};
     },
   },
 };

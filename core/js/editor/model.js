@@ -19,19 +19,88 @@ export const ALIGNMENTS = ['left', 'center', 'right', 'justify'];
 /** Run attributes that are simply on or off. */
 export const MARKS = ['bold', 'italic', 'underline', 'strike', 'sup', 'sub'];
 
+/** Headers and footers: a slot is one line, `{page}` and `{pages}` filled in when drawn. */
+export const SLOT_ALIGNMENTS = ['left', 'center', 'right'];
+
+export const DEFAULT_RUNNING = {
+  firstDifferent: false,
+  evenDifferent: false,
+  header: { default: null, first: null, even: null },
+  footer: { default: null, first: null, even: null },
+};
+
 export const DEFAULT_PAGE = {
   size: 'A4',
   orientation: 'portrait',
   margins: { top: 25, right: 25, bottom: 25, left: 25 },
+  running: DEFAULT_RUNNING,
 };
 
-/** Page sizes in millimetres. */
+/** A slot as stored, or null when it says nothing. */
+export function normaliseSlot(slot) {
+  if (!slot || typeof slot.text !== 'string' || slot.text === '') return null;
+  return { text: slot.text, align: SLOT_ALIGNMENTS.includes(slot.align) ? slot.align : 'center' };
+}
+
+export function normaliseRunning(running) {
+  const out = structuredClone(DEFAULT_RUNNING);
+  out.firstDifferent = !!running?.firstDifferent;
+  out.evenDifferent = !!running?.evenDifferent;
+  for (const part of ['header', 'footer']) {
+    for (const which of ['default', 'first', 'even']) {
+      out[part][which] = normaliseSlot(running?.[part]?.[which]);
+    }
+  }
+  return out;
+}
+
+/** The slot drawn on page `number` (from 1), with its fields filled in; null when empty. */
+export function slotFor(running, part, number, total) {
+  const slots = running?.[part];
+  if (!slots) return null;
+  let slot = slots.default;
+  if (running.firstDifferent && number === 1) slot = slots.first;
+  else if (running.evenDifferent && number % 2 === 0) slot = slots.even;
+  if (!slot) return null;
+  return {
+    align: slot.align,
+    text: slot.text.replaceAll('{pages}', String(total)).replaceAll('{page}', String(number)),
+  };
+}
+
+/** Page sizes in millimetres, portrait. */
 export const PAGE_SIZES = {
+  A3: { w: 297, h: 420, label: 'A3' },
   A4: { w: 210, h: 297, label: 'A4' },
   A5: { w: 148, h: 210, label: 'A5' },
+  A6: { w: 105, h: 148, label: 'A6' },
+  B5: { w: 176, h: 250, label: 'B5' },
   Letter: { w: 216, h: 279, label: 'Letter' },
   Legal: { w: 216, h: 356, label: 'Legal' },
+  Executive: { w: 184, h: 267, label: 'Executive' },
+  Tabloid: { w: 279, h: 432, label: 'Tabloid' },
 };
+
+const CUSTOM_LIMITS = { min: 25, max: 1200 };
+
+/** A page's size, portrait, in millimetres: a named one, or its own width and height. */
+export function pageDimensions(page) {
+  if (page?.size === 'custom' && page.width > 0 && page.height > 0) {
+    return { w: Math.min(page.width, page.height), h: Math.max(page.width, page.height) };
+  }
+  return PAGE_SIZES[page?.size] ?? PAGE_SIZES.A4;
+}
+
+/** The fields for a size read from a file: a named size that fits, or a custom one. */
+export function pageSizeFields(width, height) {
+  const short = Math.min(width, height);
+  const long = Math.max(width, height);
+  for (const [id, size] of Object.entries(PAGE_SIZES)) {
+    if (Math.abs(size.w - short) <= 2 && Math.abs(size.h - long) <= 2) return { size: id };
+  }
+  const clamp = (mm) => Math.round(Math.max(CUSTOM_LIMITS.min, Math.min(CUSTOM_LIMITS.max, mm)) * 10) / 10;
+  return { size: 'custom', width: clamp(short), height: clamp(long) };
+}
 
 const DEFAULT_STYLES = {
   body: { font: 'serif', size: 11, lineHeight: 1.5, spaceBefore: 0, spaceAfter: 6 },
@@ -305,13 +374,14 @@ export class DocumentModel {
       ...this.page,
       ...patch,
       margins: { ...this.page.margins, ...(patch.margins ?? {}) },
+      running: normaliseRunning(patch.running ?? this.page.running),
     };
     this.dirty = true;
   }
 
   /** The text area of a page, in millimetres. */
   pageBox() {
-    const size = PAGE_SIZES[this.page.size] ?? PAGE_SIZES.A4;
+    const size = pageDimensions(this.page);
     const portrait = this.page.orientation !== 'landscape';
     const w = portrait ? size.w : size.h;
     const h = portrait ? size.h : size.w;
@@ -363,6 +433,7 @@ export class DocumentModel {
       ...structuredClone(DEFAULT_PAGE),
       ...(document.page ?? {}),
       margins: { ...DEFAULT_PAGE.margins, ...(document.page?.margins ?? {}) },
+      running: normaliseRunning(document.page?.running),
     };
     this.styles = { ...structuredClone(DEFAULT_STYLES), ...(document.styles ?? {}) };
     this.fonts = Array.isArray(document.fonts) ? structuredClone(document.fonts) : [];

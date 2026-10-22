@@ -20,6 +20,15 @@ export function noteFileName(order, title) {
   return `${String(order).padStart(WIDTH, '0')}-${slugify(title)}.grt`;
 }
 
+/** A note's file in a vault: its title as Obsidian names files, without what file systems refuse. */
+export function vaultFileName(title, taken = []) {
+  const base = String(title ?? '').replace(/[\\/:*?"<>|#^[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Untitled';
+  const used = new Set(taken.map((name) => String(name).toLowerCase()));
+  let name = base;
+  for (let n = 1; used.has(name.toLowerCase()); n += 1) name = `${base} ${n}`;
+  return `${name}.md`;
+}
+
 /** Reads the order and the slug back out of a file name. */
 export function parseNoteFile(stem) {
   const match = /^(\d+)-(.*)$/.exec(String(stem));

@@ -20,8 +20,9 @@
       </div>
 
       <div class="group">
-        <button id="btn-import-csv">Import CSV</button>
-        <button id="btn-export-csv">Export CSV</button>
+        <button id="btn-import-csv" title="Import a CSV file or a spreadsheet's sheets as tables">Import</button>
+        <button id="btn-export-csv" title="Export as a spreadsheet or CSV">Export</button>
+        <button id="btn-print" title="Print (Ctrl+P)">Print</button>
         <button id="btn-export-grt" title="A readable archive of schema and data">Export archive</button>
         <button id="btn-import-grt">Import archive</button>
       </div>
@@ -89,7 +90,7 @@
     <footer class="statusbar">
       <span id="db-path" class="dim"></span>
       <span class="spacer"></span>
-      <span id="ephemeral" class="badge hidden">Ephemeral — the database is in memory</span>
+      <span id="ephemeral" class="badge hidden">Ephemeral: the database is in memory</span>
       <span class="dim">GRT Tables <span id="version"></span></span>
     </footer>
 

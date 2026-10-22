@@ -176,6 +176,35 @@ describe('PDF', () => {
     expect(page.width).toBeCloseTo(419.5, 0);
   });
 
+  it('draws headers and footers with their page numbers, on the pages they belong to', () => {
+    const model = document();
+    model.blocks.push({ id: 'p2', kind: 'paragraph', breakBefore: true, runs: [{ text: 'Two' }] });
+    model.blocks.push({ id: 'p3', kind: 'paragraph', breakBefore: true, runs: [{ text: 'Three' }] });
+    model.setPage({
+      running: {
+        firstDifferent: true,
+        evenDifferent: true,
+        header: { default: { text: 'Odd', align: 'left' }, first: null, even: { text: 'Even', align: 'right' } },
+        footer: { default: { text: '{page} of {pages}', align: 'center' }, first: { text: 'Cover', align: 'center' }, even: null },
+      },
+    });
+    const pages = toPrintPages(model);
+    const marks = pages.map((page) => page.primitives
+      .filter((p) => ['Odd', 'Even', 'Cover'].includes(p.text) || / of /.test(p.text))
+      .map((p) => `${p.text}@${p.align}`));
+    expect(marks).toEqual([['Cover@center'], ['Even@right'], ['Odd@left', '3 of 3@center']]);
+    const header = pages[2].primitives.find((p) => p.text === 'Odd');
+    expect(header.y).toBeLessThan(model.page.margins.top * (72 / 25.4));
+  });
+
+  it('a page of its own size keeps it', () => {
+    const model = document();
+    model.setPage({ size: 'custom', width: 100, height: 200 });
+    const [page] = toPrintPages(model);
+    expect(page.width).toBeCloseTo(100 * (72 / 25.4), 1);
+    expect(page.height).toBeCloseTo(200 * (72 / 25.4), 1);
+  });
+
   it('landscape swaps the sides', () => {
     const model = document();
     model.setPage({ orientation: 'landscape' });

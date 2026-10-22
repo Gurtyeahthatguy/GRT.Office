@@ -38,7 +38,10 @@ export class Interaction {
     surface.addEventListener('mousedown', (e) => this.down(e));
     window.addEventListener('mousemove', (e) => this.move(e));
     window.addEventListener('mouseup', (e) => this.up(e));
-    surface.addEventListener('dblclick', (e) => this.doubleClick(e));
+    surface.addEventListener('dblclick', (e) => {
+      if (this.doubled) this.doubled = false;
+      else this.doubleClick(e);
+    });
   }
 
   attach(model, slideId) {
@@ -57,6 +60,15 @@ export class Interaction {
 
     // A box being edited belongs to the caret.
     if (event.target?.closest?.('.editing')) return;
+
+    // The second press of a double click.
+    this.doubled = event.detail === 2;
+    if (this.doubled) {
+      event.preventDefault();
+      this.doubleClick(event);
+      return;
+    }
+
     const point = this.renderer.toSlide(event.clientX, event.clientY);
     const hit = hitTarget(event.target);
 

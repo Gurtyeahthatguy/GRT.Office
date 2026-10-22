@@ -233,6 +233,7 @@ export class Engine {
     }
 
     sheet.cells = moved;
+    sheet.shiftAxis(change);
 
     // Every formula in the document may refer to the cells that moved, so all
     // of them are rewritten.

@@ -6,13 +6,21 @@ import { EditorController } from './core/editor/controller.js';
 import { showPanel, readFields, escapeHtml, isDialogOpen } from './core/panel.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
 import { THEMES, applyTheme } from './core/theme.js';
+import { SaveBeforeClose } from './core/closing.js';
 
-import { NoteDocument, makeTodo, makeCallout, makeEmbed, parseTagInput } from './note.js';
+import {
+  NoteDocument, makeTodo, makeCallout, makeEmbed, parseTagInput, toParts,
+} from './note.js';
 import { NotesRenderer } from './render-notes.js';
 import * as tree from './tree.js';
 import * as links from './links.js';
 import * as search from './search.js';
-import { noteToMarkdown, archiveToMarkdown } from './export.js';
+import { noteToMarkdown, archiveToMarkdown, noteToDocument } from './export.js';
+import { writePackage } from './core/package.js';
+import { writeOdt } from './core/formats/odt-write.js';
+import { writeDocx } from './core/formats/docx-write.js';
+import { printPreview, pageControls, isPrintPreviewOpen } from './core/print.js';
+import { printablePages } from './printing.js';
 import * as io from './io.js';
 import * as settingsStore from './settings.js';
 
@@ -38,6 +46,30 @@ let titleIndex = links.buildTitleIndex([]);
 let renderer = null;
 let saveState = 'idle';
 
+let toastTimer = null;
+function toast(message, isError = false) {
+  const node = el('toast');
+  node.textContent = message;
+  node.classList.toggle('error', isError);
+  node.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => node.classList.add('hidden'), 3400);
+}
+
+/** Why the last save failed, for the question asked when closing. */
+let saveProblem = null;
+
+/** Closing waits for the note being typed to reach its file. */
+const closing = new SaveBeforeClose({
+  pending: () => !runtime.ephemeral && !!notePath && note.dirty,
+  flush: async () => {
+    clearTimeout(typingSaveTimer);
+    if (await saveNow()) return true;
+    throw new Error(saveProblem ?? 'the note was not written');
+  },
+  toast,
+});
+
 // Startup
 
 async function start() {
@@ -50,7 +82,7 @@ async function start() {
   renderer = new NotesRenderer(surface(), {
     resolveLink: (title) => links.resolve(title, titleIndex),
   });
-  editor = new EditorController(surface(), renderer, { onChange: refreshAfterEdit });
+  editor = new EditorController(surface(), renderer, { onChange: refreshAfterEdit, lineBreaks: true });
 
   await loadArchive();
   await reindex();
@@ -60,10 +92,24 @@ async function start() {
   else await newNote();
 
   wire();
+  await closing.start();
   refresh();
 }
 
+/** Whether the notes are an Obsidian vault rather than the GRT archive. */
+const inVault = () => Boolean(archive.vault);
+
 async function loadArchive() {
+  if (settings.vault) {
+    try {
+      archive = await io.readVault(settings.vault);
+      return;
+    } catch (error) {
+      await io.notify(`Cannot open the vault.\n\n${error}`, 'Vault');
+      settings.vault = null;
+      settingsStore.save(settings);
+    }
+  }
   try {
     archive = await io.readArchive(settings.root);
   } catch (error) {
@@ -138,23 +184,29 @@ async function saveNow() {
   if (runtime.ephemeral) { showSaveState('unsaved'); return false; }
   if (!notePath || !note.dirty) return true;
 
+  const written = note;
+  const parts = JSON.stringify(toParts(written));
   showSaveState('saving');
   try {
-    await io.writeNote(notePath, note);
-    note.dirty = false;
+    await io.writeNote(notePath, written);
+    if (JSON.stringify(toParts(written)) === parts) written.dirty = false;
     showSaveState('saved');
     await indexCurrent();
     return true;
   } catch (error) {
+    saveProblem = String(error?.message ?? error);
     showSaveState('failed');
     console.warn(`Cannot save: ${error}`);
     return false;
+  } finally {
+    closing.update();
   }
 }
 
 /** Text edits are collected briefly; everything else writes immediately. */
 function autoSave({ typed = false } = {}) {
   if (runtime.ephemeral) { showSaveState('unsaved'); return; }
+  closing.update();
   clearTimeout(typingSaveTimer);
   if (typed) typingSaveTimer = setTimeout(() => { saveNow(); }, 600);
   else saveNow();
@@ -187,6 +239,7 @@ function refresh() {
   drawHeader();
   drawBacklinks();
   updateToolbar();
+  el('btn-vault').textContent = inVault() ? 'Close vault' : 'Open vault';
 }
 
 function drawHeader() {
@@ -330,7 +383,10 @@ async function newNote({ folder = null, title = '', body = null } = {}) {
   }
   fresh.dirty = true;
 
-  const path = tree.join(target, tree.noteFileName(tree.nextOrder(siblings), title || 'note'));
+  const path = inVault()
+    ? tree.join(target, tree.vaultFileName(title, siblings))
+    : tree.join(target, tree.noteFileName(tree.nextOrder(siblings), title || 'note'));
+  if (inVault()) fresh.setTitle(tree.baseName(path).replace(/\.md$/i, ''));
 
   note = fresh;
   notePath = path;
@@ -349,11 +405,19 @@ async function syncFileName() {
   if (!notePath || runtime.ephemeral) return;
 
   const folder = tree.parentOf(notePath);
-  const { order } = tree.parseNoteFile(tree.baseName(notePath).replace(/\.grt$/, ''));
-  const wanted = tree.join(folder, tree.noteFileName(
-    Number.isFinite(order) && order < Number.MAX_SAFE_INTEGER ? order : 1,
-    note.title || 'note',
-  ));
+  let wanted;
+  if (inVault()) {
+    const others = tree.allNotes(archive)
+      .filter((page) => tree.parentOf(page.path) === folder && page.path !== notePath)
+      .map((page) => page.file);
+    wanted = tree.join(folder, tree.vaultFileName(note.title, others));
+  } else {
+    const { order } = tree.parseNoteFile(tree.baseName(notePath).replace(/\.grt$/, ''));
+    wanted = tree.join(folder, tree.noteFileName(
+      Number.isFinite(order) && order < Number.MAX_SAFE_INTEGER ? order : 1,
+      note.title || 'note',
+    ));
+  }
 
   if (wanted === notePath) return;
 
@@ -529,6 +593,7 @@ function maybeComplete() {
     row.textContent = title;
     list.append(row);
   }
+  list.firstChild.classList.add('active');
   box.replaceChildren(list);
   box.classList.remove('hidden');
 }
@@ -576,13 +641,131 @@ async function quickNote() {
 // Export
 
 async function exportNote() {
-  const { text, lost } = noteToMarkdown(note);
-  const path = await io.pickToSave(`${tree.slugify(note.title || 'note')}.md`);
-  if (!path) return;
-  await io.writeText(path, text);
-  if (lost.length > 0) {
-    await io.notify(`Saved.\n\nMarkdown cannot carry: ${lost.join(', ')}.`, 'Exported');
+  const confirmed = await showPanel('Export this note', `
+    <label>As<select data-field="format">
+      <option value="md">Markdown (.md)</option>
+      <option value="odt">OpenDocument text (.odt)</option>
+      <option value="docx">Word document (.docx)</option>
+    </select></label>
+    <p class="hint">OpenDocument and Word files open in GRT Paper, LibreOffice and Word.</p>
+  `, 'Choose file');
+  if (!confirmed) return;
+  const { format } = readFields();
+  const filters = { md: io.FILTERS.md, odt: [{ name: 'OpenDocument text', extensions: ['odt'] }], docx: [{ name: 'Word document', extensions: ['docx'] }] };
+  const chosen = await io.pickToSave(`${tree.slugify(note.title || 'note')}.${format}`, filters[format]);
+  if (!chosen) return;
+  const path = /\.[^./\\]+$/.test(chosen) ? chosen.replace(/\.[^./\\]+$/, `.${format}`) : `${chosen}.${format}`;
+  let lost;
+  if (format === 'md') {
+    const result = noteToMarkdown(note);
+    await io.writeText(path, result.text);
+    lost = result.lost;
+  } else {
+    const { document, lost: dropped } = noteToDocument(note);
+    const { entries, losses } = format === 'odt' ? writeOdt(document, new Map()) : writeDocx(document, new Map());
+    await writePackage(path, entries);
+    lost = [...dropped, ...losses.lines()];
   }
+  if (lost.length > 0) await io.notify(`Saved.\n\nIt cannot carry: ${lost.join(', ')}.`, 'Exported');
+  else toast(`Exported ${tree.baseName(path)}`);
+}
+
+// Printing
+
+let printSetup = { size: 'A4', orientation: 'portrait', margin: 20 };
+
+async function printNote() {
+  await saveNow();
+  printSetup = await printPreview({
+    title: 'Print',
+    setup: printSetup,
+    controls: (s) => pageControls(s, { margins: true }),
+    build: (s) => printablePages(note, renderer, s),
+  });
+}
+
+// An Obsidian vault
+
+async function openVault() {
+  const folder = await io.pickDirectory('Choose an Obsidian vault');
+  if (!folder) return;
+  let checked;
+  try {
+    checked = await io.checkVault(folder);
+  } catch (error) {
+    await io.notify(String(error), 'That folder cannot be opened');
+    return;
+  }
+  await saveNow();
+  settings.vault = checked;
+  settingsStore.save(settings);
+  notePath = null;
+  await loadArchive();
+  await reindex();
+  const first = tree.allNotes(archive)[0];
+  if (first) await openNote(first.path);
+  else await newNote({ folder: archive.root });
+  refresh();
+  toast(`Opened the vault ${tree.baseName(checked)}`);
+}
+
+async function closeVault() {
+  await saveNow();
+  settings.vault = null;
+  settingsStore.save(settings);
+  notePath = null;
+  await loadArchive();
+  await reindex();
+  const first = tree.allNotes(archive)[0];
+  if (first) await openNote(first.path);
+  else await newNote();
+  refresh();
+}
+
+const PROPERTY_TYPES = [['text', 'Text'], ['number', 'Number'], ['checkbox', 'Checkbox'], ['date', 'Date'], ['datetime', 'Date and time'], ['list', 'List']];
+
+/** The note's properties, typed as Obsidian types them. */
+async function editProperties() {
+  const editable = note.properties.filter((p) => p.type !== 'raw');
+  const kept = note.properties.filter((p) => p.type === 'raw');
+  const valueField = (p, i) => {
+    if (p.type === 'checkbox') return `<input type="checkbox" data-field="value_${i}"${p.value ? ' checked' : ''}>`;
+    if (p.type === 'list') return `<input data-field="value_${i}" value="${escapeHtml((p.value ?? []).join(', '))}" placeholder="one, two">`;
+    const type = { number: 'number', date: 'date', datetime: 'datetime-local' }[p.type] ?? 'text';
+    return `<input type="${type}" data-field="value_${i}" value="${escapeHtml(p.value ?? '')}">`;
+  };
+  const rows = [...editable, { key: '', type: 'text', value: '' }].map((p, i) => `
+    <tr>
+      <td><input data-field="key_${i}" value="${escapeHtml(p.key ?? '')}" placeholder="${i === editable.length ? 'new property' : ''}"></td>
+      <td><select data-field="type_${i}">${PROPERTY_TYPES.map(([id, label]) => `<option value="${id}"${p.type === id ? ' selected' : ''}>${label}</option>`).join('')}</select></td>
+      <td>${valueField(p, i)}</td>
+    </tr>`).join('');
+  const confirmed = await showPanel('Properties', `
+    <table class="properties-table"><tr><th>Name</th><th>Type</th><th>Value</th></tr>${rows}</table>
+    <p class="hint">An empty name removes the property.${kept.length > 0 ? ` ${kept.length} part(s) of the properties GRT does not edit are kept as they are.` : ''}</p>
+  `, 'Apply');
+  if (!confirmed) return;
+  const fields = readFields();
+  const next = [];
+  for (let i = 0; i <= editable.length; i += 1) {
+    const key = String(fields[`key_${i}`] ?? '').trim();
+    if (!key) continue;
+    const type = fields[`type_${i}`] ?? 'text';
+    const before = editable[i];
+    let value = fields[`value_${i}`];
+    if (type === 'checkbox') value = Boolean(value);
+    else if (type === 'number') value = value === '' || value === null ? null : Number(value);
+    else if (type === 'list') value = String(value ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+    else value = value === '' ? null : String(value);
+    // A value left as it was keeps the type and form it came with.
+    if (before && before.key === key && before.type === type && JSON.stringify(before.value) === JSON.stringify(value)) next.push(before);
+    else next.push({ key, type, value });
+  }
+  note.setProperties([...next, ...kept]);
+  const tags = next.find((p) => p.key === 'tags');
+  if (tags) note.tags = parseTagInput((tags.value ?? []).join(' '));
+  drawHeader();
+  autoSave();
 }
 
 async function exportArchive() {
@@ -625,9 +808,11 @@ async function openSettings() {
     <label>Theme<select data-field="theme">${themes}</select></label>
     <label class="inline"><input type="checkbox" data-field="showBacklinks"${settings.showBacklinks ? ' checked' : ''}> Show what links here</label>
     <label>Quick notes go to<input data-field="quickNoteNotebook" value="${escapeHtml(settings.quickNoteNotebook)}"></label>
-    <p class="hint">The archive is<br><code>${escapeHtml(archive.root ?? 'nowhere yet')}</code></p>
+    <p class="hint">${inVault() ? 'The Obsidian vault open is' : 'The archive is'}<br><code>${escapeHtml(archive.root ?? 'nowhere yet')}</code></p>
+    <p class="hint">A vault opens from Documents or Downloads, file by file as Obsidian keeps it; a note
+    saved without changes stays the same file.</p>
     <p class="hint"><strong>The search index holds the text of every note.</strong>
-    It lives in this program's own data folder — never in a temporary directory —
+    It lives in this program's own data folder, never in a temporary directory,
     and it is derived: deleting it loses nothing, and it rebuilds by reading the
     archive.</p>
     <button type="button" id="btn-forget" class="danger">Forget settings and index</button>
@@ -674,11 +859,18 @@ function wire() {
   el('btn-new-notebook').onclick = () => newFolder(null);
   el('btn-quick').onclick = () => quickNote();
   el('btn-settings').onclick = () => openSettings();
+  el('btn-properties').onclick = () => editProperties();
+  el('btn-print').onclick = () => printNote();
+  el('btn-vault').onclick = () => (inVault() ? closeVault() : openVault());
 
   el('btn-bold').onclick = () => editor.handlers.toggleMark('bold');
   el('btn-italic').onclick = () => editor.handlers.toggleMark('italic');
   el('btn-underline').onclick = () => editor.handlers.toggleMark('underline');
   el('btn-strike').onclick = () => editor.handlers.toggleMark('strike');
+  // Toolbar buttons leave the caret in the text.
+  document.querySelector('.toolbar').addEventListener('mousedown', (event) => {
+    if (event.target.closest('button')) event.preventDefault();
+  });
   el('btn-todo').onclick = () => insertBlock(makeTodo());
   el('btn-callout').onclick = () => insertBlock(makeCallout('note'));
   el('btn-code').onclick = () => insertBlock(makeBlock('code'));
@@ -703,6 +895,7 @@ function wire() {
   el('results').addEventListener('click', onResultClick);
   el('backlink-list').addEventListener('click', onResultClick);
   el('completions').addEventListener('mousedown', onCompletionClick);
+  document.addEventListener('keydown', onCompletionKey, true);
   surface().addEventListener('click', onSurfaceClick);
 
   document.addEventListener('keydown', onKey);
@@ -710,8 +903,9 @@ function wire() {
   window.addEventListener('blur', () => { saveNow(); });
 }
 
-function insertBlock(block) {
-  editor.handlers.insertBlock(block);
+/** Inserts a block; one that holds text takes the caret. */
+function insertBlock(block, { enter = true } = {}) {
+  editor.handlers.insertBlock(block, { enter });
   refresh();
 }
 
@@ -747,7 +941,7 @@ async function showFolderMenu(path, kind) {
       <option value="note">Add a note here</option>
       ${kind === 'notebook' ? '<option value="section">Add a section</option>' : ''}
       <option value="rename">Rename it</option>
-      <option value="delete">Delete it — only if it is empty</option>
+      <option value="delete">Delete it, only if it is empty</option>
     </select></label>
     <label>New name<input data-field="name" value="${escapeHtml(tree.baseName(path))}"></label>
   `, 'Go');
@@ -787,6 +981,28 @@ function onResultClick(event) {
   openNote(row.dataset.path);
 }
 
+/** The open list of link completions answers the arrows, Enter, Tab and Escape before the text does. */
+function onCompletionKey(event) {
+  const box = el('completions');
+  if (box.classList.contains('hidden') || !surface().contains(event.target)) return;
+  const rows = [...box.querySelectorAll('.completion')];
+  if (rows.length === 0) return;
+  const at = Math.max(0, rows.findIndex((row) => row.classList.contains('active')));
+
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    const next = (at + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+    rows.forEach((row, index) => row.classList.toggle('active', index === next));
+  } else if (event.key === 'Enter' || event.key === 'Tab') {
+    acceptCompletion(rows[at].dataset.title, Number(rows[at].dataset.from));
+  } else if (event.key === 'Escape') {
+    box.classList.add('hidden');
+  } else {
+    return;
+  }
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
 function onCompletionClick(event) {
   // mousedown, not click: a click would first blur the editor and lose the
   // selection this needs.
@@ -812,12 +1028,13 @@ function onSurfaceClick(event) {
 }
 
 function onKey(event) {
-  if (isDialogOpen() || isPaletteOpen()) return;
+  if (isDialogOpen() || isPaletteOpen() || isPrintPreviewOpen()) return;
   const control = event.ctrlKey || event.metaKey;
   if (!control) return;
 
   if (event.key === 'k') { event.preventDefault(); openPalette(commands()); return; }
   if (event.key === 'f') { event.preventDefault(); el('search').focus(); return; }
+  if (event.key === 'p') { event.preventDefault(); printNote(); return; }
   if (event.shiftKey && event.key.toLowerCase() === 'n') {
     event.preventDefault(); quickNote(); return;
   }
@@ -832,7 +1049,12 @@ function commands() {
     entry('New notebook', '', () => newFolder(null)),
     entry('Search', 'Ctrl+F', () => el('search').focus()),
     entry('Delete this note', '', () => notePath && deleteNote(notePath)),
-    entry('Export this note as Markdown', '', () => exportNote()),
+    entry('Export this note…', '', () => exportNote()),
+    entry('Print this note…', 'Ctrl+P', () => printNote()),
+    entry('Properties of this note…', '', () => editProperties()),
+    inVault()
+      ? entry('Close the vault and go back to the GRT archive', '', () => closeVault())
+      : entry('Open an Obsidian vault…', '', () => openVault()),
     entry('Export the whole archive as Markdown', '', () => exportArchive()),
     entry('Rebuild the search index', '', async () => {
       await io.indexForget();
@@ -844,7 +1066,7 @@ function commands() {
     entry('Insert a code block', '', () => insertBlock(makeBlock('code'))),
     entry('Insert a link to a document', '', async () => {
       const path = await io.pickToOpen('Choose a document');
-      if (path) insertBlock(makeEmbed(path));
+      if (path) insertBlock(makeEmbed(path), { enter: false });
     }),
     entry('Bold', 'Ctrl+B', () => editor.handlers.toggleMark('bold')),
     entry('Italic', 'Ctrl+I', () => editor.handlers.toggleMark('italic')),

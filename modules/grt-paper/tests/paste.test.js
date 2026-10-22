@@ -120,6 +120,20 @@ describe('What is worth keeping is kept', () => {
     expect(runsText(blocks[0].runs)).toBe(' spaced out ');
   });
 
+  it('code keeps its lines and its indentation', () => {
+    const { blocks } = paste('<pre><code>first line\n    indented\nlast<br>after a break</code></pre>');
+    expect(blocks[0].kind).toBe('code');
+    expect(runsText(blocks[0].runs)).toBe('first line\n    indented\nlast\nafter a break');
+  });
+
+  it('a list inside an item is a deeper level of the same list', () => {
+    const { blocks } = paste('<ul><li>one<ul><li>one point one</li><li>one point two</li></ul></li><li>two</li></ul><p>after</p>');
+    expect(blocks.map((b) => b.kind)).toEqual(['list', 'paragraph']);
+    expect(blocks[0].items.map((i) => [i.level, runsText(i.runs)])).toEqual([
+      [0, 'one'], [1, 'one point one'], [1, 'one point two'], [0, 'two'],
+    ]);
+  });
+
   it('empty paragraphs are not carried over', () => {
     const { blocks } = paste('<p>text</p><p></p><p>   </p><p>more</p>');
     expect(blocks).toHaveLength(2);

@@ -6,10 +6,16 @@ import { Interaction } from './interaction.js';
 import { treeLayout } from './layout.js';
 import { toSvg, toJson, toPng, toPrintPage } from './export.js';
 import { renderToPdf } from './core/pdf.js';
+import { printPreview, pageControls, isPrintPreviewOpen } from './core/print.js';
+import { printablePages } from './printing.js';
 import { UndoStack } from './core/undo.js';
-import { showPanel, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
+import { showPanel, showChoice, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
+import { readPackage, writePackage } from './core/package.js';
+import { readOdg, writeOdg } from './core/formats/odg.js';
+import { readCanvas, writeCanvas } from './core/formats/canvas.js';
 import { THEMES } from './core/theme.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
+import { Keeper, MODES } from './core/keeper.js';
 import { parseMermaid } from './mermaid.js';
 import { loadSettings, updateSettings, settings, canPersist } from './settings.js';
 import {
@@ -27,6 +33,20 @@ let model = new GraphModel();
 let undo = new UndoStack(model);
 let busy = false;
 
+/** Formats a diagram can be saved back into. */
+const WRITABLE = new Set(['grt', 'odg', 'fodg', 'canvas']);
+const OPENABLE = /\.(grt|odg|fodg|canvas|json)$/i;
+
+function formatOf(path) {
+  return (/\.([^.\\/]+)$/.exec(path ?? '')?.[1] ?? '').toLowerCase() || null;
+}
+
+/**
+ * What the open file is: its format, what did not come across when it was
+ * read, and whether saving over it anyway was agreed to.
+ */
+let file = { format: 'grt', losses: [], confirmed: false };
+
 // Notifications
 
 let toastTimer = null;
@@ -38,6 +58,18 @@ function toast(message, isError = false) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => node.classList.add('hidden'), 3400);
 }
+
+/** Autosave, recovery copies, and asking before unsaved work is dropped. */
+const keeper = new Keeper({
+  name: () => baseName(model.path) ?? 'Untitled',
+  path: () => model.path ?? null,
+  canSaveInPlace: () => !!model.path && WRITABLE.has(file.format) && (file.losses.length === 0 || file.confirmed),
+  writeCopy: (path) => writeDocument(path, documentParts()),
+  save: (options) => save(false, options),
+  openRecovered: (file, meta) => openRecovered(file, meta),
+  // Leaving the label being typed commits it.
+  settle: () => document.activeElement?.blur?.(),
+}, { program: 'GRT Graphs', extension: 'grt', toast });
 
 async function guard(label, action) {
   if (busy) return;
@@ -140,10 +172,14 @@ function change(mutate) {
 
 function addNode() {
   change(() => {
-    const node = model.addNode({
-      x: Math.round(renderer.view.x + 80),
-      y: Math.round(renderer.view.y + 80),
-    });
+    let x = Math.round(renderer.view.x + 80);
+    let y = Math.round(renderer.view.y + 80);
+    // A node already there would hide the new one.
+    while (model.nodes.some((n) => n.x === x && n.y === y)) {
+      x += 24;
+      y += 24;
+    }
+    const node = model.addNode({ x, y });
     interaction.selection = new Set([node.id]);
   });
 }
@@ -221,7 +257,9 @@ function runValidation() {
 
 function newDocument() {
   model = new GraphModel();
+  file = { format: 'grt', losses: [], confirmed: false };
   undo = new UndoStack(model);
+  keeper.watch(model);
   interaction.attach(model);
   renderer.view = { x: 0, y: 0, scale: 1 };
   renderer.applyView();
@@ -229,52 +267,189 @@ function newDocument() {
   draw();
 }
 
-async function openPath(path) {
-  // A graph generated or transformed by a script comes back in as JSON.
-  if (/\.json$/i.test(path)) {
-    await importJsonFrom(path);
-    return;
-  }
+/** New and Open drop the current document: ask first if it has unsaved work. */
+async function newDocumentConfirmed() {
+  if (await keeper.confirmLeave()) newDocument();
+}
 
+async function openConfirmed(path) {
+  if (await keeper.confirmLeave()) await openPath(path);
+}
+
+/** Reads a diagram into the program, without naming it. */
+async function loadGraph(path) {
   const parts = await readDocument(path);
   const raw = parts['content/main.json'];
   if (!raw) throw new Error('This document has no graph content');
 
   model = new GraphModel(JSON.parse(raw));
-  model.path = path;
   undo = new UndoStack(model);
+  keeper.watch(model);
   interaction.attach(model);
   renderer.fit(model);
   draw();
+}
 
-  document.title = `${baseName(path)} — GRT Graphs`;
+async function openPath(path) {
+  const format = formatOf(path);
+  // A graph generated or transformed by a script comes back in as JSON.
+  if (format === 'json') {
+    await importJsonFrom(path);
+    return;
+  }
+  if (format !== 'grt') {
+    await importDocument(path, format);
+    return;
+  }
+
+  await loadGraph(path);
+  model.path = path;
+  file = { format: 'grt', losses: [], confirmed: false };
+  document.title = `${baseName(path)} - GRT Graphs`;
   toast(`Opened ${baseName(path)}`);
 }
 
-async function save(forceDialog) {
-  let path = forceDialog ? null : model.path;
-  if (!path) {
-    path = await pickToSave(model.path ?? 'diagram.grt', FILTERS.grt, 'Save diagram');
-    if (!path) return;
-  }
+/** Reads a drawing in another program's format, and says what did not come across. */
+async function importDocument(path, format) {
+  let result;
+  if (format === 'odg') result = readOdg(await readPackage(path));
+  else if (format === 'fodg') result = readOdg(await readText(path));
+  else if (format === 'canvas') result = readCanvas(await readText(path));
+  else throw new Error(`GRT Graphs does not open .${format} files`);
 
+  model = new GraphModel(result.document);
+  model.path = path;
+  file = { format, losses: result.losses.lines(), confirmed: false };
+  undo = new UndoStack(model);
+  keeper.watch(model);
+  interaction.attach(model);
+  renderer.fit(model);
+  draw();
+  document.title = `${baseName(path)} - GRT Graphs`;
+
+  if (result.losses.empty) {
+    toast(`Opened ${baseName(path)}`);
+    return;
+  }
+  await showPanel(`Opened ${escapeHtml(baseName(path))}`, `
+    <p class="fp-note" style="margin-top:0">${model.nodes.length} node(s), ${model.edges.length} connector(s).
+    What follows did not come across, listed rather than dropped quietly.</p>
+    ${result.losses.html()}
+    <p class="fp-note">Saving over the file would lose these for good, so it
+    asks first; saving as a GRT document keeps everything that did come across.</p>`);
+}
+
+/** Opens a recovery copy as the document it was, with its changes unsaved. */
+async function openRecovered(copy, meta) {
+  await loadGraph(copy);
+  model.path = meta.path ?? null;
+  const format = formatOf(meta.path) ?? 'grt';
+  file = {
+    format,
+    losses: format === 'grt' ? [] : ['Anything the program could not read when the file was first opened'],
+    confirmed: false,
+  };
+  model.dirty = true;
+  const name = meta.name || 'Untitled';
+  document.title = `${name} (recovered) - GRT Graphs`;
+  refresh();
+  toast(`Recovered ${name}: save it to keep the changes`);
+}
+
+function documentParts() {
   const manifest = {
     kind: 'graphs',
     format_version: 1,
     parts: [{ path: 'content/main.json', media_type: 'application/json' }],
     links: [],
   };
-
-  await writeDocument(path, {
+  return {
     'manifest.json': `${JSON.stringify(manifest, null, 2)}\n`,
     'content/main.json': `${JSON.stringify(model.toJSON(), null, 2)}\n`,
-  });
+  };
+}
 
+const FORMAT_NAMES = {
+  grt: 'GRT document (.grt)',
+  odg: 'OpenDocument drawing (.odg)',
+  canvas: 'JSON Canvas (.canvas)',
+  fodg: 'Flat OpenDocument drawing (.fodg)',
+};
+
+/** Asks which format to save in, then where. */
+async function chooseSaveTarget() {
+  const current = WRITABLE.has(file.format) ? file.format : 'grt';
+  const confirmed = await showPanel('Save as', `
+    <div class="form-grid">
+      <label for="s-format">Format</label>
+      <select id="s-format" data-field="format">
+        ${Object.entries(FORMAT_NAMES).map(([id, label]) =>
+    `<option value="${id}"${id === current ? ' selected' : ''}>${label}</option>`).join('')}
+      </select>
+    </div>
+    <p class="fp-note">A GRT document keeps everything this program can do.
+    OpenDocument drawings open in LibreOffice Draw, canvases in Obsidian; what
+    they cannot hold is said before anything is written.</p>`, 'Choose file');
+  if (!confirmed) return null;
+  const { format } = readFields();
+  const chosen = await pickToSave(withExtension(model.path ?? 'diagram', format), FILTERS[format], 'Save diagram');
+  return chosen ? { path: withExtension(chosen, format), format } : null;
+}
+
+/** Writes the diagram in a format, and says what that format could not hold. */
+async function writeAs(path, format) {
+  if (format === 'grt') {
+    await writeDocument(path, documentParts());
+    return [];
+  }
+  const json = model.toJSON();
+  if (format === 'odg') {
+    const { entries, losses } = writeOdg(json);
+    await writePackage(path, entries);
+    return losses.lines();
+  }
+  const { text, losses } = format === 'fodg' ? writeOdg(json, { flat: true }) : writeCanvas(json);
+  await writeText(path, text);
+  return losses.lines();
+}
+
+/** Saves the diagram; silent, it asks and reports nothing. Resolves false when nothing was saved. */
+async function save(forceDialog, { silent = false } = {}) {
+  let path = forceDialog ? null : model.path;
+  let format = file.format;
+  if (!path) {
+    if (silent) return false;
+    const chosen = await chooseSaveTarget();
+    if (!chosen) return false;
+    ({ path, format } = chosen);
+  } else if (file.losses.length > 0 && !file.confirmed) {
+    if (silent) return false;
+    const choice = await showChoice(`Save over “${baseName(path)}”?`, `
+      <p>When it was opened, these did not come across. Saving over the file
+      drops them from it for good:</p>
+      <ul class="problem-list">${file.losses.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`, [
+      { id: 'cancel', label: 'Cancel' },
+      { id: 'copy', label: 'Save a copy…', primary: true },
+      { id: 'over', label: 'Save over it' },
+    ]);
+    if (choice === 'copy') return save(true);
+    if (choice !== 'over') return false;
+    file.confirmed = true;
+  }
+
+  const revision = keeper.revision;
+  const lost = await writeAs(path, format);
+
+  const sameFile = path === model.path && format === file.format;
   model.path = path;
-  model.dirty = false;
-  document.title = `${baseName(path)} — GRT Graphs`;
+  file = sameFile ? file : { format, losses: [], confirmed: false };
+  model.dirty = keeper.revision !== revision;
+  undo.markSaved();
+  document.title = `${baseName(path)} - GRT Graphs`;
   refresh();
-  toast(`Saved ${baseName(path)}`);
+  if (!silent) toast(lost.length > 0 ? `Saved ${baseName(path)}, without: ${lost.join('; ')}` : `Saved ${baseName(path)}`);
+  await keeper.saved();
+  return true;
 }
 
 /** Loads a graph from JSON. */
@@ -287,6 +462,7 @@ function loadDocument(imported, path) {
 
   model = new GraphModel(imported);
   model.path = path;
+  file = { format: 'grt', losses: [], confirmed: false };
   undo = new UndoStack(model);
   interaction.attach(model);
 
@@ -295,8 +471,9 @@ function loadDocument(imported, path) {
       const node = model.node(id);
       if (node) { node.x = point.x; node.y = point.y; }
     }
-    model.dirty = true;
   }
+  model.dirty = true;
+  keeper.watch(model);
 
   renderer.fit(model);
   draw();
@@ -314,10 +491,28 @@ async function importJsonFrom(path) {
   // Imported, not opened: Save asks where to put it.
   const positionless = loadDocument(imported, null);
 
-  document.title = `${baseName(path)} — GRT Graphs`;
+  document.title = `${baseName(path)} - GRT Graphs`;
   toast(positionless
     ? `Imported ${imported.nodes.length} node(s) and arranged them`
     : `Imported ${baseName(path)}`);
+}
+
+/** How the diagram was last printed, kept while the program runs. */
+let printSetup = { mode: 'fit', size: 'A4', orientation: 'landscape', margin: 10 };
+
+async function printDiagram() {
+  document.activeElement?.blur?.();
+  printSetup = await printPreview({
+    title: 'Print',
+    setup: printSetup,
+    controls: (s) => `
+      <label>Print<select data-print-field="mode">
+        <option value="fit"${s.mode !== 'tiled' ? ' selected' : ''}>On one page</option>
+        <option value="tiled"${s.mode === 'tiled' ? ' selected' : ''}>At full size, across pages</option>
+      </select></label>
+      ${pageControls(s, { margins: true })}`,
+    build: (s) => printablePages(model, s),
+  });
 }
 
 async function exportDocument() {
@@ -325,11 +520,11 @@ async function exportDocument() {
     <div class="form-grid">
       <label for="ex-format">Format</label>
       <select id="ex-format" data-field="format">
-        <option value="svg">SVG — vector, opens anywhere</option>
-        <option value="png">PNG — image</option>
-        <option value="pdf">PDF — vector, for printing</option>
-        <option value="json">JSON — the full document</option>
-        <option value="json-logic">JSON — logic only, for a game</option>
+        <option value="svg">SVG: vector, opens anywhere</option>
+        <option value="png">PNG: image</option>
+        <option value="pdf">PDF: vector, for printing</option>
+        <option value="json">JSON: the full document</option>
+        <option value="json-logic">JSON: logic only, for a game</option>
       </select>
       <label for="ex-scale">PNG scale</label>
       <input id="ex-scale" type="number" data-field="scale" min="1" max="8" step="1" value="2" />
@@ -356,7 +551,12 @@ async function exportDocument() {
   } else if (format === 'pdf') {
     // Through the shared engine, so the metadata clearing is the same code
     // GRT Read uses.
-    await writeBytes(path, await renderToPdf(toPrintPage(model)));
+    const report = { replaced: 0 };
+    await writeBytes(path, await renderToPdf(toPrintPage(model), { report }));
+    if (report.replaced > 0) {
+      toast(`Exported ${baseName(path)}, ${report.replaced} character(s) the PDF font cannot draw, replaced; printing to PDF keeps them`, true);
+      return;
+    }
   } else if (format === 'png') {
     await writeBytes(path, await toPng(toSvg(model), Math.max(1, scale || 2)));
   } else {
@@ -390,7 +590,9 @@ async function importMermaid(initialText = '') {
   const { source } = readFields();
   if (!source?.trim()) return;
 
-  loadDocument(parseMermaid(source), null);
+  const parsed = parseMermaid(source);
+  if (!await keeper.confirmLeave()) return;
+  loadDocument(parsed, null);
   toast(`Imported ${model.nodes.length} node(s) from Mermaid`);
 }
 
@@ -426,14 +628,25 @@ async function openSettings() {
         ${option('curved', 'Curved', current.defaultRouting)}
       </select>
     </div>
+    <div class="setting">
+      <span class="label">Keep unsaved work
+        <span class="hint">Every couple of seconds of quiet. A recovery copy
+        is offered back if the program closes unexpectedly; onto the file
+        saves the diagram itself, once it has a name.</span>
+      </span>
+      <select data-field="autosave">
+        ${MODES.map((m) => option(m.id, m.label, current.autosave)).join('')}
+      </select>
+    </div>
     <p class="fp-note">${canPersist()
-    ? 'Stored as a settings.json holding these four values. No record of which documents were opened.'
+    ? 'Stored as a settings.json holding these five values. No record of which documents were opened.'
     : '<strong>Ephemeral mode:</strong> changes apply now but are not written to disk.'}</p>`,
   'Apply');
   if (!confirmed) return;
 
   const fields = readFields();
   const stored = await updateSettings(fields);
+  keeper.setMode(settings().autosave);
 
   model.meta.snapToGrid = fields.snapToGrid;
   canvas.style.setProperty('--grid-visible', fields.showGrid ? '1' : '0');
@@ -451,11 +664,12 @@ function commands() {
   const withSelection = (label, hint, run) => ({ id: label, label, hint, run });
 
   return [
-    withSelection('New diagram', 'Ctrl+N', () => newDocument()),
+    withSelection('New diagram', 'Ctrl+N', () => el('btn-new').click()),
     withSelection('Open…', 'Ctrl+O', () => el('btn-open').click()),
     withSelection('Save', 'Ctrl+S', () => guard('Save', () => save(false))),
     withSelection('Save as…', 'Ctrl+Shift+S', () => guard('Save', () => save(true))),
     withSelection('Export…', '', () => guard('Export', exportDocument)),
+    withSelection('Print…', 'Ctrl+P', () => guard('Print', printDiagram)),
     withSelection('Import JSON…', '', () => el('btn-import').click()),
     withSelection('Import Mermaid…', '', () => guard('Import', () => importMermaid())),
 
@@ -513,21 +727,20 @@ function distribute(axis) {
 
 // Events
 
-el('btn-new').onclick = () => newDocument();
+el('btn-new').onclick = () => guard('New', newDocumentConfirmed);
 el('btn-open').onclick = () => guard('Open', async () => {
-  const path = await pickToOpen(
-    [...FILTERS.grt, ...FILTERS.json], 'Open diagram or import JSON',
-  );
-  if (path) await openPath(path);
+  const path = await pickToOpen(FILTERS.diagrams, 'Open diagram');
+  if (path) await openConfirmed(path);
 });
 el('btn-import').onclick = () => guard('Import', async () => {
   const path = await pickToOpen(FILTERS.json, 'Import JSON');
-  if (path) await importJsonFrom(path);
+  if (path && await keeper.confirmLeave()) await importJsonFrom(path);
 });
 el('btn-commands').onclick = () => openPalette(commands());
 el('btn-save').onclick = () => guard('Save', () => save(false));
 el('btn-save-as').onclick = () => guard('Save', () => save(true));
 el('btn-export').onclick = () => guard('Export', exportDocument);
+el('btn-print').onclick = () => guard('Print', printDiagram);
 el('btn-settings').onclick = () => guard('Settings', openSettings);
 el('btn-undo').onclick = () => step(-1);
 el('btn-redo').onclick = () => step(1);
@@ -547,7 +760,7 @@ for (const [id, kind] of [['shape-picker', 'shape'], ['style-picker', 'style'], 
 }
 
 document.addEventListener('keydown', (event) => {
-  if (isDialogOpen() || isPaletteOpen()) return;
+  if (isDialogOpen() || isPaletteOpen() || isPrintPreviewOpen()) return;
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
 
   const ctrl = event.ctrlKey || event.metaKey;
@@ -557,13 +770,16 @@ document.addEventListener('keydown', (event) => {
     openPalette(commands());
   } else if (ctrl && event.key.toLowerCase() === 'n') {
     event.preventDefault();
-    newDocument();
+    el('btn-new').click();
   } else if (ctrl && event.key.toLowerCase() === 's') {
     event.preventDefault();
     guard('Save', () => save(event.shiftKey));
   } else if (ctrl && event.key.toLowerCase() === 'o') {
     event.preventDefault();
     el('btn-open').click();
+  } else if (ctrl && event.key.toLowerCase() === 'p') {
+    event.preventDefault();
+    guard('Print', printDiagram);
   } else if (ctrl && event.key === ',') {
     event.preventDefault();
     guard('Settings', openSettings);
@@ -594,7 +810,10 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-onFilesDropped((paths) => guard('Open', () => openPath(paths[0])));
+onFilesDropped((paths) => guard('Open', async () => {
+  const found = paths.find((p) => OPENABLE.test(p));
+  if (found) await openConfirmed(found);
+}));
 
 window.addEventListener('resize', () => draw());
 
@@ -609,10 +828,15 @@ window.addEventListener('resize', () => draw());
   renderer.layers.grid.style.display = prefs.showGrid ? '' : 'none';
 
   interaction.attach(model);
+  keeper.watch(model);
   draw();
 
-  const initial = info.initialFile;
-  if (initial && await fileExists(initial)) {
+  const initial = info.initialFile && OPENABLE.test(info.initialFile) && await fileExists(info.initialFile)
+    ? info.initialFile : null;
+  const recovered = await keeper.start({
+    ephemeral: info.ephemeral, mode: prefs.autosave, initialFile: initial,
+  });
+  if (initial && !recovered) {
     await guard('Open', () => openPath(initial));
   }
 }());

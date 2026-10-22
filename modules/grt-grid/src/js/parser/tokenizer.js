@@ -132,7 +132,7 @@ function readWord(source, start, tokens) {
     return i + 1;
   }
 
-  if (/^(TRUE|FALSE)$/i.test(word)) {
+  if (/^(TRUE|FALSE)$/i.test(word) && source[i] !== '(') {
     tokens.push({ type: TOKEN.boolean, value: word.toUpperCase() === 'TRUE' });
     return i;
   }

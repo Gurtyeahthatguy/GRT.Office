@@ -25,7 +25,7 @@ export function sniff(text) {
       separator: ',',
       decimal: '.',
       confident: false,
-      reason: 'No separator found — the file may have a single column',
+      reason: 'No separator found; the file may have a single column',
     };
   }
 

@@ -1,6 +1,6 @@
 [package]
 name = "grt-notes"
-version = "0.1.2"
+version = "0.2.0"
 description = "Local notebooks and notes, searchable across the whole archive"
 authors = ["GRT Project"]
 license = "MIT"
@@ -22,6 +22,7 @@ percent-encoding = "2"
 
 # The shared container, so a note is a .grt like every other document.
 grt-container = { path = "../../../core/grt-container" }
+grt-app = { path = "../../../core/grt-app" }
 
 # The search index (of GRT_NOTES_DATES.md).
 rusqlite = { version = "0.32", features = ["bundled"] }

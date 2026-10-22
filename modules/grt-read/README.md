@@ -17,7 +17,11 @@ Part of the [GRT Suite](../../README.md).
 - Undo and redo every structural change
 - Strip metadata from anything it writes, or set it deliberately
 - Show you what a file will contain, before it is written
-- Five themes: follow the desktop, light, dark, gold, purple
+- Unsaved work is kept: a recovery copy after a pause, offered back if the
+  program stops, or saving straight onto the file; chosen in Settings
+- Printing the document as it would be saved, rotations, crops and marks
+  included, on its own paper or another
+- Six themes: follow the desktop, light, sepia, dark, gold, purple
 
 ### Redaction
 

@@ -103,6 +103,19 @@ describe('moving a reference', () => {
     expect(grown.to.row).toBe(11);
   });
 
+  it('shrinks a range whose far edge was deleted to the last row left inside it', () => {
+    const range = parseRange('A3:A6');
+    const shrunk = shiftRangeForStructuralChange(range, { axis: 'row', at: 4, count: -4 });
+    expect([shrunk.from.row, shrunk.to.row]).toEqual([2, 3]);
+    const reversed = shiftRangeForStructuralChange(parseRange('A6:A3'), { axis: 'row', at: 4, count: -4 });
+    expect([reversed.from.row, reversed.to.row]).toEqual([3, 2]);
+  });
+
+  it('moves a range whose near edge was deleted to the first row left', () => {
+    const moved = shiftRangeForStructuralChange(parseRange('B2:D6'), { axis: 'col', at: 0, count: -2 });
+    expect([moved.from.col, moved.to.col]).toEqual([0, 1]);
+  });
+
   it('drops a range entirely inside a deletion', () => {
     const range = parseRange('A3:A4');
     expect(shiftRangeForStructuralChange(range, { axis: 'row', at: 2, count: -5 })).toBeNull();
@@ -118,7 +131,6 @@ describe('the tokenizer', () => {
     ]);
   });
 
-  /** names this case. */
   it('reads doubled quotes inside a string as one quote', () => {
     const { tokens } = tokenize('="he said ""no"""');
     expect(tokens[0].value).toBe('he said "no"');
@@ -167,17 +179,16 @@ describe('the parser', () => {
     expect(ast('=1+2>3').op).toBe('>');
   });
 
-  it('makes exponent right-associative', () => {
-    // 2^3^2 is 2^(3^2) = 512, not (2^3)^2 = 64.
+  it('makes exponent left-associative, as LibreOffice and Excel do', () => {
     const tree = ast('=2^3^2');
-    expect(tree.right.op).toBe('^');
+    expect(tree.left.op).toBe('^');
+    expect(tree.right.value).toBe(2);
   });
 
   it('respects brackets', () => {
     expect(ast('=(1+2)*3').op).toBe('*');
   });
 
-  /** names this case. */
   it('parses functions nested several levels deep', () => {
     const tree = ast('=IF(SUM(A1:A5)>10,MAX(B1:B5),MIN(C1:C5))');
     expect(tree.type).toBe(NODE.call);
@@ -195,7 +206,6 @@ describe('the parser', () => {
     expect(ast('=50%').type).toBe(NODE.percent);
   });
 
-  /** names this case. */
   it('reports a syntax error rather than throwing', () => {
     for (const bad of ['=1+', '=SUM(', '=)', '=*2', '=A1:', '=IF(1,2']) {
       const result = parse(bad);

@@ -25,6 +25,10 @@ function fakeBackend() {
   const index = new Map();
   const folders = new Set(['/archive']);
   const calls = [];
+  const vault = new Map();
+  const writes = [];
+  const packages = new Map();
+  const messages = [];
 
   const invoke = vi.fn(async (command, payload, options) => {
     calls.push({ command, payload, options });
@@ -78,9 +82,47 @@ function fakeBackend() {
       case 'index_search': return [];
       case 'index_forget': index.clear(); return undefined;
 
-      case 'write_file_atomic': return undefined;
-      case 'read_file': return new Uint8Array();
+      case 'write_file_atomic': {
+        const path = decodeURIComponent(options.headers['x-grt-path']);
+        vault.set(path, new TextDecoder().decode(payload));
+        writes.push(path);
+        return undefined;
+      }
+      case 'read_file': {
+        if (!vault.has(payload.path)) throw new Error(`no file at ${payload.path}`);
+        return new TextEncoder().encode(vault.get(payload.path));
+      }
       case 'file_exists': return false;
+      case 'set_close_guard': case 'close_ack': case 'close_window': return null;
+      case 'print_page': return null;
+      case 'write_package': packages.set(decodeURIComponent(options.headers['x-grt-path']), payload); return undefined;
+
+      case 'check_vault':
+        if (!payload.path.startsWith('/home/me/Documents/')) throw new Error('GRT Notes opens vaults kept in /home/me/Documents or /home/me/Downloads.');
+        return payload.path;
+      case 'read_vault': {
+        const root = payload.root;
+        const pagesIn = (folder) => [...vault.keys()]
+          .filter((path) => path.startsWith(`${folder}/`) && !path.slice(folder.length + 1).includes('/') && path.endsWith('.md'))
+          .map((path) => ({ path, file: path.split('/').pop().replace(/\.md$/, ''), modified: 1 }));
+        const top = [...new Set([...vault.keys()].filter((p) => p.startsWith(`${root}/`)).map((p) => p.slice(root.length + 1).split('/'))
+          .filter((parts) => parts.length > 1).map((parts) => parts[0]))];
+        return {
+          root,
+          vault: true,
+          notebooks: [
+            { name: root.split('/').pop(), path: root, sections: [], pages: pagesIn(root) },
+            ...top.map((name) => ({ name, path: `${root}/${name}`, sections: [], pages: pagesIn(`${root}/${name}`) })),
+          ],
+        };
+      }
+
+      case 'plugin:dialog|open': return window.__PICK__?.open ?? null;
+      case 'plugin:dialog|save': return window.__PICK__?.save ?? null;
+      case 'plugin:dialog|message':
+        if (payload.buttons) return window.__ANSWER__ ?? 'No';
+        messages.push(payload.message);
+        return 'Ok';
 
       default:
         if (command.startsWith('plugin:dialog|')) return null;
@@ -88,7 +130,13 @@ function fakeBackend() {
     }
   });
 
-  return { invoke, notes, index, calls, folders };
+  const listeners = {};
+  const listen = vi.fn(async (name, handler) => {
+    listeners[name] = handler;
+    return () => {};
+  });
+
+  return { invoke, listen, listeners, notes, index, calls, folders, vault, writes, packages, messages };
 }
 
 /** Puts the caret at an offset inside a block, as clicking would. */
@@ -142,7 +190,6 @@ async function ready(extra = () => true) {
   // Startup is several awaits deep before there is anything to look at.
   for (let i = 0; i < 12; i += 1) await (i % 4 === 3 ? tick() : settle());
 
-  // Then until the backend stops being called.
   let seen = -1;
   return until(() => {
     const calls = window.__TAURI_CALLS__?.length ?? 0;
@@ -158,7 +205,7 @@ beforeEach(async () => {
   vi.resetModules();
   installPage();
   backend = fakeBackend();
-  window.__TAURI__ = { core: { invoke: backend.invoke } };
+  window.__TAURI__ = { core: { invoke: backend.invoke }, event: { listen: backend.listen } };
 
   await import('../src/js/main.js');
   await ready();
@@ -286,5 +333,166 @@ describe('the toolbar', () => {
     await settle();
 
     expect(document.getElementById('btn-bold').classList.contains('active')).toBe(true);
+  });
+});
+
+describe('closing', () => {
+  const textOf = (parts) => JSON.parse(parts['content/main.json']).blocks
+    .flatMap((b) => (b.runs ?? []).map((r) => r.text)).join('');
+  const called = (command) => backend.calls.filter((call) => call.command === command);
+  const dialogOpen = () => !document.getElementById('overlay').classList.contains('hidden');
+
+  function typeAtEnd(text) {
+    const surface = document.getElementById('surface');
+    for (const character of text) {
+      const block = surface.querySelector('[data-block]');
+      caretAt(surface, block.dataset.block, block.textContent.length);
+      type(surface, character);
+    }
+  }
+
+  it('CANARY: with nothing typed, closes at once and writes nothing', async () => {
+    const writes = called('write_grt').length;
+    await backend.listeners['grt://close-requested']();
+    expect(called('close_window')).toHaveLength(1);
+    expect(called('write_grt')).toHaveLength(writes);
+  });
+
+  it('holds the window while typing waits to be written', async () => {
+    typeAtEnd('held');
+    await settle();
+    const guards = called('set_close_guard');
+    expect(guards.at(-1).payload).toEqual({ held: true });
+  });
+
+  it('closing straight after typing writes the note first', async () => {
+    typeAtEnd('last words');
+    await settle();
+    await backend.listeners['grt://close-requested']();
+    const order = backend.calls.map((call) => call.command);
+    expect(order).toContain('close_window');
+    const lastWrite = called('write_grt').at(-1);
+    expect(textOf(lastWrite.payload.parts)).toContain('last words');
+    expect(order.lastIndexOf('write_grt')).toBeLessThan(order.indexOf('close_window'));
+  });
+
+  it('a note that cannot be written asks before closing, and Cancel keeps it open', async () => {
+    const original = backend.invoke.getMockImplementation();
+    backend.invoke.mockImplementation(async (command, payload, options) => {
+      if (command === 'write_grt') throw new Error('disk full');
+      return original(command, payload, options);
+    });
+    typeAtEnd('unsaved');
+    await settle();
+    const closing = backend.listeners['grt://close-requested']();
+    await until(dialogOpen);
+    expect(document.getElementById('panel-title').textContent).toBe('Close without saving?');
+    document.querySelector('[data-choice="cancel"]').click();
+    await closing;
+    expect(called('close_window')).toHaveLength(0);
+  });
+
+  it('Close anyway closes a note that cannot be written', async () => {
+    const original = backend.invoke.getMockImplementation();
+    backend.invoke.mockImplementation(async (command, payload, options) => {
+      if (command === 'write_grt') throw new Error('disk full');
+      return original(command, payload, options);
+    });
+    typeAtEnd('lost');
+    await settle();
+    const closing = backend.listeners['grt://close-requested']();
+    await until(dialogOpen);
+    expect(document.getElementById('panel-body').textContent).toContain('disk full');
+    document.querySelector('[data-choice="close"]').click();
+    await closing;
+    expect(called('close_window')).toHaveLength(1);
+  });
+
+  it('typing that arrives while the note is written is saved too', async () => {
+    let release;
+    const slow = new Promise((resolve) => { release = resolve; });
+    const original = backend.invoke.getMockImplementation();
+    let held = true;
+    backend.invoke.mockImplementation(async (command, payload, options) => {
+      if (command === 'write_grt' && held) { held = false; await slow; }
+      return original(command, payload, options);
+    });
+    const before = called('write_grt').length;
+    typeAtEnd('one');
+    await until(() => called('write_grt').length > before, 2000);
+    expect(held).toBe(false);
+    typeAtEnd(' two');
+    release();
+    await until(() => [...backend.notes.values()].some((n) => textOf(n.parts).includes('one two')), 3000);
+    const texts = [...backend.notes.values()].map((n) => textOf(n.parts));
+    expect(texts.some((text) => text.includes('one two'))).toBe(true);
+  });
+});
+
+describe('an Obsidian vault', () => {
+  const DAILY = '---\nstatus: draft\ntags:\n  - Work\n---\n# Today\n\n> [!tip] Remember\n> Water the plants.\n\n- [ ] Call Ada\n- [ ] Read [[Plan|the plan]]\n\nA line\nand the next. %%hidden%%\n';
+  const PLAN = 'Steps:\n\n1. Begin\n2. Finish\n';
+  const dialogOpen = () => !document.getElementById('overlay').classList.contains('hidden');
+
+  async function openVault() {
+    backend.vault.set('/home/me/Documents/Vault/Daily.md', DAILY);
+    backend.vault.set('/home/me/Documents/Vault/Projects/Plan.md', PLAN);
+    window.__PICK__ = { open: '/home/me/Documents/Vault' };
+    document.getElementById('btn-vault').click();
+    await until(() => document.getElementById('note-title').value === 'Daily');
+  }
+
+  it('opens in place of the archive and writes nothing it was not asked to', async () => {
+    await openVault();
+    expect(document.getElementById('btn-vault').textContent).toBe('Close vault');
+    const surface = document.getElementById('surface');
+    expect(surface.querySelector('.callout-title').textContent).toBe('Remember');
+    expect(surface.querySelectorAll('.todo')).toHaveLength(2);
+    expect(surface.querySelector('.note-link').dataset.title).toBe('Plan');
+    expect(surface.querySelector('.note-comment').textContent).toBe('%%hidden%%');
+    expect(document.getElementById('note-tags').value).toBe('#work');
+    expect(backend.writes).toEqual([]);
+  });
+
+  it('writes back only what was changed: a task ticked, a property set', async () => {
+    await openVault();
+    const box = document.querySelector('#surface [data-action="toggle-todo"]');
+    box.click();
+    await until(() => backend.writes.includes('/home/me/Documents/Vault/Daily.md'));
+    expect(backend.vault.get('/home/me/Documents/Vault/Daily.md')).toBe(DAILY.replace('- [ ] Call Ada', '- [x] Call Ada'));
+
+    document.getElementById('btn-properties').click();
+    await until(dialogOpen);
+    document.querySelector('[data-field="value_0"]').value = 'final';
+    document.getElementById('panel-confirm').click();
+    await until(() => backend.vault.get('/home/me/Documents/Vault/Daily.md').includes('status: final'));
+    expect(backend.vault.get('/home/me/Documents/Vault/Daily.md'))
+      .toBe(DAILY.replace('- [ ] Call Ada', '- [x] Call Ada').replace('status: draft', 'status: final'));
+  });
+
+  it('follows a link with an alias to the note it names', async () => {
+    await openVault();
+    document.querySelector('#surface .note-link').click();
+    await until(() => document.getElementById('note-title').value === 'Plan');
+    expect(document.querySelectorAll('#surface ol li')).toHaveLength(2);
+  });
+
+  it('says plainly that a folder outside Documents and Downloads cannot be opened', async () => {
+    window.__PICK__ = { open: '/srv/elsewhere' };
+    document.getElementById('btn-vault').click();
+    await until(() => backend.messages.length > 0);
+    expect(backend.messages[0]).toContain('Documents');
+    expect(document.getElementById('btn-vault').textContent).toBe('Open vault');
+  });
+
+  it('prints the note open', async () => {
+    await openVault();
+    document.getElementById('btn-print').click();
+    await until(() => document.getElementById('print-view')?.querySelector('.print-page'));
+    expect(document.querySelector('#print-view .print-title').textContent).toBe('Daily');
+    document.querySelector('#print-view [data-print="go"]').click();
+    await until(() => backend.calls.some((c) => c.command === 'print_page'));
+    document.querySelector('#print-view [data-print="close"]').click();
+    await until(() => !document.getElementById('print-view'));
   });
 });

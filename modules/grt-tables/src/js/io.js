@@ -6,6 +6,13 @@ export const FILTERS = {
   sqlite: [{ name: 'Database', extensions: ['sqlite', 'db', 'sqlite3'] }],
   grt: [{ name: 'GRT archive', extensions: ['grt'] }],
   csv: [{ name: 'Comma-separated values', extensions: ['csv', 'tsv', 'txt'] }],
+  ods: [{ name: 'OpenDocument spreadsheet', extensions: ['ods'] }],
+  xlsx: [{ name: 'Excel workbook', extensions: ['xlsx'] }],
+  importable: [
+    { name: 'Tables to import', extensions: ['csv', 'tsv', 'txt', 'ods', 'fods', 'xlsx'] },
+    { name: 'Comma-separated values', extensions: ['csv', 'tsv', 'txt'] },
+    { name: 'Spreadsheets', extensions: ['ods', 'fods', 'xlsx'] },
+  ],
 };
 
 function toPath(result) {
@@ -28,7 +35,7 @@ export async function pickToSave(defaultPath, filters = FILTERS.sqlite, title = 
 
 export async function confirm(message, title = 'GRT Tables') {
   try {
-    return await invoke('plugin:dialog|ask', { options: { message, title, kind: 'warning' } });
+    return await invoke('plugin:dialog|message', { message, title, kind: 'warning', buttons: 'YesNo' }) === 'Yes';
   } catch {
     return false;
   }
@@ -36,7 +43,7 @@ export async function confirm(message, title = 'GRT Tables') {
 
 export async function notify(message, title = 'GRT Tables') {
   try {
-    await invoke('plugin:dialog|message', { options: { message, title } });
+    await invoke('plugin:dialog|message', { message, title });
   } catch { /** a dialog that will not open must not stop the program. */ }
 }
 

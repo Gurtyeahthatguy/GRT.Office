@@ -13,6 +13,7 @@ export function runsToHtml(runs) {
     if (run.bold) piece = `<b>${piece}</b>`;
     if (run.italic) piece = `<i>${piece}</i>`;
     if (run.underline) piece = `<u>${piece}</u>`;
+    if (run.color) piece = `<span style="color:${escape(run.color).replace(/"/g, '')}">${piece}</span>`;
     return piece;
   }).join('');
 
@@ -44,6 +45,8 @@ export function htmlToRuns(element) {
     if (tag === 'b' || tag === 'strong') next.bold = true;
     if (tag === 'i' || tag === 'em') next.italic = true;
     if (tag === 'u') next.underline = true;
+    const colour = node.style?.color || node.getAttribute?.('color');
+    if (colour) next.color = hexColour(colour) ?? next.color;
 
     // A block element inside the box is a paragraph break, which the model
     // represents as a newline rather than as structure.
@@ -63,7 +66,8 @@ function push(runs, text, format) {
   const same = last
     && !!last.bold === !!format.bold
     && !!last.italic === !!format.italic
-    && !!last.underline === !!format.underline;
+    && !!last.underline === !!format.underline
+    && (last.color ?? null) === (format.color ?? null);
 
   if (same) {
     last.text += text;
@@ -75,7 +79,18 @@ function push(runs, text, format) {
     ...(format.bold ? { bold: true } : {}),
     ...(format.italic ? { italic: true } : {}),
     ...(format.underline ? { underline: true } : {}),
+    ...(format.color ? { color: format.color } : {}),
   });
+}
+
+/** A CSS colour as #rrggbb, which is how the model keeps colours. */
+function hexColour(value) {
+  const text = String(value).trim().toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(text)) return text;
+  if (/^#[0-9a-f]{3}$/.test(text)) return `#${[...text.slice(1)].map((c) => c + c).join('')}`;
+  const rgb = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(text);
+  if (rgb) return `#${rgb.slice(1, 4).map((n) => Number(n).toString(16).padStart(2, '0')).join('')}`;
+  return null;
 }
 
 /** Applies bold, italic or underline to the current selection. */

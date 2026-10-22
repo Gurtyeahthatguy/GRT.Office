@@ -47,6 +47,21 @@
   --grid-line: #303338;
 }
 
+/* Sepia: the reading palette of GRT Bible. */
+:root[data-theme="sepia"] {
+  --bg: #ece2cc;
+  --bg-raised: #f6eedb;
+  --bg-sunken: #e0d3b6;
+  --border: #d3c29d;
+  --text: #3b2f20;
+  --text-dim: #68583e;
+  --accent: #8a3a1f;
+  --danger: #9e2a1c;
+  --ok: #4f5e1e;
+  --today: #f4e4bc;
+  --grid-line: #dccfae;
+}
+
 :root[data-theme="gold"] {
   --bg: #f5efe1;
   --bg-raised: #fdfaf3;
@@ -501,6 +516,22 @@ main {
 
 /* Panel */
 
+.toast {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 40;
+  max-width: 70vw;
+}
+
+.toast.error { border-color: var(--danger); }
+
 .overlay {
   position: fixed;
   inset: 0;
@@ -550,3 +581,21 @@ main {
   gap: 8px;
   margin-top: 14px;
 }
+
+/* Printed calendars: ink on white, the calendar's colour as a mark beside each entry. */
+.dates-print { color: #111111; font: 9pt/1.3 system-ui, sans-serif; }
+.print-calendar { display: grid; box-sizing: border-box; }
+.print-month { grid-template-columns: repeat(7, 1fr); border-top: 0.5pt solid #999; border-left: 0.5pt solid #999; }
+.print-month-head { font-weight: 600; padding: 2pt 3pt; border-right: 0.5pt solid #999; border-bottom: 0.5pt solid #999; background: #f0f0f0; }
+.print-day { border-right: 0.5pt solid #999; border-bottom: 0.5pt solid #999; padding: 2pt 3pt; overflow: hidden; min-height: 0; }
+.print-day.outside { color: #888; background: #fafafa; }
+.print-day-number { font-weight: 600; margin-bottom: 1pt; }
+.print-week { grid-template-columns: repeat(7, 1fr); border-left: 0.5pt solid #999; }
+.print-week-day { border-right: 0.5pt solid #999; padding: 0 3pt; overflow: hidden; }
+.print-week-head { font-weight: 600; border-bottom: 0.5pt solid #999; padding: 2pt 0; margin-bottom: 2pt; }
+.print-entry { display: flex; gap: 3pt; padding-left: 3pt; border-left: 2pt solid var(--chip, #888); margin: 1pt 0; overflow: hidden; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.print-entry-time { font-variant-numeric: tabular-nums; color: #444; white-space: nowrap; }
+.print-entry-text { overflow-wrap: anywhere; }
+.print-entry-where { color: #666; margin-left: auto; }
+.print-agenda-date { font-size: 10.5pt; margin: 8pt 0 2pt; border-bottom: 0.5pt solid #bbb; }
+.print-agenda .print-entry { font-size: 10pt; }

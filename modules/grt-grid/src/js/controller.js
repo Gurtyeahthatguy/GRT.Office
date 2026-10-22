@@ -5,6 +5,7 @@ import { UndoStack } from './core/undo.js';
 import { parseInput } from './format.js';
 import { a1, key, columnName } from './references.js';
 import { parseCsv, toCsv, coerce, sniff } from './core/csv.js';
+import { normalisePrint } from './model.js';
 
 export class SheetController {
   /**
@@ -379,6 +380,38 @@ export class SheetController {
     this.anchor = { row: 0, col: 0 };
     this.onChange({ sheet: true });
     return true;
+  }
+
+  // Printing
+
+  /** Changes how a sheet prints, as one step that can be undone. */
+  setPrint(sheetId, changes) {
+    const target = this.model.sheetById(sheetId);
+    if (!target) return;
+    const next = normalisePrint({ ...target.print, ...changes });
+    if (JSON.stringify(next) === JSON.stringify(target.print)) return;
+    this.record(() => {
+      target.print = next;
+      this.model.dirty = true;
+    });
+  }
+
+  /** Starts a new page above the selection's top row, or stops doing so. */
+  toggleRowBreak() {
+    const row = this.selection.top;
+    if (row === 0) return;
+    const breaks = new Set(this.sheet.print.rowBreaks);
+    if (breaks.has(row)) breaks.delete(row); else breaks.add(row);
+    this.setPrint(this.sheetId, { rowBreaks: [...breaks] });
+  }
+
+  /** Starts a new page left of the selection's first column, or stops doing so. */
+  toggleColumnBreak() {
+    const col = this.selection.left;
+    if (col === 0) return;
+    const breaks = new Set(this.sheet.print.colBreaks);
+    if (breaks.has(col)) breaks.delete(col); else breaks.add(col);
+    this.setPrint(this.sheetId, { colBreaks: [...breaks] });
   }
 
   // Undo

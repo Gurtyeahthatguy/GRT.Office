@@ -57,7 +57,10 @@ export class Interaction {
     svg.addEventListener('mousedown', (e) => this.down(e));
     window.addEventListener('mousemove', (e) => this.move(e));
     window.addEventListener('mouseup', (e) => this.up(e));
-    svg.addEventListener('dblclick', (e) => this.doubleClick(e));
+    svg.addEventListener('dblclick', (e) => {
+      if (this.doubled) this.doubled = false;
+      else this.doubleClick(e);
+    });
     svg.addEventListener('wheel', (e) => this.wheel(e), { passive: false });
     svg.addEventListener('contextmenu', (e) => e.preventDefault());
   }
@@ -81,6 +84,14 @@ export class Interaction {
       return;
     }
     if (event.button !== 0) return;
+
+    // The second press of a double click.
+    this.doubled = event.detail === 2;
+    if (this.doubled) {
+      event.preventDefault();
+      this.doubleClick(event);
+      return;
+    }
 
     const point = this.renderer.toDiagram(event.clientX, event.clientY);
     const hit = hitTarget(event.target);

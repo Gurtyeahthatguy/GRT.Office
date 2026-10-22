@@ -33,7 +33,6 @@ async function ready(extra = () => true) {
   // Startup is several awaits deep before there is anything to look at.
   for (let i = 0; i < 12; i += 1) await (i % 4 === 3 ? tick() : settle());
 
-  // Then until the backend stops being called.
   let seen = -1;
   return until(() => {
     const calls = window.__TAURI_CALLS__?.length ?? 0;
@@ -249,5 +248,137 @@ describe('saving', () => {
 
   it('CANARY: nothing is written before anything changes', async () => {
     expect(commands()).not.toContain('write_file_atomic');
+  });
+});
+
+describe('closing', () => {
+  const closeRequested = () => window.__TAURI_LISTENERS__['grt://close-requested']();
+  const toggleTask = () => document.querySelector('[data-action="toggle-task"]')
+    .dispatchEvent(new window.Event('click', { bubbles: true }));
+
+  it('CANARY: with nothing changed, closes at once and writes nothing', async () => {
+    await closeRequested();
+    expect(commands()).toContain('close_window');
+    expect(commands()).not.toContain('write_file_atomic');
+  });
+
+  it('closing straight after a change writes it first', async () => {
+    toggleTask();
+    await closeRequested();
+    const order = commands();
+    expect(order).toContain('write_file_atomic');
+    expect(order).toContain('close_window');
+    expect(order.lastIndexOf('write_file_atomic')).toBeLessThan(order.indexOf('close_window'));
+  });
+
+  it('waits for a write still in flight before closing', async () => {
+    vi.resetModules();
+    installPage();
+    await import('../scripts/preview-stub.js');
+    const real = window.__TAURI__.core.invoke;
+    let release;
+    const slow = new Promise((resolve) => { release = resolve; });
+    const finished = [];
+    window.__TAURI__.core.invoke = async (command, payload, options) => {
+      if (command === 'write_file_atomic') {
+        await slow;
+        const result = await real(command, payload, options);
+        finished.push('write');
+        return result;
+      }
+      if (command === 'close_window') finished.push('close');
+      return real(command, payload, options);
+    };
+    await import('../src/js/main.js');
+    await ready();
+
+    toggleTask();
+    const closing = closeRequested();
+    for (let i = 0; i < 10; i += 1) await settle();
+    expect(finished).toEqual([]);
+    release();
+    await closing;
+    expect(finished.at(-1)).toBe('close');
+    expect(finished.filter((step) => step === 'write').length).toBeGreaterThan(0);
+  });
+
+  it('a change whose write failed is not forgotten when an earlier write lands', async () => {
+    vi.resetModules();
+    installPage();
+    await import('../scripts/preview-stub.js');
+    const real = window.__TAURI__.core.invoke;
+    let release;
+    const slow = new Promise((resolve) => { release = resolve; });
+    let writes = 0;
+    let landed = false;
+    window.__TAURI__.core.invoke = async (command, payload, options) => {
+      if (command === 'write_file_atomic') {
+        writes += 1;
+        if (writes > 1) throw new Error('disk full');
+        await slow;
+        const result = await real(command, payload, options);
+        landed = true;
+        return result;
+      }
+      return real(command, payload, options);
+    };
+    await import('../src/js/main.js');
+    await ready();
+
+    toggleTask();
+    for (let i = 0; i < 5; i += 1) await settle();
+    toggleTask();
+    await until(() => /Could not save/.test(document.getElementById('save-state').textContent));
+    release();
+    await until(() => landed);
+    for (let i = 0; i < 5; i += 1) await settle();
+
+    const closing = closeRequested();
+    await until(() => !document.getElementById('overlay').classList.contains('hidden'));
+    expect(document.getElementById('panel-title').textContent).toBe('Close without saving?');
+    document.querySelector('[data-choice="cancel"]').click();
+    await closing;
+    expect(commands()).not.toContain('close_window');
+  });
+
+  it('holds the window only until the change is written', async () => {
+    toggleTask();
+    await until(() => /Saved/.test(document.getElementById('save-state').textContent));
+    const guards = calls().filter((call) => call.command === 'set_close_guard')
+      .map((call) => call.payload.held);
+    expect(guards).toEqual([true, false]);
+  });
+});
+
+describe('printing', () => {
+  const preview = () => document.getElementById('print-view');
+  const set = (field, value) => {
+    const input = preview().querySelector(`[data-print-field="${field}"]`);
+    input.value = value;
+    input.dispatchEvent(new window.Event('change', { bubbles: true }));
+  };
+
+  it('prints the month with every entry, the week, and the agenda', async () => {
+    document.getElementById('btn-print').click();
+    await until(() => preview()?.querySelector('.print-page'));
+    const month = preview().querySelector('.print-month');
+    expect(month.querySelectorAll('.print-day').length % 7).toBe(0);
+    const titles = [...month.querySelectorAll('.print-entry-text')].map((n) => n.textContent);
+    expect(titles).toContain('Dentist');
+    expect(titles.filter((t) => t === 'Weekly review').length).toBeGreaterThan(1);
+
+    set('what', 'week');
+    await until(() => preview().querySelector('.print-week'));
+    expect(preview().querySelectorAll('.print-week-day')).toHaveLength(7);
+
+    set('what', 'agenda');
+    await until(() => preview().querySelector('[data-print-field="span"]'));
+    set('span', '60');
+    await until(() => preview().querySelectorAll('.print-agenda-date').length > 0);
+
+    preview().querySelector('[data-print="go"]').click();
+    await until(() => commands().includes('print_page'));
+    preview().querySelector('[data-print="close"]').click();
+    await until(() => !preview());
   });
 });

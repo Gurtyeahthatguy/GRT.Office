@@ -1,4 +1,5 @@
 import { isTheme, applyTheme } from './core/theme.js';
+import { isMode } from './core/keeper.js';
 /** Interface preferences. */
 
 /** Reached lazily rather than destructured at module load. */
@@ -12,6 +13,7 @@ export const DEFAULTS = {
   showThumbnails: true,
   openZoom: 'fit',          // 'fit' | 'actual'.
   fingerprintBeforeSave: true,
+  autosave: 'recovery',
 };
 
 let current = { ...DEFAULTS };
@@ -52,6 +54,7 @@ export async function loadSettings(ephemeral) {
   if (!['fit', 'actual'].includes(current.openZoom)) {
     current.openZoom = DEFAULTS.openZoom;
   }
+  if (!isMode(current.autosave)) current.autosave = DEFAULTS.autosave;
 
   applyTheme(current.theme);
   return current;

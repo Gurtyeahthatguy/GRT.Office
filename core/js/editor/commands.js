@@ -288,15 +288,22 @@ export function indentList(model, selection, delta) {
 }
 
 /** Inserts a block that is not text. */
-export function insertBlockAt(model, selection, block) {
+export function insertBlockAt(model, selection, block, { enter = false } = {}) {
   const at = isCollapsed(selection) ? selection.anchor : deleteRange(model, selection);
   const index = model.indexOf(at.blockId);
+  const current = model.block(at.blockId);
 
   const created = model.insertBlock(block, index + 1);
-  if (model.indexOf(created.id) === model.blocks.length - 1) {
+  // A block meant for typing takes the place of the empty paragraph it was asked for in.
+  if (enter && current?.kind === 'paragraph' && runsLength(current.runs ?? []) === 0) {
+    model.removeBlock(current.id);
+  }
+  // Something to type in after a last block that is not itself a paragraph.
+  if (model.indexOf(created.id) === model.blocks.length - 1 && created.kind !== 'paragraph') {
     model.insertBlock(makeBlock('paragraph'), model.blocks.length);
   }
 
+  if (enter) return collapsed(point(created.id, 0));
   const next = model.blocks[model.indexOf(created.id) + 1];
   return collapsed(point(next ? next.id : created.id, 0));
 }

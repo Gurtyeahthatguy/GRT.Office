@@ -47,6 +47,21 @@
   --rule: #303338;
 }
 
+/* Sepia: the reading palette of GRT Bible. */
+:root[data-theme="sepia"] {
+  --bg: #ece2cc;
+  --bg-raised: #f6eedb;
+  --bg-sunken: #e0d3b6;
+  --border: #d3c29d;
+  --text: #3b2f20;
+  --text-dim: #68583e;
+  --accent: #8a3a1f;
+  --danger: #9e2a1c;
+  --ok: #4f5e1e;
+  --mark: #efd78f;
+  --rule: #dccfae;
+}
+
 :root[data-theme="gold"] {
   --bg: #f5efe1;
   --bg-raised: #fdfaf3;
@@ -396,3 +411,10 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minma
   gap: 8px;
   margin-top: 14px;
 }
+
+/* Printed tables, laid out the same for measuring and for paper. */
+.print-table { width: 100%; border-collapse: collapse; table-layout: fixed; font: 9pt/1.3 system-ui, sans-serif; color: #111; }
+.print-measure .print-table { table-layout: auto; }
+.print-table th, .print-table td { border: 0.5pt solid #999; padding: 1.5pt 3pt; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.print-table th { background: #eee; font-weight: 600; }
+.print-table td.number { text-align: right; font-variant-numeric: tabular-nums; }

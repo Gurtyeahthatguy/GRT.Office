@@ -8,17 +8,23 @@ import { Presentation } from './present.js';
 import { runsToHtml, htmlToRuns, toggleFormat } from './text.js';
 import { editInPlace } from './editing.js';
 import { toHtml, slideToSvg, slideToPrintPage } from './export.js';
-import { convertPptx } from './pptx.js';
 import { describeFont, fontMediaType } from './fonts.js';
 import { UndoStack } from './core/undo.js';
-import { showPanel, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
+import { showPanel, showChoice, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
+import { readPackage, writePackage } from './core/package.js';
+import { readOdp, writeOdp } from './core/formats/odp.js';
+import { readPptx } from './core/formats/pptx-read.js';
+import { writePptx } from './core/formats/pptx-write.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
 import { THEMES } from './core/theme.js';
-import { renderToPdf } from './core/pdf.js';
+import { Keeper, MODES } from './core/keeper.js';
+import { renderToPdf, mergePdfPages } from './core/pdf.js';
+import { printPreview, pageControls, isPrintPreviewOpen } from './core/print.js';
+import { printablePages, LAYOUTS } from './printing.js';
 import { loadSettings, updateSettings, settings, canPersist } from './settings.js';
 import {
   pickToOpen, pickToSave, readDocument, readResource, writeDocument, writeText,
-  writeBytes, readFileBytes, readZip, stagePart, clearStaged, fileExists,
+  writeBytes, readFileBytes, readText, stagePart, clearStaged, fileExists,
   runtimeInfo, onFilesDropped, baseName, withExtension, toDataUrl, FILTERS,
 } from './io.js';
 
@@ -41,6 +47,20 @@ let images = new Map();
 /** The same pictures as their own bytes, for embedding into a PDF. */
 let imageBytes = new Map();
 
+/** Formats a presentation can be saved back into. */
+const WRITABLE = new Set(['grt', 'odp', 'fodp', 'pptx']);
+const OPENABLE = /\.(grt|odp|fodp|pptx)$/i;
+
+function formatOf(path) {
+  return (/\.([^.\\/]+)$/.exec(path ?? '')?.[1] ?? '').toLowerCase() || null;
+}
+
+/**
+ * What the open file is: its format, what did not come across when it was
+ * read, and whether saving over it anyway was agreed to.
+ */
+let file = { format: 'grt', losses: [], confirmed: false };
+
 // Notifications
 
 let toastTimer = null;
@@ -52,6 +72,18 @@ function toast(message, isError = false) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => node.classList.add('hidden'), 3400);
 }
+
+/** Autosave, recovery copies, and asking before unsaved work is dropped. */
+const keeper = new Keeper({
+  name: () => baseName(model.path) ?? 'Untitled',
+  path: () => model.path ?? null,
+  canSaveInPlace: () => !!model.path && WRITABLE.has(file.format) && (file.losses.length === 0 || file.confirmed),
+  writeCopy: (path) => writeDocument(path, documentParts()),
+  save: (options) => save(false, options),
+  openRecovered: (file, meta) => openRecovered(file, meta),
+  // Leaving a text box or the notes commits what was typed in it.
+  settle: () => document.activeElement?.blur?.(),
+}, { program: 'GRT Slides', extension: 'grt', toast });
 
 async function guard(label, action) {
   if (busy) return;
@@ -127,6 +159,8 @@ function change(mutate) {
 
 // Text editing
 
+const NEW_TEXT = 'New text';
+
 /** Edits a text box in place. */
 function editText(id) {
   const element = model.element(currentSlideId, id);
@@ -140,6 +174,8 @@ function editText(id) {
   editInPlace(node, {
     className: 'editing',
     selectAll: true,
+    // A box nobody has typed in yet is replaced by what is typed.
+    replace: element.content.map((run) => run.text).join('') === NEW_TEXT,
     seed: () => { node.innerHTML = runsToHtml(element.content); },
     read: () => htmlToRuns(node),
     changed: (runs) => JSON.stringify(runs) !== JSON.stringify(element.content),
@@ -201,7 +237,7 @@ function deleteSlide() {
 function addText() {
   change(() => {
     const created = model.addElement(currentSlideId, {
-      kind: 'text', x: 200, y: 200, w: 900, h: 200, content: [{ text: 'New text' }],
+      kind: 'text', x: 200, y: 200, w: 900, h: 200, content: [{ text: NEW_TEXT }],
     });
     interaction.selection = new Set([created.id]);
   });
@@ -316,7 +352,7 @@ async function editTable() {
     </div>
     <p class="fp-note">
       A static grid: rows, columns and text. Merged cells and per-cell
-      formatting are deliberately absent — tables in slides are almost always
+      formatting are deliberately absent: tables in slides are almost always
       three rows by two columns, and the full version costs a second model and
       a second way of editing for a case that rarely arrives.
     </p>`, 'Apply');
@@ -394,7 +430,7 @@ async function addFont() {
 
   const family = file.replace(/\.[^.]+$/, '');
   change(() => model.addFont(family, resource));
-  toast(`${family} added — choose it in Design or for the selection`);
+  toast(`${family} added: choose it in Design or for the selection`);
 }
 
 function deleteSelection() {
@@ -435,7 +471,9 @@ function step(direction) {
 
 function newDocument() {
   model = new SlidesModel();
+  file = { format: 'grt', losses: [], confirmed: false };
   undo = new UndoStack(model);
+  keeper.watch(model);
   images = new Map();
   imageBytes = new Map();
   clearStaged().catch(() => {});
@@ -446,14 +484,25 @@ function newDocument() {
   draw();
 }
 
-async function openPath(path) {
+/** New and Open drop the current document: ask first if it has unsaved work. */
+async function newDocumentConfirmed() {
+  if (await keeper.confirmLeave()) newDocument();
+}
+
+async function openConfirmed(path) {
+  if (!await keeper.confirmLeave()) return;
+  await openPath(path);
+}
+
+/** Reads a document into the program, without naming it. */
+async function loadDocument(path) {
   const { parts, resources } = await readDocument(path);
   const raw = parts['content/main.json'];
   if (!raw) throw new Error('This document has no presentation content');
 
   model = new SlidesModel(JSON.parse(raw));
-  model.path = path;
   undo = new UndoStack(model);
+  keeper.watch(model);
 
   // Images are read back and staged again, so a save after opening writes
   // them out unchanged rather than losing them.
@@ -471,35 +520,194 @@ async function openPath(path) {
   interaction.attach(model, currentSlideId);
   renderer.fit(model);
   draw();
-
-  document.title = `${baseName(path)} — GRT Slides`;
-  toast(`Opened ${baseName(path)} — ${model.slides.length} slide(s)`);
 }
 
-async function save(forceDialog) {
-  let path = forceDialog ? null : model.path;
-  if (!path) {
-    path = await pickToSave(model.path ?? 'presentation.grt', FILTERS.grt, 'Save presentation');
-    if (!path) return;
+async function openPath(path) {
+  const format = formatOf(path);
+  if (format !== 'grt') {
+    await importDocument(path, format);
+    return;
   }
+  await loadDocument(path);
+  model.path = path;
+  file = { format: 'grt', losses: [], confirmed: false };
+  document.title = `${baseName(path)} - GRT Slides`;
+  toast(`Opened ${baseName(path)}: ${model.slides.length} slide(s)`);
+}
 
+/** Reads a presentation in another program's format, and says what did not come across. */
+async function importDocument(path, format) {
+  let result;
+  if (format === 'odp') result = readOdp(await readPackage(path));
+  else if (format === 'fodp') result = readOdp(await readText(path));
+  else if (format === 'pptx') result = readPptx(await readPackage(path));
+  else throw new Error(`GRT Slides does not open .${format} files`);
+
+  await clearStaged();
+  images = new Map();
+  imageBytes = new Map();
+  for (const [name, bytes] of result.images) {
+    images.set(name, toDataUrl(bytes, name));
+    imageBytes.set(name, bytes);
+    await stagePart(name, bytes);
+  }
+  model = new SlidesModel(result.document);
+  model.path = path;
+  file = { format, losses: result.losses.lines(), confirmed: false };
+  undo = new UndoStack(model);
+  keeper.watch(model);
+  currentSlideId = model.slides[0].id;
+  interaction.attach(model, currentSlideId);
+  renderer.fit(model);
+  draw();
+  document.title = `${baseName(path)} - GRT Slides`;
+
+  if (result.losses.empty) {
+    toast(`Opened ${baseName(path)}: ${model.slides.length} slide(s)`);
+    return;
+  }
+  await showPanel(`Opened ${escapeHtml(baseName(path))}`, `
+    <p class="fp-note" style="margin-top:0">${model.slides.length} slide(s). What follows did
+    not come across, listed rather than dropped quietly.</p>
+    ${result.losses.html()}
+    <p class="fp-note">Saving over the file would lose these for good, so it
+    asks first; saving as a GRT document keeps everything that did come across.</p>`);
+}
+
+/** Opens a recovery copy as the document it was, with its changes unsaved. */
+async function openRecovered(copy, meta) {
+  await loadDocument(copy);
+  model.path = meta.path ?? null;
+  const format = formatOf(meta.path) ?? 'grt';
+  file = {
+    format,
+    losses: format === 'grt' ? [] : ['Anything the program could not read when the file was first opened'],
+    confirmed: false,
+  };
+  model.dirty = true;
+  const name = meta.name || 'Untitled';
+  document.title = `${name} (recovered) - GRT Slides`;
+  refresh();
+  toast(`Recovered ${name}: save it to keep the changes`);
+}
+
+/** The text parts of a saved document; images and fonts travel as staged parts. */
+function documentParts() {
   const manifest = {
     kind: 'slides',
     format_version: 1,
     parts: [{ path: 'content/main.json', media_type: 'application/json' }],
     links: [],
   };
-
-  await writeDocument(path, {
+  return {
     'manifest.json': `${JSON.stringify(manifest, null, 2)}\n`,
     'content/main.json': `${JSON.stringify(model.toJSON(), null, 2)}\n`,
-  });
+  };
+}
 
+const FORMAT_NAMES = {
+  grt: 'GRT document (.grt)',
+  odp: 'OpenDocument presentation (.odp)',
+  pptx: 'PowerPoint presentation (.pptx)',
+  fodp: 'Flat OpenDocument presentation (.fodp)',
+};
+
+/** Asks which format to save in, then where. */
+async function chooseSaveTarget() {
+  const current = WRITABLE.has(file.format) ? file.format : 'grt';
+  const confirmed = await showPanel('Save as', `
+    <div class="form-grid">
+      <label for="s-format">Format</label>
+      <select id="s-format" data-field="format">
+        ${Object.entries(FORMAT_NAMES).map(([id, label]) =>
+    `<option value="${id}"${id === current ? ' selected' : ''}>${label}</option>`).join('')}
+      </select>
+    </div>
+    <p class="fp-note">A GRT document keeps everything this program can do.
+    The others open in LibreOffice and PowerPoint; what they cannot hold is said
+    before anything is written.</p>`, 'Choose file');
+  if (!confirmed) return null;
+  const { format } = readFields();
+  const chosen = await pickToSave(withExtension(model.path ?? 'presentation', format), FILTERS[format], 'Save presentation');
+  return chosen ? { path: withExtension(chosen, format), format } : null;
+}
+
+/** Writes the presentation in a format, and says what that format could not hold. */
+async function writeAs(path, format) {
+  if (format === 'grt') {
+    await writeDocument(path, documentParts());
+    return [];
+  }
+  const json = model.toJSON();
+  if (format === 'fodp') {
+    const { text, losses } = writeOdp(json, imageBytes, { flat: true });
+    await writeText(path, text);
+    return losses.lines();
+  }
+  const { entries, losses } = format === 'odp' ? writeOdp(json, imageBytes) : writePptx(json, imageBytes);
+  await writePackage(path, entries);
+  return losses.lines();
+}
+
+/**
+ * Saves the presentation, in its own format when it can be written back.
+ * Silent, it asks nothing and reports nothing, which is how autosave writes
+ * onto the file. Resolves false when nothing was saved.
+ */
+async function save(forceDialog, { silent = false } = {}) {
+  let path = forceDialog ? null : model.path;
+  let format = file.format;
+  if (!path) {
+    if (silent) return false;
+    const chosen = await chooseSaveTarget();
+    if (!chosen) return false;
+    ({ path, format } = chosen);
+  } else if (file.losses.length > 0 && !file.confirmed) {
+    if (silent) return false;
+    const choice = await showChoice(`Save over “${baseName(path)}”?`, `
+      <p>When it was opened, these did not come across. Saving over the file
+      drops them from it for good:</p>
+      <ul class="problem-list">${file.losses.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`, [
+      { id: 'cancel', label: 'Cancel' },
+      { id: 'copy', label: 'Save a copy…', primary: true },
+      { id: 'over', label: 'Save over it' },
+    ]);
+    if (choice === 'copy') return save(true);
+    if (choice !== 'over') return false;
+    file.confirmed = true;
+  }
+
+  const revision = keeper.revision;
+  const lost = await writeAs(path, format);
+
+  const sameFile = path === model.path && format === file.format;
   model.path = path;
-  model.dirty = false;
-  document.title = `${baseName(path)} — GRT Slides`;
+  file = sameFile ? file : { format, losses: [], confirmed: false };
+  model.dirty = keeper.revision !== revision;
+  undo.markSaved();
+  document.title = `${baseName(path)} - GRT Slides`;
   refresh();
-  toast(`Saved ${baseName(path)}`);
+  if (!silent) toast(lost.length > 0 ? `Saved ${baseName(path)}, without: ${lost.join('; ')}` : `Saved ${baseName(path)}`);
+  await keeper.saved();
+  return true;
+}
+
+/** How the deck was last printed, kept while the program runs. */
+let printSetup = { layout: 'slides', size: 'A4', orientation: 'landscape', frame: false };
+
+async function printDeck() {
+  document.activeElement?.blur?.();
+  printSetup = await printPreview({
+    title: 'Print',
+    setup: printSetup,
+    controls: (s) => `
+      <label>Print<select data-print-field="layout">
+        ${Object.entries(LAYOUTS).map(([id, layout]) => `<option value="${id}"${s.layout === id ? ' selected' : ''}>${layout.label}</option>`).join('')}
+      </select></label>
+      ${pageControls(s)}
+      <label><input type="checkbox" data-print-field="frame"${s.frame ? ' checked' : ''} />Frame slides</label>`,
+    build: (s) => printablePages(model, images, s),
+  });
 }
 
 async function exportDocument() {
@@ -507,9 +715,9 @@ async function exportDocument() {
     <div class="form-grid">
       <label for="ex-format">Format</label>
       <select id="ex-format" data-field="format">
-        <option value="html">HTML — one file, opens anywhere</option>
-        <option value="pdf">PDF — one page per slide</option>
-        <option value="svg">SVG — the current slide</option>
+        <option value="html">HTML: one file, opens anywhere</option>
+        <option value="pdf">PDF: one page per slide</option>
+        <option value="svg">SVG: the current slide</option>
       </select>
     </div>
     <div class="setting">
@@ -541,89 +749,19 @@ async function exportDocument() {
     await writeText(path, slideToSvg(model, currentSlideId, images));
   } else {
     // One page per slide, each through the shared engine.
+    const report = { replaced: 0 };
     const pages = await Promise.all(
       model.slides.map((slide) =>
-        renderToPdf(slideToPrintPage(model, slide.id, imageBytes), { audit: false })),
+        renderToPdf(slideToPrintPage(model, slide.id, imageBytes), { audit: false, report })),
     );
     await writeBytes(path, await mergePdfPages(pages));
+    if (report.replaced > 0) {
+      toast(`Exported ${baseName(path)}, ${report.replaced} character(s) the PDF font cannot draw, replaced; printing to PDF keeps them`, true);
+      return;
+    }
   }
 
   toast(`Exported ${baseName(path)}`);
-}
-
-/** Joins single-page PDFs into one document. */
-async function mergePdfPages(pages) {
-  const { PDFDocument } = await import('../vendor/pdf-lib.esm.js');
-  const { stripMetadata } = await import('./core/metadata.js');
-
-  const output = await PDFDocument.create({ updateMetadata: false });
-  for (const bytes of pages) {
-    const source = await PDFDocument.load(bytes, { updateMetadata: false });
-    const copied = await output.copyPages(source, source.getPageIndices());
-    for (const page of copied) output.addPage(page);
-  }
-
-  stripMetadata(output);
-  return output.save({ useObjectStreams: true, addDefaultPage: false });
-}
-
-// Importing a PowerPoint file
-
-/** Imports a .pptx, then says plainly what it could not convert. */
-async function importPptx(path) {
-  const archive = await readZip(path);
-
-  // Images are staged as they are found, so a save straight after an import
-  // writes them into the container rather than losing them.
-  const staged = new Map();
-  for (const name of archive.binaries ?? []) {
-    if (!name.startsWith('ppt/media/')) continue;
-    try {
-      const bytes = await readResource(path, name);
-      const target = `resources/${name.split('/').pop()}`;
-      await stagePart(target, bytes);
-      staged.set(name, { target, url: toDataUrl(bytes, target) });
-    } catch {
-      // Recorded by the converter as a missing image rather than thrown here.
-    }
-  }
-
-  const { document: imported, warnings } = convertPptx(archive, (name) => staged.get(name)?.url);
-
-  // Point the elements at the resource names this program uses.
-  for (const slide of imported.slides) {
-    for (const element of slide.elements) {
-      if (element.kind === 'image' && element.resource) {
-        element.resource = staged.get(element.resource)?.target ?? null;
-      }
-    }
-  }
-
-  model = new SlidesModel(imported);
-  model.path = null;                 // imported, not opened: Save asks where.
-  undo = new UndoStack(model);
-  images = new Map([...staged.values()].map((s) => [s.target, s.url]));
-
-  currentSlideId = model.slides[0].id;
-  interaction.attach(model, currentSlideId);
-  renderer.fit(model);
-  draw();
-  document.title = `${baseName(path)} — GRT Slides`;
-
-  await showPanel(`Imported ${escapeHtml(baseName(path))}`, `
-    <p class="fp-note" style="margin-top:0">
-      ${model.slides.length} slide(s) imported. What follows is what did
-      <strong>not</strong> come across — listed rather than hidden, because a
-      conversion that quietly drops things is discovered at the worst possible
-      moment.
-    </p>
-    <ul class="problem-list">
-      ${warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}
-    </ul>
-    <p class="fp-note">
-      For exchanging a finished presentation, PDF or the self-contained HTML
-      export lose nothing, because neither tries to stay editable.
-    </p>`);
 }
 
 // Settings
@@ -651,6 +789,16 @@ async function openSettings() {
       <input type="checkbox" data-field="showNotes" ${current.showNotes ? 'checked' : ''} />
     </div>
     <div class="setting">
+      <span class="label">Keep unsaved work
+        <span class="hint">Every couple of seconds of quiet. A recovery copy
+        is offered back if the program closes unexpectedly; onto the file
+        saves the presentation itself, once it has a name.</span>
+      </span>
+      <select data-field="autosave">
+        ${MODES.map((m) => option(m.id, m.label, current.autosave)).join('')}
+      </select>
+    </div>
+    <div class="setting">
       <span class="label">Shrink text that does not fit
         <span class="hint">Off by default: text quietly getting smaller is an
         unwelcome surprise in front of an audience.</span>
@@ -658,13 +806,14 @@ async function openSettings() {
       <input type="checkbox" data-field="autoShrinkText" ${current.autoShrinkText ? 'checked' : ''} />
     </div>
     <p class="fp-note">${canPersist()
-    ? 'Stored as a settings.json holding these four values. No record of which documents were opened.'
+    ? 'Stored as a settings.json holding these five values. No record of which documents were opened.'
     : '<strong>Ephemeral mode:</strong> changes apply now but are not written to disk.'}</p>`,
   'Apply');
   if (!confirmed) return;
 
   const fields = readFields();
   const stored = await updateSettings(fields);
+  keeper.setMode(settings().autosave);
   applySettings();
   draw();
   toast(stored ? 'Settings saved' : 'Settings applied for this session only');
@@ -725,7 +874,7 @@ async function openDesign() {
     </div>
     <p class="fp-note" style="margin-top:8px">
       A preset sets the colours and fonts below in one go. Slides given their
-      own background keep it — an explicit choice on one slide should survive a
+      own background keep it: an explicit choice on one slide should survive a
       change of theme.
     </p>
 
@@ -739,7 +888,7 @@ async function openDesign() {
     <p class="fp-note">
       Fonts are the system's own. Embedding one would make an exported file
       self-sufficient, but font files carry metadata of their own and would
-      inflate every export — that trade is still an open question.
+      inflate every export, and that trade is still an open question.
     </p>`, 'Apply');
   if (!confirmed) return;
 
@@ -778,7 +927,7 @@ async function openCanvasSetup() {
       <select id="c-preset" data-field="preset">
         ${Object.entries(CANVAS_PRESETS).map(([id, p]) =>
     `<option value="${id}"${current === `${p.w}x${p.h}` ? ' selected' : ''}>`
-    + `${p.label} — ${p.w}×${p.h}</option>`).join('')}
+    + `${p.label}, ${p.w}×${p.h}</option>`).join('')}
         <option value="custom">Something else…</option>
       </select>
       <label for="c-w">Width</label>
@@ -883,6 +1032,26 @@ async function openElementLook() {
     `<option value="${id}"${first.font === id ? ' selected' : ''}>${f.label}</option>`).join('')}
       </select>
     </div>
+    <div class="setting">
+      <span class="label">Text size
+        <span class="hint">In pixels of the slide; empty follows the style (${style.size ?? 32}).</span>
+      </span>
+      <input type="number" data-field="size" min="4" max="400" value="${first.size ?? ''}" />
+    </div>
+    <div class="setting">
+      <span class="label">Alignment</span>
+      <select data-field="align">
+        <option value="">Follow the style</option>
+        ${['left', 'center', 'right'].map((a) => `<option value="${a}"${first.align === a ? ' selected' : ''}>${a[0].toUpperCase()}${a.slice(1)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="setting">
+      <span class="label">Text sits at the</span>
+      <select data-field="valign">
+        ${[['top', 'Top'], ['middle', 'Middle'], ['bottom', 'Bottom']].map(([v, label]) =>
+    `<option value="${v}"${(first.valign ?? 'top') === v ? ' selected' : ''}>${label}</option>`).join('')}
+      </select>
+    </div>
     <p class="fp-note">
       A named style changes every title at once; these override the one element
       that has to be different. Both exist because presentations are made of
@@ -897,6 +1066,9 @@ async function openElementLook() {
       fill: fields.inheritFill ? '' : fields.fill,
     });
     if (fields.font) model.setElementFont(currentSlideId, ids, fields.font);
+    model.setElementText(currentSlideId, ids, {
+      size: Number(fields.size) || null, align: fields.align || null, valign: fields.valign,
+    });
   });
   toast(`Updated ${ids.length} element(s)`);
 }
@@ -907,13 +1079,13 @@ function commands() {
   const entry = (label, hint, run) => ({ id: label, label, hint, run });
 
   return [
-    entry('New presentation', 'Ctrl+N', () => newDocument()),
+    entry('New presentation', 'Ctrl+N', () => guard('New', newDocumentConfirmed)),
     entry('Open…', 'Ctrl+O', () => el('btn-open').click()),
     entry('Save', 'Ctrl+S', () => guard('Save', () => save(false))),
     entry('Save as…', 'Ctrl+Shift+S', () => guard('Save', () => save(true))),
     entry('Export…', '', () => guard('Export', exportDocument)),
-    entry('Import PowerPoint…', '', () => el('btn-import-pptx').click()),
     entry('Slide size…', '', () => guard('Slide size', openCanvasSetup)),
+    entry('Print…', 'Ctrl+P', () => guard('Print', printDeck)),
 
     entry('Present from the first slide', 'F5', () => present(0)),
     entry('Present from this slide', 'Shift+F5', () => present()),
@@ -1036,22 +1208,15 @@ function stepSlide(delta) {
 
 // Events
 
-el('btn-new').onclick = () => newDocument();
+el('btn-new').onclick = () => guard('New', newDocumentConfirmed);
 el('btn-open').onclick = () => guard('Open', async () => {
-  const path = await pickToOpen(
-    [...FILTERS.grt, ...FILTERS.pptx], 'Open presentation or import PowerPoint',
-  );
-  if (!path) return;
-  if (/\.pptx$/i.test(path)) await importPptx(path);
-  else await openPath(path);
-});
-el('btn-import-pptx').onclick = () => guard('Import', async () => {
-  const path = await pickToOpen(FILTERS.pptx, 'Import PowerPoint');
-  if (path) await importPptx(path);
+  const path = await pickToOpen(FILTERS.presentations, 'Open presentation');
+  if (path) await openConfirmed(path);
 });
 el('btn-save').onclick = () => guard('Save', () => save(false));
 el('btn-save-as').onclick = () => guard('Save', () => save(true));
 el('btn-export').onclick = () => guard('Export', exportDocument);
+el('btn-print').onclick = () => guard('Print', printDeck);
 el('btn-present').onclick = () => present();
 el('btn-presenter').onclick = () => guard('Presenter', openPresenter);
 el('btn-settings').onclick = () => guard('Settings', openSettings);
@@ -1076,13 +1241,20 @@ el('style-picker').onchange = (event) => {
   event.target.value = '';
 };
 
+// Each stretch of typing in the notes is one step to undo.
+let notesTyping = false;
+el('notes').onfocus = () => { notesTyping = false; };
 el('notes').oninput = (event) => {
+  if (!notesTyping) {
+    notesTyping = true;
+    interaction.onCommit(model.snapshot());
+  }
   model.setNotes(currentSlideId, event.target.value);
   refresh();
 };
 
 document.addEventListener('keydown', (event) => {
-  if (presentation.running || isDialogOpen() || isPaletteOpen()) return;
+  if (presentation.running || isDialogOpen() || isPaletteOpen() || isPrintPreviewOpen()) return;
 
   const target = event.target;
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
@@ -1101,13 +1273,16 @@ document.addEventListener('keydown', (event) => {
     addSlide();
   } else if (ctrl && event.key.toLowerCase() === 'n') {
     event.preventDefault();
-    newDocument();
+    el('btn-new').click();
   } else if (ctrl && event.key.toLowerCase() === 's') {
     event.preventDefault();
     guard('Save', () => save(event.shiftKey));
   } else if (ctrl && event.key.toLowerCase() === 'o') {
     event.preventDefault();
     el('btn-open').click();
+  } else if (ctrl && event.key.toLowerCase() === 'p') {
+    event.preventDefault();
+    guard('Print', printDeck);
   } else if (ctrl && event.key === ',') {
     event.preventDefault();
     guard('Settings', openSettings);
@@ -1139,8 +1314,8 @@ document.addEventListener('keydown', (event) => {
 });
 
 onFilesDropped((paths) => guard('Open', async () => {
-  const deck = paths.find((p) => /\.grt$/i.test(p));
-  if (deck) await openPath(deck);
+  const deck = paths.find((p) => OPENABLE.test(p));
+  if (deck) await openConfirmed(deck);
 }));
 
 window.addEventListener('resize', () => {
@@ -1160,10 +1335,16 @@ window.addEventListener('resize', () => {
   if (info.ephemeral) el('ephemeral-note').classList.remove('hidden');
 
   interaction.attach(model, currentSlideId);
+  keeper.watch(model);
   renderer.fit(model);
   draw();
 
-  if (info.initialFile && await fileExists(info.initialFile)) {
-    await guard('Open', () => openPath(info.initialFile));
+  const initial = info.initialFile && OPENABLE.test(info.initialFile) && await fileExists(info.initialFile)
+    ? info.initialFile : null;
+  const recovered = await keeper.start({
+    ephemeral: info.ephemeral, mode: settings().autosave, initialFile: initial,
+  });
+  if (initial && !recovered) {
+    await guard('Open', () => openPath(initial));
   }
 }());

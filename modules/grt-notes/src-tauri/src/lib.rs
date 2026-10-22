@@ -201,11 +201,12 @@ fn delete_entry(path: String) -> Result<(), String> {
             .map_err(|e| format!("Cannot read {path}: {e}"))?
             .flatten()
             .all(|entry| {
-                entry
+                let hidden = entry
                     .file_name()
                     .to_str()
                     .map(|n| n.starts_with('.'))
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                hidden && !entry.path().is_dir()
             });
         if !empty {
             return Err("That folder still has notes in it".to_string());
@@ -213,7 +214,7 @@ fn delete_entry(path: String) -> Result<(), String> {
         return fs::remove_dir_all(target).map_err(|e| format!("Cannot remove {path}: {e}"));
     }
 
-    if target.extension().and_then(|e| e.to_str()) != Some("grt") {
+    if !matches!(target.extension().and_then(|e| e.to_str()), Some("grt" | "md")) {
         return Err("Only notes and folders can be removed".to_string());
     }
 
@@ -222,6 +223,111 @@ fn delete_entry(path: String) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("Cannot remove {path}: {e}")),
     }
+}
+
+// A vault of Markdown notes.
+
+/// The folder as the system names it, when it is in Documents or Downloads.
+#[tauri::command]
+fn check_vault(app: AppHandle, path: String) -> Result<String, String> {
+    let wanted = fs::canonicalize(&path).map_err(|e| format!("Cannot open {path}: {e}"))?;
+    if !wanted.is_dir() {
+        return Err(format!("{path} is not a folder"));
+    }
+    let allowed: Vec<PathBuf> = [app.path().document_dir(), app.path().download_dir()]
+        .into_iter()
+        .flatten()
+        .filter_map(|dir| fs::canonicalize(dir).ok())
+        .collect();
+    if allowed.iter().any(|root| wanted.starts_with(root)) {
+        return Ok(wanted.to_string_lossy().into_owned());
+    }
+    let names: Vec<String> = allowed.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    Err(format!(
+        "GRT Notes opens vaults kept in {}. This folder is elsewhere, where the program is not allowed to write; move the vault there and open it again.",
+        if names.is_empty() { "your Documents or Downloads folder".to_string() } else { names.join(" or ") }
+    ))
+}
+
+fn markdown_entry(path: &Path) -> Option<serde_json::Value> {
+    if path.extension().and_then(|e| e.to_str()) != Some("md") {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?.to_string();
+    Some(serde_json::json!({
+        "path": path.to_string_lossy(),
+        "file": stem,
+        "modified": modified_seconds(path),
+    }))
+}
+
+/// The visible entries of a folder, sorted, without hidden ones and the vault's trash.
+fn visible(dir: &Path) -> Vec<PathBuf> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .map(|read| read.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    entries.retain(|path| {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| !n.starts_with('.'))
+            .unwrap_or(false)
+    });
+    entries.sort();
+    entries
+}
+
+/// Every folder below one, at any depth, named by its path from the top folder.
+fn nested_sections(top: &Path, dir: &Path, depth: usize, out: &mut Vec<serde_json::Value>) {
+    if depth > 32 {
+        return;
+    }
+    for child in visible(dir) {
+        if !child.is_dir() {
+            continue;
+        }
+        let name = child
+            .strip_prefix(top)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let pages: Vec<serde_json::Value> = visible(&child).iter().filter_map(|p| markdown_entry(p)).collect();
+        out.push(serde_json::json!({ "name": name, "path": child.to_string_lossy(), "pages": pages }));
+        nested_sections(top, &child, depth + 1, out);
+    }
+}
+
+/// Reads a vault in the shape the archive has: the notes at its top, then each
+/// folder with every folder below it.
+#[tauri::command]
+fn read_vault(root: String) -> Result<serde_json::Value, String> {
+    let root = PathBuf::from(&root);
+    if !root.is_dir() {
+        return Err(format!("{} is not a folder", root.display()));
+    }
+    let name = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Vault")
+        .to_string();
+    let mut notebooks = vec![serde_json::json!({
+        "name": name,
+        "path": root.to_string_lossy(),
+        "sections": [],
+        "pages": visible(&root).iter().filter_map(|p| markdown_entry(p)).collect::<Vec<_>>(),
+    })];
+    for folder in visible(&root) {
+        if !folder.is_dir() {
+            continue;
+        }
+        let mut sections = Vec::new();
+        nested_sections(&folder, &folder, 0, &mut sections);
+        notebooks.push(serde_json::json!({
+            "name": folder.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+            "path": folder.to_string_lossy(),
+            "sections": sections,
+            "pages": visible(&folder).iter().filter_map(|p| markdown_entry(p)).collect::<Vec<_>>(),
+        }));
+    }
+    Ok(serde_json::json!({ "root": root.to_string_lossy(), "notebooks": notebooks, "vault": true }))
 }
 
 // Documents.
@@ -514,13 +620,24 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(grt_app::CloseGuard::default())
+        .manage(grt_app::Recovery::default())
+        .on_window_event(grt_app::on_window_event)
         .manage(Index::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            grt_app::commands::set_close_guard,
+            grt_app::commands::close_ack,
+            grt_app::commands::close_window,
+            grt_app::commands::print_page,
+            grt_app::commands::read_package,
+            grt_app::commands::write_package,
             read_file,
             write_file_atomic,
             file_exists,
             read_archive,
+            check_vault,
+            read_vault,
             create_folder,
             rename_entry,
             delete_entry,

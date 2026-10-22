@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the calendar. Network and shell access are denied: neither tauri-plugin-http nor tauri-plugin-shell is compiled in, so those permissions have nothing to attach to. This matters more here than anywhere else in the suite — calendar data says where you are, with whom, and when — so there is no sync, no CalDAV and no notification service to talk to. Window creation stays denied to the frontend.",
+  "description": "Capabilities for the calendar: no network and no shell.",
   "windows": [
     "main"
   ],

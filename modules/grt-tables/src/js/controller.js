@@ -46,10 +46,7 @@ export class TablesController {
     return this.database;
   }
 
-  /**
-   * Opens a file. It arrives read-only, and stays that way until the
-   * interface asks the user and calls `unlock`.
-   */
+  /** Opens a file read-only, until `unlock`. */
   async openDatabase(path) {
     this.database = await this.backend.openDatabase(path);
     await this.afterSchemaChange();
@@ -296,6 +293,22 @@ export class TablesController {
     };
   }
 
+  /** The same plan for rows that come from a spreadsheet rather than a CSV file. */
+  planRowsImport(rows, { tableName = null } = {}) {
+    const { header, columns } = inferSchema(rows);
+    return {
+      separator: null,
+      decimal: '.',
+      confident: true,
+      reason: 'Read from the sheet; formulas came in as their results.',
+      header,
+      columns,
+      rowCount: Math.max(0, rows.length - (header ? 1 : 0)),
+      table: { name: tableName ?? 'imported', columns },
+      rows,
+    };
+  }
+
   /** Carries out a plan the user has confirmed. */
   async importCsv(plan) {
     this.requireWritable();
@@ -328,11 +341,23 @@ export class TablesController {
 
   /** The current table, or the last query's result, as CSV. */
   async exportCsv({ fromQuery = false, separator = ',' } = {}) {
-    if (fromQuery && this.queryResult) {
-      return toCsv([this.queryResult.columns, ...this.queryResult.rows], { separator });
-    }
+    const { columns, rows } = await this.allRows({ fromQuery });
+    if (!fromQuery && !this.table) return '';
+    return toCsv([columns, ...rows], { separator });
+  }
 
-    if (!this.table) return '';
+  /**
+   * Every row of a table, or of the last query's result, as it is filtered and sorted now.
+   * @returns {Promise<{name: string, columns: string[], rows: any[][], types: string[]}>}
+   */
+  async allRows({ fromQuery = false, table = this.table } = {}) {
+    if (fromQuery) {
+      if (!this.queryResult) return { name: 'Query', columns: [], rows: [], types: [] };
+      return { name: 'Query', columns: this.queryResult.columns, rows: this.queryResult.rows, types: [] };
+    }
+    if (!table) return { name: '', columns: [], rows: [], types: [] };
+    const current = table === this.table;
+    const schema = current ? this.schema : await this.backend.tableSchema(table);
 
     // Read it a page at a time, for the same reason the grid does.
     const rows = [];
@@ -341,13 +366,13 @@ export class TablesController {
 
     for (;;) {
       const page = await this.backend.tablePage({
-        table: this.table,
+        table,
         limit: 500,
         offset,
-        orderBy: this.orderBy,
-        descending: this.descending,
-        filterColumn: this.filterColumn,
-        filterValue: this.filterValue || null,
+        orderBy: current ? this.orderBy : null,
+        descending: current ? this.descending : false,
+        filterColumn: current ? this.filterColumn : null,
+        filterValue: current ? this.filterValue || null : null,
       });
 
       columns ??= page.columns.slice(1);
@@ -357,7 +382,8 @@ export class TablesController {
       if (page.rows.length === 0 || offset >= page.total) break;
     }
 
-    return toCsv([columns ?? [], ...rows], { separator });
+    const declared = new Map((schema?.columns ?? []).map((column) => [column.name, String(column.type ?? '').toUpperCase()]));
+    return { name: table, columns: columns ?? [], rows, types: (columns ?? []).map((name) => declared.get(name) ?? '') };
   }
 
   // The readable archive

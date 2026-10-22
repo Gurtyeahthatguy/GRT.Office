@@ -2,7 +2,7 @@
 
 /** Start the actual program and use it. */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -35,7 +35,6 @@ async function ready(extra = () => true) {
   // Startup is several awaits deep before there is anything to look at.
   for (let i = 0; i < 12; i += 1) await (i % 4 === 3 ? tick() : settle());
 
-  // Then until the backend stops being called.
   let seen = -1;
   return until(() => {
     const calls = window.__TAURI_CALLS__?.length ?? 0;
@@ -268,4 +267,115 @@ describe('saving', () => {
     expect(commands()).toContain('plugin:dialog|save');
     expect(commands()).not.toContain('write_file_atomic');
   });
+});
+
+describe('keeping unsaved work', () => {
+  const closeRequested = () => window.__TAURI_LISTENERS__['grt://close-requested']();
+  const dialogOpen = () => !el('overlay').classList.contains('hidden');
+  const choose = (id) => document.querySelector(`[data-choice="${id}"]`).click();
+  const called = (command) => window.__TAURI_CALLS__.filter((call) => call.command === command);
+  const writtenTo = (prefix) => called('write_file_atomic').filter((call) =>
+    decodeURIComponent(call.options.headers['x-grt-path']).startsWith(prefix));
+
+  afterEach(() => {
+    delete window.__TAURI_ORPHANS__;
+    delete window.__TAURI_SEED__;
+  });
+
+  it('CANARY: a document nobody touched closes without asking', async () => {
+    await closeRequested();
+    expect(commands()).toContain('close_window');
+  });
+
+  it('asks before closing, and Cancel keeps it open', async () => {
+    el('btn-delete').click();
+    await until(() => thumbs().length === 1);
+    const closing = closeRequested();
+    await until(dialogOpen);
+    expect(el('panel-title').textContent).toBe('Save changes to “sample.pdf”?');
+    choose('cancel');
+    await closing;
+    expect(commands()).not.toContain('close_window');
+    expect(thumbs().length).toBe(1);
+  });
+
+  it('a watermark is a change too', async () => {
+    el('btn-stamp').click();
+    await until(dialogOpen);
+    document.querySelector('[data-field="watermarkText"]').value = 'DRAFT';
+    el('panel-confirm').click();
+    await until(() => /unsaved changes/.test(el('page-indicator').textContent));
+    const closing = closeRequested();
+    await until(dialogOpen);
+    choose('cancel');
+    await closing;
+    expect(commands()).not.toContain('close_window');
+  });
+
+  it('writes a recovery copy after a pause, and leaves the PDF alone', async () => {
+    el('btn-rotate-right').click();
+    await until(() => called('recovery_saved').length > 0, 4000);
+    expect(writtenTo('/recovery/')).toHaveLength(1);
+    expect(writtenTo('/preview/')).toHaveLength(0);
+    expect(called('recovery_saved').at(-1).payload.meta)
+      .toEqual({ path: '/preview/sample.pdf', name: 'sample.pdf' });
+  }, 15000);
+
+  it('onto the file, waits for the fingerprint to be turned off before touching the PDF', async () => {
+    const settingsTo = async (fields) => {
+      el('btn-settings').click();
+      await until(dialogOpen);
+      for (const [field, value] of Object.entries(fields)) {
+        const input = document.querySelector(`[data-field="${field}"]`);
+        if (input.type === 'checkbox') input.checked = value;
+        else input.value = value;
+      }
+      const stored = called('write_settings').length;
+      el('panel-confirm').click();
+      await until(() => called('write_settings').length > stored);
+      for (let i = 0; i < 5; i += 1) await settle();
+    };
+
+    await settingsTo({ autosave: 'file' });
+    el('btn-rotate-right').click();
+    await until(() => called('recovery_saved').length > 0, 4000);
+    expect(writtenTo('/preview/')).toHaveLength(0);
+
+    await settingsTo({ fingerprintBeforeSave: false });
+    el('btn-rotate-right').click();
+    await until(() => writtenTo('/preview/').length > 0, 4000);
+    expect(String.fromCharCode(...writtenTo('/preview/')[0].payload.slice(0, 5))).toBe('%PDF-');
+    await until(() => !/unsaved changes/.test(el('page-indicator').textContent));
+    expect(commands()).toContain('recovery_discard');
+  }, 15000);
+
+  it('offers back the work of a run that crashed, as it was', async () => {
+    thumbs()[1].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await settle();
+    el('btn-delete').click();
+    await until(() => thumbs().length === 1);
+    await until(() => called('recovery_saved').length > 0, 4000);
+    const copy = writtenTo('/recovery/').at(-1);
+
+    const orphan = {
+      id: 'fedcba9876543210',
+      path: '/recovery/fedcba9876543210.session',
+      meta: { path: '/preview/sample.pdf', name: 'sample.pdf' },
+    };
+    window.__TAURI_ORPHANS__ = [orphan];
+    window.__TAURI_SEED__ = { [orphan.path]: copy.payload };
+
+    vi.resetModules();
+    installPage();
+    installEnvironment();
+    await import('../scripts/preview-stub.js');
+    await import('../src/js/main.js');
+    await until(dialogOpen);
+    expect(el('panel-title').textContent).toBe('Recover “sample.pdf”?');
+    choose('recover');
+    await until(() => called('recovery_remove').length > 0);
+    await until(() => thumbs().length === 1);
+    expect(el('page-indicator').textContent).toMatch(/of 1 .*unsaved changes/);
+    expect(called('read_file').map((call) => call.payload.path)).toEqual([orphan.path]);
+  }, 15000);
 });

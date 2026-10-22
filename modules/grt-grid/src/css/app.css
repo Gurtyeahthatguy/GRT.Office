@@ -47,6 +47,21 @@
   --rule: #303338;
 }
 
+/* Sepia: the reading palette of GRT Bible. */
+:root[data-theme="sepia"] {
+  --bg: #ece2cc;
+  --bg-raised: #f6eedb;
+  --bg-sunken: #e0d3b6;
+  --border: #d3c29d;
+  --text: #3b2f20;
+  --text-dim: #68583e;
+  --accent: #8a3a1f;
+  --danger: #9e2a1c;
+  --ok: #4f5e1e;
+  --mark: #efd78f;
+  --rule: #dccfae;
+}
+
 :root[data-theme="gold"] {
   --bg: #f5efe1;
   --bg-raised: #fdfaf3;
@@ -343,6 +358,22 @@ main { flex: 1; min-height: 0; display: flex; }
 
 /* Panel */
 
+.toast {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 40;
+  max-width: 70vw;
+}
+
+.toast.error { border-color: var(--danger); }
+
 .overlay {
   position: fixed;
   inset: 0;
@@ -392,3 +423,22 @@ main { flex: 1; min-height: 0; display: flex; }
   gap: 8px;
   margin-top: 14px;
 }
+
+/* Printed cells: the screen's metrics, in ink on paper. */
+.print-cell {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 2px 5px;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  color: #111111;
+  font-variant-numeric: tabular-nums;
+}
+
+.print-rule { position: absolute; }
+
+/* Where a new page starts, as set by hand. */
+.cell.break-above { border-top: 2px dashed var(--accent); }
+.cell.break-left { border-left: 2px dashed var(--accent); }
