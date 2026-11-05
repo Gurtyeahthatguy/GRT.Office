@@ -1,6 +1,6 @@
 # module kind kilobytes: the largest each file may be
 # Paper, Slides and Notes carry MathJax for formulas, 510 KB compressed, added to their budgets in 0.3.
-# Raised again for 0.3.0 by the user's choice: its features and Tauri 2.12 in the binaries, the build machine's GTK libraries in the AppImages. 1.0 brings them down.
+# Raised again for 0.3.0 by the user's choice: its features and Tauri 2.12 in the binaries, the build machine's GTK libraries in the AppImages, MathJax in the Windows installers of Paper, Slides and Notes. 1.0 brings them down.
 grt-dates binary 4150
 grt-graphs binary 4330
 grt-grid binary 4400
@@ -18,13 +18,13 @@ grt-read deb 3950
 grt-slides deb 2610
 grt-tables deb 2650
 grt-dates setup 1600
-grt-graphs setup 1700
-grt-grid setup 1700
-grt-notes setup 2250
-grt-paper setup 1600
-grt-read setup 3650
-grt-slides setup 1700
-grt-tables setup 2250
+grt-graphs setup 1900
+grt-grid setup 1850
+grt-notes setup 2900
+grt-paper setup 2350
+grt-read setup 3850
+grt-slides setup 2400
+grt-tables setup 2350
 grt-dates appimage 86000
 grt-graphs appimage 86000
 grt-grid appimage 86000

@@ -78,7 +78,10 @@ describe('a Tables database, read without its engine', () => {
       db.exec('CREATE TABLE "staff" (id INTEGER PRIMARY KEY, name TEXT, boss INTEGER, pay REAL, photo BLOB)');
       db.exec("CREATE TABLE notes (\"the note\" TEXT, CONSTRAINT x CHECK (length(\"the note\") > 0))");
       const insert = db.prepare('INSERT INTO staff (name, boss, pay, photo) VALUES (?, ?, ?, ?)');
+      // One transaction, as a commit per row waits on the disk and takes a minute on Windows.
+      db.exec('BEGIN');
       for (let i = 1; i <= 3000; i += 1) insert.run(i === 1 ? 'Città' : `Person ${i}`, i === 1 ? null : Math.ceil(i / 3), i * 1.5, i === 2 ? new Uint8Array(10) : null);
+      db.exec('COMMIT');
       db.prepare('INSERT INTO notes VALUES (?)').run('x'.repeat(20000));
       db.exec('ALTER TABLE staff ADD COLUMN team TEXT');
       db.exec("UPDATE staff SET team = 'red' WHERE id = 3000");
@@ -101,7 +104,9 @@ describe('a Tables database, read without its engine', () => {
     const bytes = database((db) => {
       db.exec('CREATE TABLE t (a TEXT)');
       const insert = db.prepare('INSERT INTO t VALUES (?)');
+      db.exec('BEGIN');
       for (let i = 0; i < 2000; i += 1) insert.run(`row ${i} ${'x'.repeat(50)}`);
+      db.exec('COMMIT');
     });
     // The table's root becomes an interior page whose children include itself.
     const pageSize = (bytes[16] << 8) | bytes[17];
