@@ -1,5 +1,7 @@
 /** The only bridge between the interface and the filesystem. */
 
+import { drawable, NOT_DRAWN } from './core/images.js';
+
 const { invoke } = window.__TAURI__.core;
 
 export const FILTERS = {
@@ -7,14 +9,17 @@ export const FILTERS = {
   odt: [{ name: 'OpenDocument text', extensions: ['odt'] }],
   fodt: [{ name: 'Flat OpenDocument text', extensions: ['fodt'] }],
   docx: [{ name: 'Word document', extensions: ['docx'] }],
+  ott: [{ name: 'OpenDocument text template', extensions: ['ott'] }],
+  dotx: [{ name: 'Word template', extensions: ['dotx'] }],
   rtf: [{ name: 'Rich Text Format', extensions: ['rtf'] }],
   documents: [
-    { name: 'Documents', extensions: ['grt', 'odt', 'fodt', 'docx', 'rtf', 'md', 'markdown'] },
+    { name: 'Documents', extensions: ['grt', 'odt', 'fodt', 'docx', 'ott', 'dotx', 'dotm', 'rtf', 'md', 'markdown', 'mml', 'odf'] },
     { name: 'GRT document', extensions: ['grt'] },
     { name: 'OpenDocument text', extensions: ['odt', 'fodt'] },
     { name: 'Word document', extensions: ['docx'] },
     { name: 'Rich Text Format', extensions: ['rtf'] },
     { name: 'Markdown', extensions: ['md', 'markdown'] },
+    { name: 'Templates', extensions: ['ott', 'dotx', 'dotm'] },
   ],
   pdf: [{ name: 'PDF document', extensions: ['pdf'] }],
   html: [{ name: 'Web page', extensions: ['html'] }],
@@ -44,12 +49,12 @@ export async function pickToSave(defaultPath, filters = FILTERS.grt, title = 'Sa
   }));
 }
 
-export async function readDocument(path) {
-  return invoke('read_grt', { path });
+export async function readDocument(path, password = null) {
+  return invoke('read_grt', { path, password });
 }
 
-export async function readResource(path, name) {
-  return new Uint8Array(await invoke('read_resource', { path, name }));
+export async function readResource(path, name, password = null) {
+  return new Uint8Array(await invoke('read_resource', { path, name, password }));
 }
 
 export async function stagePart(name, bytes) {
@@ -62,8 +67,8 @@ export async function clearStaged() {
   return invoke('clear_staged');
 }
 
-export async function writeDocument(path, parts) {
-  return invoke('write_grt', { path, parts });
+export async function writeDocument(path, parts, password = null) {
+  return invoke('write_grt', { path, parts, password });
 }
 
 export async function writeText(path, text) {
@@ -129,6 +134,7 @@ export function mediaTypeFor(name) {
  * Bytes to a data URL, chunked so a large image does not overflow the stack.
  */
 export function toDataUrl(bytes, name) {
+  if (!drawable(bytes)) return NOT_DRAWN;
   let binary = '';
   for (let i = 0; i < bytes.length; i += 8192) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 8192));

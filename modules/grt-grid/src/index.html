@@ -4,9 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GRT Grid</title>
+    <link rel="stylesheet" href="css/design.css" />
     <link rel="stylesheet" href="css/app.css" />
   </head>
   <body>
+    <nav id="menubar" aria-label="Menus"></nav>
     <header class="toolbar">
       <div class="group">
         <button id="btn-new" title="New (Ctrl+N)">New</button>
@@ -33,6 +35,27 @@
         <button id="btn-delete-col" title="Delete the selected columns">&minus;Col</button>
       </div>
 
+      <div class="group" role="group" aria-label="Formatting">
+        <button id="btn-bold" title="Bold (Ctrl+B)"><b>B</b></button>
+        <button id="btn-italic" title="Italic (Ctrl+I)"><i>I</i></button>
+        <button id="btn-underline" title="Underline (Ctrl+U)"><u>U</u></button>
+        <button id="btn-align-left" title="Align left">&#8676;</button>
+        <button id="btn-align-center" title="Centre">&#8596;</button>
+        <button id="btn-align-right" title="Align right">&#8677;</button>
+        <button id="btn-merge" title="Merge cells">Merge</button>
+        <button id="btn-wrap" title="Wrap text">Wrap</button>
+        <button id="btn-currency" title="Currency (Ctrl+Shift+4)">&#8364;</button>
+        <button id="btn-percent" title="Percent (Ctrl+Shift+5)">%</button>
+      </div>
+
+      <div class="group" role="group" aria-label="Data">
+        <button id="btn-sort-up" title="Sort ascending">A&#8594;Z</button>
+        <button id="btn-sort-down" title="Sort descending">Z&#8594;A</button>
+        <button id="btn-filter" title="AutoFilter (Ctrl+Shift+L)">Filter</button>
+        <button id="btn-sum" title="Sum (Alt+=)">&Sigma;</button>
+        <button id="btn-chart" title="A chart of the data, changed later from its menu">Chart</button>
+      </div>
+
       <div class="group">
         <button id="btn-import-csv" title="Import a CSV file">Import CSV</button>
         <button id="btn-export-csv" title="Export as CSV">Export CSV</button>
@@ -49,6 +72,7 @@
       <span id="name-box" class="name-box">A1</span>
       <input id="formula-input" class="formula-input" spellcheck="false"
              placeholder="Type a value, or a formula beginning with =" />
+      <span id="cell-help" class="cell-help"></span>
     </div>
 
     <main>
@@ -58,6 +82,7 @@
         <div class="grid-row-header"></div>
         <div class="grid-body"></div>
       </div>
+      <aside id="properties"></aside>
     </main>
 
     <footer class="statusbar">

@@ -5,6 +5,7 @@ pub mod commands;
 pub mod package;
 pub mod print;
 pub mod recovery;
+pub mod templates;
 
 use std::path::PathBuf;
 use std::sync::Mutex;

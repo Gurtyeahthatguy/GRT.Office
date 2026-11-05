@@ -110,11 +110,15 @@ jobs:
         working-directory: modules/${{ matrix.module }}
         run: |
           npm ci
-          npx tauri build --no-bundle
+          npm run build -- --no-bundle
 
       - name: No-trace check
         if: matrix.os == 'ubuntu-latest'
         run: ./scripts/check-build.sh modules/${{ matrix.module }}/src-tauri/target/release/${{ matrix.module }}
+
+      - name: Weight check
+        shell: bash
+        run: ./scripts/check-weight.sh ${{ matrix.module }}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:

@@ -8,7 +8,46 @@ export const ERROR = {
   na: '#N/A',
   num: '#NUM!',
   null: '#NULL!',
+  spill: '#SPILL!',
+  calc: '#CALC!',
 };
+
+/** A block of values: what a range is, and what a function like FILTER returns. */
+export class Matrix {
+  constructor(data) {
+    this.data = data.length > 0 ? data : [[null]];
+    this.rows = this.data.length;
+    let cols = 0;
+    for (const row of this.data) if (row.length > cols) cols = row.length;
+    this.cols = cols;
+  }
+
+  static of(rows, cols, fill) {
+    return new Matrix(Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => fill(r, c))));
+  }
+
+  static column(values) {
+    return new Matrix(values.map((value) => [value]));
+  }
+
+  at(row, col) {
+    // A single row or column stretches to fit, as array arithmetic does.
+    const r = this.rows === 1 ? 0 : row;
+    const c = this.cols === 1 ? 0 : col;
+    if (r >= this.rows || c >= this.cols) return ERROR.na;
+    return this.data[r][c] ?? null;
+  }
+
+  get flat() {
+    return this.data.flat();
+  }
+
+  get first() {
+    return this.data[0][0] ?? null;
+  }
+}
+
+export const isMatrix = (value) => value instanceof Matrix;
 
 const ERROR_VALUES = new Set(Object.values(ERROR));
 

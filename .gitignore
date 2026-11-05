@@ -1,18 +1,6 @@
 node_modules/
-dist/
 target/
-core/*/target/
-
-*.AppImage
-*.deb
-*.rpm
-*.msi
 *.map
-
-.DS_Store
-*~
-.idea/
-.vscode/
 
 **/tests/tmp/
 **/tests/output/
@@ -20,14 +8,16 @@ core/*/target/
 !**/tests/corpus/README.md
 
 modules/*/src/js/core/
+modules/*/src/css/design.css
 modules/*/src/vendor/pdf-lib.esm.js
-modules/*/src/vendor/LICENSE.pdf-lib
 modules/*/src/vendor/markdown-it.min.js
+modules/*/src/vendor/mathjax-tex-mml-svg.js
+modules/*/src/vendor/LICENSE.pdf-lib
 modules/*/src/vendor/LICENSE.markdown-it
+modules/*/src/vendor/LICENSE.mathjax
 modules/*/src-tauri/icons/ios/
 
-.env
-.env.*
+.env*
 *.pem
 *.key
 *.p12

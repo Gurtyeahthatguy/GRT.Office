@@ -1,0 +1,258 @@
+/* GRT's design system: the colours, sizes and controls every program shares; a program's own sheet loads after it and adds only what is its own. */
+
+:root {
+  /* Colours, light. */
+  --bg: #f4f4f5;
+  --bg-raised: #ffffff;
+  --bg-sunken: #e4e4e7;
+  --border: #d4d4d8;
+  --text: #18181b;
+  --text-dim: #6b7280;
+  --accent: #1f6feb;
+  --accent-text: #ffffff;
+  --danger: #c53030;
+  --ok: #1a7f37;
+  --mark: #fde68a;
+  --rule: #e4e4e7;
+  --scrim: rgba(0, 0, 0, 0.45);
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1e1f22;
+    --bg-raised: #2b2d31;
+    --bg-sunken: #141517;
+    --border: #3a3d42;
+    --text: #e6e6e6;
+    --text-dim: #9aa0a6;
+    --accent: #4a9eff;
+    --accent-text: #ffffff;
+    --danger: #e5534b;
+    --ok: #3fb950;
+    --mark: #6b5a1e;
+    --rule: #2f3236;
+    --scrim: rgba(0, 0, 0, 0.6);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #1e1f22;
+  --bg-raised: #2b2d31;
+  --bg-sunken: #141517;
+  --border: #3a3d42;
+  --text: #e6e6e6;
+  --text-dim: #9aa0a6;
+  --accent: #4a9eff;
+  --accent-text: #ffffff;
+  --danger: #e5534b;
+  --ok: #3fb950;
+  --mark: #6b5a1e;
+  --rule: #2f3236;
+  --scrim: rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
+}
+
+/* Sepia: the reading palette of GRT Bible. */
+:root[data-theme="sepia"] {
+  --bg: #ece2cc;
+  --bg-raised: #f6eedb;
+  --bg-sunken: #e0d3b6;
+  --border: #d3c29d;
+  --text: #3b2f20;
+  --text-dim: #68583e;
+  --accent: #8a3a1f;
+  --danger: #9e2a1c;
+  --ok: #4f5e1e;
+  --accent-text: #ffffff;
+  --mark: #efd78f;
+  --rule: #dccfae;
+  --scrim: rgba(40, 30, 15, 0.45);
+}
+
+/* Gold: a warm, low-contrast light theme. */
+:root[data-theme="gold"] {
+  --bg: #f5efe1;
+  --bg-raised: #fdfaf3;
+  --bg-sunken: #e8dec8;
+  --border: #d6c8a8;
+  --text: #2e2519;
+  --text-dim: #7a6a4f;
+  --accent: #a67c00;
+  --danger: #a33a2a;
+  --ok: #5c7a1e;
+  --accent-text: #ffffff;
+  --mark: #f0d79a;
+  --rule: #e3d7bd;
+  --scrim: rgba(40, 30, 10, 0.45);
+}
+
+/* Purple: a deep dark theme. */
+:root[data-theme="purple"] {
+  color-scheme: dark;
+  --bg: #191324;
+  --bg-raised: #241c33;
+  --bg-sunken: #110d1a;
+  --border: #3d3154;
+  --text: #ece7f5;
+  --text-dim: #a094b8;
+  --accent: #b388ff;
+  --danger: #ff6b81;
+  --ok: #5bd68a;
+  --accent-text: #ffffff;
+  --mark: #4a3570;
+  --rule: #332948;
+  --scrim: rgba(0, 0, 0, 0.6);
+}
+
+/* Sizes are the same in every theme. */
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --radius: 5px;
+  --radius-large: 8px;
+  --text-small: 12px;
+  --text-normal: 14px;
+  --text-large: 16px;
+  --control-height: 28px;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+  --shadow-raised: 0 8px 28px rgba(0, 0, 0, 0.25);
+}
+
+/* Base */
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: var(--text-normal)/1.45 var(--font-ui); }
+input, textarea, select { user-select: text; }
+.hidden { display: none !important; }
+.dim { color: var(--text-dim); }
+.hint { color: var(--text-dim); font-size: var(--text-small); margin: var(--space-2) 0 0; }
+code, kbd { font-family: var(--font-mono); }
+
+/* Every control shows where the keyboard is; the mouse does not light it up. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+:focus:not(:focus-visible) { outline: none; }
+
+/* Controls */
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: var(--control-height);
+  padding: 3px 10px;
+  cursor: default;
+}
+button:hover:not(:disabled) { background: var(--bg-sunken); }
+button:disabled { opacity: 0.45; }
+button.primary, button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), textarea, select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: var(--control-height);
+  padding: 3px 7px;
+}
+textarea { min-height: 0; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
+/* Dialogs: one level, never a dialog on a dialog. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+}
+.panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-large);
+  padding: var(--space-4) 18px;
+  box-shadow: var(--shadow-raised);
+  max-height: 90vh;
+  overflow: auto;
+}
+.panel h2 { margin: 0 0 var(--space-3); font-size: var(--text-large); }
+#panel-body label { display: block; margin-bottom: 10px; font-size: var(--text-small); color: var(--text-dim); }
+#panel-body label.inline { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 13px; }
+#panel-body label.inline input { width: auto; }
+#panel-body .row { display: flex; gap: 10px; }
+#panel-body .row label { flex: 1; }
+#panel-body code { font-family: var(--font-mono); font-size: 11px; }
+
+/* Messages */
+
+.toast {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: var(--space-2) 14px;
+  box-shadow: var(--shadow-raised);
+}
+.toast.error { border-color: var(--danger); }
+.badge { color: var(--ok); }
+
+/* Bars */
+
+.statusbar { display: flex; align-items: center; gap: 10px; padding: var(--space-1) var(--space-3); font-size: var(--text-small); background: var(--bg-raised); border-top: 1px solid var(--border); }
+.statusbar .spacer, .spacer { flex: 1; }
+
+/* The properties sidebar: what the selection is, and how it can be changed, without opening a dialog. */
+
+.grt-properties {
+  width: 260px;
+  flex: none;
+  overflow-y: auto;
+  padding: var(--space-3);
+  background: var(--bg-raised);
+  border-left: 1px solid var(--border);
+  font-size: 13px;
+}
+.grt-properties h3 { margin: 0 0 var(--space-2); font-size: var(--text-small); text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
+.grt-properties section + section { margin-top: var(--space-4); }
+.grt-properties label { display: flex; flex-direction: column; gap: 3px; margin-bottom: var(--space-2); font-size: var(--text-small); color: var(--text-dim); }
+.grt-properties label.inline { flex-direction: row; align-items: center; gap: 6px; color: var(--text); }
+.grt-properties .row { display: flex; gap: var(--space-2); }
+.grt-properties .row { flex-wrap: wrap; }
+.grt-properties .row > * { flex: 1; min-width: 0; }
+.grt-properties .row > label.inline { flex: 0 1 auto; min-width: max-content; margin-right: var(--space-2); }
+.grt-properties .empty { color: var(--text-dim); }
+.grt-properties .choices { display: flex; flex-wrap: wrap; gap: 4px; }
+.grt-properties .choices button { flex: 1 1 auto; font-size: var(--text-small); padding: 2px 6px; }
+
+/* The formula dialog's elements and symbols, folded by group. */
+.formula-elements { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: var(--space-2) 0; }
+.formula-group summary { cursor: default; font-size: var(--text-small); color: var(--text-dim); }
+.formula-group[open] { flex-basis: 100%; }
+.formula-group button { min-width: 2.4em; margin: 2px; font-size: var(--text-small); }
+
+/* The template manager's list. */
+.template-list { max-height: 50vh; overflow-y: auto; display: grid; gap: 6px; }
+.template-list fieldset { display: grid; gap: 2px; }
+.template-list label[hidden], .template-list fieldset[hidden] { display: none; }
+
+/* A heading's number, drawn before it and not part of its text. */
+.block.heading[data-number]::before { content: attr(data-number) "\2002"; }

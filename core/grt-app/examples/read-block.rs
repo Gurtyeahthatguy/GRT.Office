@@ -6,5 +6,6 @@ fn main() -> std::io::Result<()> {
         eprintln!("usage: read-block <package file> <block file>");
         std::process::exit(2);
     };
-    std::fs::write(target, grt_app::package::read_block(std::path::Path::new(&package))?)
+    let block = grt_app::package::read_block(std::path::Path::new(&package), None).map_err(std::io::Error::other)?;
+    std::fs::write(target, block)
 }

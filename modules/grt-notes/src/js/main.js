@@ -9,20 +9,30 @@ import { THEMES, applyTheme } from './core/theme.js';
 import { SaveBeforeClose } from './core/closing.js';
 
 import {
-  NoteDocument, makeTodo, makeCallout, makeEmbed, parseTagInput, toParts,
+  NoteDocument, makeTodo, makeCallout, makeEmbed, parseTagInput, toParts, fromMarkdown, toMarkdown,
 } from './note.js';
+
+/** Markdown as the blocks of a note, without ids that would clash with the note they go into. */
+const fromMarkdownBlocks = (markdown) => fromMarkdown(markdown, '').blocks.map(({ id, md, ...block }) => block);
+const toMarkdownText = (document) => toMarkdown(document);
 import { NotesRenderer } from './render-notes.js';
 import * as tree from './tree.js';
 import * as links from './links.js';
 import * as search from './search.js';
 import { noteToMarkdown, archiveToMarkdown, noteToDocument } from './export.js';
 import { writePackage } from './core/package.js';
+import { passwordFields, wirePasswordFields, passwordFrom, withPassword, PROTECTION } from './core/protection.js';
 import { writeOdt } from './core/formats/odt-write.js';
 import { writeDocx } from './core/formats/docx-write.js';
 import { printPreview, pageControls, isPrintPreviewOpen } from './core/print.js';
 import { printablePages } from './printing.js';
 import * as io from './io.js';
+import * as locks from './locks.js';
 import * as settingsStore from './settings.js';
+import { insertFormula, editFormula } from './formulas.js';
+import { embedLoader, formatDate, fillTemplate, uniqueName, vaultSettings } from './extras.js';
+import { parseYaml, runBase, noteFacts, cellText } from './bases.js';
+import { whenMathReady } from './core/math.js';
 
 const el = (id) => document.getElementById(id);
 const surface = () => el('surface');
@@ -33,6 +43,9 @@ let runtime = { ephemeral: false, version: '0.0.0', defaultRoot: null };
 let archive = { root: null, notebooks: [] };
 let note = new NoteDocument();
 let notePath = null;
+/** The password of the protected notebook the open note lies in, or null. */
+let notePassword = null;
+const keys = new locks.Keys();
 
 /** Everything between a keystroke and the model. */
 let editor = null;
@@ -79,17 +92,25 @@ async function start() {
   el('version').textContent = runtime.version;
   el('ephemeral').classList.toggle('hidden', !runtime.ephemeral);
 
+  embeds = embedLoader({
+    resolve: (title) => links.resolve(title, titleIndex),
+    read: async (path) => {
+      // A note in a protected notebook shows only while its notebook is open.
+      if (locks.isProtected(archive, path) && !keys.get(archive, path)) return null;
+      return io.readNote(path, keys.get(archive, path) ?? null);
+    },
+    redraw: () => editor?.draw(),
+  });
   renderer = new NotesRenderer(surface(), {
     resolveLink: (title) => links.resolve(title, titleIndex),
+    embedContent: (target) => embeds.content(target),
   });
   editor = new EditorController(surface(), renderer, { onChange: refreshAfterEdit, lineBreaks: true });
 
   await loadArchive();
   await reindex();
 
-  const first = tree.allNotes(archive)[0];
-  if (first) await openNote(first.path);
-  else await newNote();
+  await openFirst();
 
   wire();
   await closing.start();
@@ -135,6 +156,7 @@ async function reindex() {
     indexUpsert: io.indexUpsert,
     indexRemove: io.indexRemove,
     readNote: io.readNote,
+    skip: (page) => locks.isProtected(archive, page.path),
   }).catch((error) => {
     console.warn(`Cannot update the index: ${error}`);
     return { indexed: 0, removed: 0, failed: [] };
@@ -188,7 +210,7 @@ async function saveNow() {
   const parts = JSON.stringify(toParts(written));
   showSaveState('saving');
   try {
-    await io.writeNote(notePath, written);
+    await io.writeNote(notePath, written, notePassword);
     if (JSON.stringify(toParts(written)) === parts) written.dirty = false;
     showSaveState('saved');
     await indexCurrent();
@@ -215,13 +237,15 @@ function autoSave({ typed = false } = {}) {
 async function indexCurrent() {
   if (!notePath || runtime.ephemeral) return;
   try {
-    await io.indexUpsert({
-      path: notePath,
-      title: note.title,
-      tags: note.tags.join(' '),
-      body: note.plainText(),
-      modified: Math.floor(Date.now() / 1000),
-    });
+    if (!locks.isProtected(archive, notePath)) {
+      await io.indexUpsert({
+        path: notePath,
+        title: note.title,
+        tags: note.tags.join(' '),
+        body: note.plainText(),
+        modified: Math.floor(Date.now() / 1000),
+      });
+    }
     const row = catalogue.find((item) => item.path === notePath);
     const outgoing = links.linksInNote(note);
     if (row) { row.title = note.title; row.links = outgoing; }
@@ -260,7 +284,8 @@ function drawTree() {
     node.dataset.path = row.path;
     node.dataset.kind = row.kind;
     node.style.setProperty('--depth', String(row.depth));
-    node.classList.toggle('current', row.kind === 'note' && row.path === notePath);
+    node.classList.toggle('current', row.kind === 'note' && (row.path === notePath || row.path === basePath));
+    if (row.base) node.classList.add('base');
 
     if (row.kind !== 'note') {
       const twisty = document.createElement('span');
@@ -271,7 +296,7 @@ function drawTree() {
 
     const label = document.createElement('span');
     label.className = 'tree-name';
-    label.textContent = row.kind === 'note' ? (titleFor(row) || row.name) : row.name;
+    label.textContent = row.base ? `▦ ${row.file}` : row.kind === 'note' ? (titleFor(row) || row.name) : row.name;
     node.append(label);
 
     if (row.kind !== 'note') {
@@ -344,18 +369,110 @@ function refreshAfterEdit({ typed = false } = {}) {
 
 // Notes
 
-async function openNote(path) {
+// Views over the notes
+
+let basePath = null;
+let baseView = 0;
+const facts = new Map();
+
+/** What every note of the vault is to a view, read again only when the file changed. */
+async function vaultFacts() {
+  const out = [];
+  for (const page of tree.allNotes(archive)) {
+    if (locks.isProtected(archive, page.path)) continue;
+    const cached = facts.get(page.path);
+    if (cached && cached.modified === page.modified) {
+      out.push(cached.facts);
+      continue;
+    }
+    try {
+      const text = await io.readText(page.path);
+      const made = noteFacts(page.path, archive.root, text, { modified: page.modified });
+      facts.set(page.path, { modified: page.modified, facts: made });
+      out.push(made);
+    } catch {
+      // A note that cannot be read is left out of every view.
+    }
+  }
+  return out;
+}
+
+/** Shows a view in place of the editor: its tabs, then a table or cards of the notes it picks. */
+async function openBase(path, view = 0) {
   await saveNow();
+  let base;
   try {
-    note = await io.readNote(path);
+    base = parseYaml(await io.readText(path));
+  } catch (error) {
+    await io.notify(`Cannot read that view.\n\n${error.message ?? error}`, 'View');
+    return;
+  }
+  basePath = path;
+  baseView = view;
+  const result = runBase(base, await vaultFacts(), view);
+  const panel = el('base-view');
+  const tabs = result.views.map((v, i) => `<button class="base-tab${i === result.view.index ? ' current' : ''}" data-view="${i}">${escapeHtml(v.name)}</button>`).join('');
+  const cell = (value) => escapeHtml(cellText(value));
+  const body = result.error ? `<p class="hint">${escapeHtml(result.error)}</p>` : result.groups.map((group) => {
+    const title = group.key !== null ? `<h3 class="base-group">${escapeHtml(group.key)}</h3>` : '';
+    if (result.view.type === 'cards') {
+      return `${title}<div class="base-cards">${group.rows.map((row) => `<button class="base-card" data-path="${escapeHtml(row.file.path)}">
+        <strong>${escapeHtml(row.file.basename)}</strong>
+        ${result.columns.filter((c) => c.key !== 'file.name').map((c) => `<span><em>${escapeHtml(c.label)}</em> ${cell(row.values[c.key])}</span>`).join('')}</button>`).join('')}</div>`;
+    }
+    return `${title}<table class="base-table"><thead><tr>${result.columns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join('')}</tr></thead>
+      <tbody>${group.rows.map((row) => `<tr data-path="${escapeHtml(row.file.path)}">${result.columns.map((c) => `<td>${cell(row.values[c.key])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  }).join('');
+  const count = result.groups.reduce((n, g) => n + g.rows.length, 0);
+  panel.innerHTML = `<div class="base-head"><h2>${escapeHtml(tree.baseName(path).replace(/\.base$/, ''))}</h2><div class="base-tabs">${tabs}</div><span class="hint">${count} note(s)</span></div>${body}`;
+  document.querySelector('.editor').classList.add('hidden');
+  panel.classList.remove('hidden');
+  drawTree();
+}
+
+function closeBase() {
+  if (!basePath) return;
+  basePath = null;
+  el('base-view').classList.add('hidden');
+  document.querySelector('.editor').classList.remove('hidden');
+}
+
+async function openNote(path) {
+  closeBase();
+  await saveNow();
+  const password = await passwordFor(path);
+  if (password === undefined) return;
+  try {
+    note = await io.readNote(path, password);
   } catch (error) {
     await io.notify(`Cannot open that note.\n\n${error}`, 'Open failed');
     return;
   }
   notePath = path;
+  notePassword = password;
   editor.attach(note);
   showSaveState('idle');
   refresh();
+}
+
+/**
+ * Opens the first note that needs no password. A protected notebook is opened only when asked for,
+ * so the program never starts on a password question.
+ */
+async function openFirst({ folder = null, create = true } = {}) {
+  const pages = tree.allNotes(archive);
+  const first = pages.find((page) => !locks.isProtected(archive, page.path) || keys.get(archive, page.path));
+  if (first) {
+    await openNote(first.path);
+  } else if (pages.length === 0 && create) {
+    await newNote(folder ? { folder } : {});
+  } else {
+    note = new NoteDocument();
+    notePath = null;
+    notePassword = null;
+    editor.attach(note);
+    refresh();
+  }
 }
 
 /** Where a new note should go: the folder of the note in front of you. */
@@ -365,11 +482,78 @@ function currentFolder() {
   return notebook?.path ?? archive.root;
 }
 
-async function newNote({ folder = null, title = '', body = null } = {}) {
+let embeds = null;
+
+/** The settings of the vault for daily notes and templates, or the archive's own. */
+async function helperSettings() {
+  if (inVault()) return vaultSettings(archive.root, io.readText);
+  return { daily: { folder: 'Daily', format: 'YYYY-MM-DD', template: '' }, templates: { folder: 'Templates', dateFormat: 'YYYY-MM-DD', timeFormat: 'HH:mm' }, unique: { folder: '', format: 'YYYYMMDDHHmm' } };
+}
+
+/** The folder of the vault or archive with a path inside it, made when missing. */
+async function folderAt(relative) {
+  const base = inVault() ? archive.root : archive.notebooks[0]?.path ?? archive.root;
+  if (!relative) return currentFolder();
+  const path = tree.join(base, relative);
+  try { await io.createFolder(path); } catch { /* It is there already. */ }
+  return path;
+}
+
+/** Today's note: opened when it exists, made from the daily template when it does not. */
+async function dailyNote() {
+  const conf = await helperSettings();
+  const name = formatDate(new Date(), conf.daily.format);
+  const title = name.split('/').pop();
+  const existing = links.resolve(title, titleIndex);
+  if (existing) {
+    await openNote(existing);
+    return;
+  }
+  const folder = await folderAt([conf.daily.folder, ...name.split('/').slice(0, -1)].filter(Boolean).join('/'));
+  let markdown = null;
+  if (conf.daily.template) {
+    try {
+      markdown = fillTemplate(await io.readText(tree.join(inVault() ? archive.root : archive.notebooks[0]?.path ?? archive.root, `${conf.daily.template}.md`)), { title, ...conf.templates });
+    } catch {
+      toast(`The daily template ${conf.daily.template} could not be read`, true);
+    }
+  }
+  await newNote({ folder, title, markdown });
+}
+
+/** A template of the templates folder, its placeholders filled in, put where the cursor is. */
+async function insertTemplate() {
+  if (!editor) return;
+  const conf = await helperSettings();
+  const base = inVault() ? archive.root : archive.notebooks[0]?.path ?? archive.root;
+  const folder = tree.join(base, conf.templates.folder);
+  const templates = tree.allNotes(archive).filter((page) => page.path.startsWith(`${folder}/`));
+  if (templates.length === 0) {
+    await io.notify(`No templates yet: notes in the folder ${conf.templates.folder} are the templates.`, 'Templates');
+    return;
+  }
+  editor.readSelection();
+  const at = editor.selection;
+  const confirmed = await showPanel('Insert template', `
+    <label>Template<select data-field="path">${templates.map((t) => `<option value="${escapeHtml(t.path)}">${escapeHtml(t.title ?? tree.baseName(t.path))}</option>`).join('')}</select></label>
+    <p class="hint">{{title}}, {{date}} and {{time}} are filled in as it goes in.</p>`, 'Insert');
+  if (!confirmed) return;
+  const { path } = readFields();
+  const text = path.endsWith('.md') ? await io.readText(path) : null;
+  const source = text ?? (await io.readNote(path, keys.get(archive, path) ?? null).then((n) => toMarkdownText(n)));
+  const filled = fillTemplate(source, { title: note?.title ?? '', ...conf.templates });
+  const blocks = fromMarkdownBlocks(filled);
+  editor.selection = at;
+  editor.handlers.insertBlocks(blocks);
+}
+
+async function newNote({ folder = null, title = '', body = null, markdown = null } = {}) {
   const target = folder ?? currentFolder();
   if (!target) return;
 
   await saveNow();
+  const password = await passwordFor(target);
+  if (password === undefined) return;
 
   const siblings = tree.allNotes(archive)
     .filter((page) => tree.parentOf(page.path) === target)
@@ -381,15 +565,18 @@ async function newNote({ folder = null, title = '', body = null } = {}) {
     fresh.blocks = [makeBlock('paragraph')];
     fresh.setRuns(fresh.blocks[0].id, [{ text: body }]);
   }
+  if (markdown) fresh.blocks = fromMarkdownBlocks(markdown);
   fresh.dirty = true;
 
-  const path = inVault()
-    ? tree.join(target, tree.vaultFileName(title, siblings))
-    : tree.join(target, tree.noteFileName(tree.nextOrder(siblings), title || 'note'));
+  let path;
+  if (inVault()) path = tree.join(target, tree.vaultFileName(title, siblings));
+  else if (password) path = tree.join(target, locks.lockedFileName(tree.nextOrder(siblings)));
+  else path = tree.join(target, tree.noteFileName(tree.nextOrder(siblings), title || 'note'));
   if (inVault()) fresh.setTitle(tree.baseName(path).replace(/\.md$/i, ''));
 
   note = fresh;
   notePath = path;
+  notePassword = password;
   editor.attach(note);
 
   await saveNow();
@@ -402,7 +589,8 @@ async function newNote({ folder = null, title = '', body = null } = {}) {
 
 /** Renames the file to match the title. */
 async function syncFileName() {
-  if (!notePath || runtime.ephemeral) return;
+  // In a protected notebook a file name never carries the title.
+  if (!notePath || runtime.ephemeral || locks.isProtected(archive, notePath)) return;
 
   const folder = tree.parentOf(notePath);
   let wanted;
@@ -458,9 +646,7 @@ async function deleteNote(path) {
 
   if (path === notePath) {
     notePath = null;
-    const next = tree.allNotes(archive)[0];
-    if (next) await openNote(next.path);
-    else await newNote();
+    await openFirst();
   }
   refresh();
 }
@@ -641,16 +827,31 @@ async function quickNote() {
 // Export
 
 async function exportNote() {
-  const confirmed = await showPanel('Export this note', `
-    <label>As<select data-field="format">
-      <option value="md">Markdown (.md)</option>
-      <option value="odt">OpenDocument text (.odt)</option>
-      <option value="docx">Word document (.docx)</option>
-    </select></label>
-    <p class="hint">OpenDocument and Word files open in GRT Paper, LibreOffice and Word.</p>
-  `, 'Choose file');
-  if (!confirmed) return;
-  const { format } = readFields();
+  let format = 'md';
+  let problem = '';
+  let password;
+  for (;;) {
+    const answer = showPanel('Export this note', `
+      <label>As<select data-field="format">
+        <option value="md"${format === 'md' ? ' selected' : ''}>Markdown (.md)</option>
+        <option value="odt"${format === 'odt' ? ' selected' : ''}>OpenDocument text (.odt)</option>
+        <option value="docx"${format === 'docx' ? ' selected' : ''}>Word document (.docx)</option>
+      </select></label>
+      ${passwordFields(null, problem)}
+      <p class="hint">OpenDocument and Word files open in GRT Paper, LibreOffice and Word.
+      Markdown cannot carry a password.</p>
+    `, 'Choose file');
+    wirePasswordFields();
+    if (!await answer) return;
+    const fields = readFields();
+    ({ format } = fields);
+    const protection = passwordFrom(fields, format);
+    if (!protection.error) {
+      ({ password } = protection);
+      break;
+    }
+    problem = protection.error;
+  }
   const filters = { md: io.FILTERS.md, odt: [{ name: 'OpenDocument text', extensions: ['odt'] }], docx: [{ name: 'Word document', extensions: ['docx'] }] };
   const chosen = await io.pickToSave(`${tree.slugify(note.title || 'note')}.${format}`, filters[format]);
   if (!chosen) return;
@@ -663,7 +864,7 @@ async function exportNote() {
   } else {
     const { document, lost: dropped } = noteToDocument(note);
     const { entries, losses } = format === 'odt' ? writeOdt(document, new Map()) : writeDocx(document, new Map());
-    await writePackage(path, entries);
+    await writePackage(path, entries, { protection: PROTECTION[format], password });
     lost = [...dropped, ...losses.lines()];
   }
   if (lost.length > 0) await io.notify(`Saved.\n\nIt cannot carry: ${lost.join(', ')}.`, 'Exported');
@@ -702,9 +903,7 @@ async function openVault() {
   notePath = null;
   await loadArchive();
   await reindex();
-  const first = tree.allNotes(archive)[0];
-  if (first) await openNote(first.path);
-  else await newNote({ folder: archive.root });
+  await openFirst({ folder: archive.root });
   refresh();
   toast(`Opened the vault ${tree.baseName(checked)}`);
 }
@@ -716,9 +915,7 @@ async function closeVault() {
   notePath = null;
   await loadArchive();
   await reindex();
-  const first = tree.allNotes(archive)[0];
-  if (first) await openNote(first.path);
-  else await newNote();
+  await openFirst();
   refresh();
 }
 
@@ -777,7 +974,7 @@ async function exportArchive() {
   for (const page of pages) {
     try {
       entries.push({
-        note: await io.readNote(page.path),
+        note: await io.readNote(page.path, keys.get(archive, page.path)),
         notebook: page.notebook,
         section: page.section,
         file: page.file,
@@ -795,6 +992,140 @@ async function exportArchive() {
     + (lost.length > 0 ? `\n\nMarkdown cannot carry: ${lost.join(', ')}.` : ''),
     'Archive exported',
   );
+}
+
+// Protected notebooks
+
+/** The password of the notebook a path lies in, asked once while the program runs; undefined when refused. */
+async function passwordFor(path) {
+  const notebook = locks.notebookOf(archive, path);
+  if (!notebook?.protected) return null;
+  const known = keys.get(archive, path);
+  if (known) return known;
+  const marker = tree.join(notebook.path, locks.MARKER);
+  const opened = await withPassword(notebook.name, (password) => io.readMarker(marker, password));
+  if (!opened) return undefined;
+  keys.set(notebook.path, opened.password);
+  await catalogueNotebook(notebook, opened.password);
+  return opened.password;
+}
+
+/** Titles and links of an opened protected notebook, kept in memory only. */
+async function catalogueNotebook(notebook, password) {
+  for (const page of tree.allNotes(archive).filter((each) => locks.notebookOf(archive, each.path) === notebook)) {
+    try {
+      const read = await io.readNote(page.path, password);
+      const row = { path: page.path, title: read.title || search.fallbackTitle(page), links: links.linksInNote(read) };
+      catalogue = catalogue.filter((item) => item.path !== page.path).concat(row);
+    } catch { /** a note that will not open stays nameless. */ }
+  }
+  titleIndex = links.buildTitleIndex(catalogue);
+  drawTree();
+}
+
+/** Asks for a new password twice; null when the person cancels. */
+async function askNewPassword(title, hint) {
+  let problem = '';
+  for (;;) {
+    const confirmed = await showPanel(title, `
+      ${problem ? `<p class="hint"><strong>${escapeHtml(problem)}</strong></p>` : ''}
+      <label>Password <input type="password" data-field="password" autocomplete="new-password" /></label>
+      <label>Repeat it <input type="password" data-field="passwordAgain" autocomplete="new-password" /></label>
+      <p class="hint">${hint}</p>`, 'Protect');
+    if (!confirmed) return null;
+    const chosen = passwordFrom({ ...readFields(), protect: true });
+    if (!chosen.error) return chosen.password;
+    problem = chosen.error;
+  }
+}
+
+/** Seals every note of the notebook in front of you with a password. */
+async function protectNotebook() {
+  if (inVault()) {
+    await io.notify('A vault is Markdown that Obsidian reads as it is, so its notes cannot carry a password.', 'Protect notebook');
+    return;
+  }
+  const notebook = locks.notebookOf(archive, notePath ?? currentFolder());
+  if (!notebook) return;
+  if (notebook.protected) {
+    toast(`${notebook.name} is protected already`);
+    return;
+  }
+  const password = await askNewPassword(`Protect “${notebook.name}”`,
+    'Every note in it is sealed with this password, and its titles leave the file names and the search index. '
+    + 'The names of the notebook and of its sections stay visible. Without the password nobody can open it, '
+    + 'and there is no way to recover it. Copies written in the clear before may stay on the disk until it reuses that space.');
+  if (!password) return;
+  await saveNow();
+
+  // The marker goes first: a notebook left half sealed by a crash still asks for its password.
+  await io.writeMarker(tree.join(notebook.path, locks.MARKER), locks.MARKER_PARTS, password);
+  const pages = tree.allNotes(archive).filter((page) => locks.notebookOf(archive, page.path) === notebook);
+  let current = notePath;
+  for (const page of pages) {
+    const read = await io.readNote(page.path);
+    await io.writeNote(page.path, read, password);
+    await io.indexRemove(page.path).catch(() => {});
+    const folder = tree.parentOf(page.path);
+    const { order } = tree.parseNoteFile(tree.baseName(page.path).replace(/\.grt$/, ''));
+    const taken = tree.allNotes(archive).filter((each) => tree.parentOf(each.path) === folder).map((each) => each.file);
+    const wanted = tree.join(folder, locks.lockedFileName(Number.isFinite(order) && order < Number.MAX_SAFE_INTEGER ? order : tree.nextOrder(taken)));
+    if (wanted !== page.path) {
+      try {
+        await io.renameEntry(page.path, wanted);
+        if (current === page.path) current = wanted;
+      } catch { /** the old name stays when the new one is taken. */ }
+    }
+  }
+  keys.set(notebook.path, password);
+  await loadArchive();
+  await reindex();
+  await io.indexPurge().catch((error) => console.warn(`Cannot compact the index: ${error}`));
+  await catalogueNotebook(locks.notebookOf(archive, notebook.path), password);
+  if (current && current !== notePath) {
+    notePath = current;
+  }
+  if (notePath && locks.isProtected(archive, notePath)) notePassword = password;
+  refresh();
+  toast(`${notebook.name} is protected: ${pages.length} note(s) sealed`);
+}
+
+/** Takes the password off the notebook in front of you. */
+async function unprotectNotebook() {
+  const notebook = locks.notebookOf(archive, notePath ?? currentFolder());
+  if (!notebook?.protected) return;
+  const password = await passwordFor(notebook.path);
+  if (!password) return;
+  const sure = await io.confirm(`Take the password off “${notebook.name}”?\n\nIts notes are written in the clear and searched again.`, 'Remove protection');
+  if (!sure) return;
+  await saveNow();
+  const pages = tree.allNotes(archive).filter((page) => locks.notebookOf(archive, page.path) === notebook);
+  for (const page of pages) {
+    const read = await io.readNote(page.path, password);
+    await io.writeNote(page.path, read, null);
+  }
+  await io.deleteEntry(tree.join(notebook.path, locks.MARKER));
+  keys.drop(notebook.path);
+  if (notePath && locks.notebookOf(archive, notePath) === notebook) notePassword = null;
+  await loadArchive();
+  await reindex();
+  refresh();
+  toast(`${notebook.name} is no longer protected`);
+}
+
+/** Forgets every password given, and closes a protected note that is open. */
+async function lockNotebooks() {
+  await saveNow();
+  keys.forget();
+  if (notePath && locks.isProtected(archive, notePath)) {
+    note = new NoteDocument();
+    notePath = null;
+    notePassword = null;
+    editor.attach(note);
+  }
+  await rebuildCatalogue(tree.allNotes(archive));
+  refresh();
+  toast('Protected notebooks locked');
 }
 
 // Settings
@@ -897,6 +1228,17 @@ function wire() {
   el('completions').addEventListener('mousedown', onCompletionClick);
   document.addEventListener('keydown', onCompletionKey, true);
   surface().addEventListener('click', onSurfaceClick);
+  el('base-view').addEventListener('click', (event) => {
+    const tab = event.target.closest('[data-view]');
+    if (tab) {
+      openBase(basePath, Number(tab.dataset.view));
+      return;
+    }
+    const row = event.target.closest('[data-path]');
+    if (row) openNote(row.dataset.path);
+  });
+  // Formulas shown as their TeX before the engine loaded are drawn again once it has.
+  whenMathReady(() => editor?.draw());
 
   document.addEventListener('keydown', onKey);
   window.addEventListener('pagehide', () => { saveNow(); });
@@ -915,7 +1257,8 @@ function onTreeClick(event) {
 
   if (row.dataset.kind === 'note') {
     if (event.detail === 2) return;
-    openNote(row.dataset.path);
+    if (row.dataset.path.endsWith('.base')) openBase(row.dataset.path);
+    else openNote(row.dataset.path);
     return;
   }
 
@@ -968,9 +1311,8 @@ async function showFolderMenu(path, kind) {
   await loadArchive();
   await reindex();
   if (notePath && notePath.startsWith(path)) {
-    const again = tree.allNotes(archive)[0];
     notePath = null;
-    if (again) await openNote(again.path);
+    await openFirst({ create: false });
   }
   refresh();
 }
@@ -1013,9 +1355,23 @@ function onCompletionClick(event) {
 }
 
 function onSurfaceClick(event) {
+  const formula = event.target.closest('[data-math]');
+  if (formula && editor) {
+    event.preventDefault();
+    editFormula(editor, formula);
+    return;
+  }
   const box = event.target.closest('[data-action="toggle-todo"]');
   if (box) {
     editor.toggleTodo(box.dataset.block);
+    return;
+  }
+
+  const embed = event.target.closest('[data-action="open-embed"]');
+  const embedded = embed ? note?.block(embed.dataset.block) : null;
+  if (embedded?.wiki) {
+    const target = links.resolve(String(embedded.target).split('#')[0].trim(), titleIndex);
+    if (target) openNote(target);
     return;
   }
 
@@ -1056,6 +1412,9 @@ function commands() {
       ? entry('Close the vault and go back to the GRT archive', '', () => closeVault())
       : entry('Open an Obsidian vault…', '', () => openVault()),
     entry('Export the whole archive as Markdown', '', () => exportArchive()),
+    entry('Protect this notebook with a password…', '', () => protectNotebook()),
+    entry('Remove the password from this notebook…', '', () => unprotectNotebook()),
+    entry('Lock protected notebooks', '', () => lockNotebooks()),
     entry('Rebuild the search index', '', async () => {
       await io.indexForget();
       await reindex();
@@ -1064,6 +1423,14 @@ function commands() {
     entry('Insert a to-do', '', () => insertBlock(makeTodo())),
     entry('Insert a callout', '', () => insertBlock(makeCallout('note'))),
     entry('Insert a code block', '', () => insertBlock(makeBlock('code'))),
+    { ...entry("Today's note", 'Ctrl+Shift+D', () => dailyNote()), aliases: ['Daily note', 'Open today’s daily note'] },
+    { ...entry('New note with a unique name', '', async () => {
+      const conf = await helperSettings();
+      await newNote({ folder: conf.unique.folder ? await folderAt(conf.unique.folder) : null, title: formatDate(new Date(), conf.unique.format) || uniqueName() });
+    }), aliases: ['Unique note creator', 'Zettelkasten', 'Create new unique note'] },
+    { ...entry('Insert template…', '', () => insertTemplate()), aliases: ['Templates', 'Insert template'] },
+    { ...entry('Insert a table', '', () => insertBlock(makeBlock('table', { rows: 3, cols: 3, header: true }))), aliases: ['Table', 'Insert Table'] },
+    { ...entry('Insert a formula…', '', () => editor && insertFormula(editor)), aliases: ['Formula', 'Equation', 'Math', 'LaTeX'] },
     entry('Insert a link to a document', '', async () => {
       const path = await io.pickToOpen('Choose a document');
       if (path) insertBlock(makeEmbed(path), { enter: false });

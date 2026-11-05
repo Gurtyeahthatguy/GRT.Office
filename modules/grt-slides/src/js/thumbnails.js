@@ -43,7 +43,7 @@ export class Thumbnails {
   item(model, slide, index, currentId, images) {
     {
       const item = document.createElement('div');
-      item.className = `thumb${slide.id === currentId ? ' current' : ''}`;
+      item.className = `thumb${slide.id === currentId ? ' current' : ''}${slide.hidden ? ' hidden-slide' : ''}`;
       item.draggable = true;
       item.dataset.id = slide.id;
       item.dataset.index = String(index);
@@ -71,7 +71,7 @@ export class Thumbnails {
 
       const label = document.createElement('div');
       label.className = 'thumb-label';
-      label.textContent = String(index + 1);
+      label.textContent = slide.hidden ? `${index + 1} hidden` : String(index + 1);
       item.append(label);
 
       item.addEventListener('click', () => this.onSelect(slide.id));

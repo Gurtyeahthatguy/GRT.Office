@@ -9,6 +9,9 @@ export const SHEET_PRINT_DEFAULTS = Object.freeze({
   fitWidth: false,
   gridlines: false,
   labels: true,
+  // What the bands say, with Excel's codes: &A the sheet, &P the page, &N the pages, &F the file, &D the date.
+  header: '&A',
+  footer: 'Page &P of &N',
   area: null,
   repeatRows: null,
   rowBreaks: Object.freeze([]),
@@ -142,3 +145,46 @@ export function odfArea(sheetName, area) {
 }
 
 export { PAGE_SIZES };
+
+/** A header or footer text with its codes filled in. */
+export function runningLine(text, { sheet = '', page = 1, pages = 1, file = '', date = '' } = {}) {
+  return String(text ?? '').replace(/&([APNFD])/g, (_, code) => ({ A: sheet, P: String(page), N: String(pages), F: file, D: date }[code]));
+}
+
+/** A band's text as Excel writes it, the codes kept and the side marks dropped; text in it is kept as typed. */
+export function fromExcelBand(text) {
+  return String(text ?? '').replace(/&"[^"]*"|&\d+|&[LCRBIUSEXYKGOHZT]/g, '').trim();
+}
+
+/** A band's text as ODF elements: plain text with the fields its codes stand for. */
+export function odfBandParts(text, tag) {
+  const parts = [];
+  const fields = { A: () => tag('text:sheet-name', {}, '???'), P: () => tag('text:page-number', {}, '1'), N: () => tag('text:page-count', {}, '1'), F: () => tag('text:file-name', {}, '???'), D: () => tag('text:date', {}, '') };
+  let rest = String(text ?? '');
+  for (let match = /&([APNFD])/.exec(rest); match; match = /&([APNFD])/.exec(rest)) {
+    if (match.index > 0) parts.push(rest.slice(0, match.index));
+    parts.push(fields[match[1]]());
+    rest = rest.slice(match.index + 2);
+  }
+  if (rest) parts.push(rest);
+  return parts;
+}
+
+/** An ODF band read back as text with codes. */
+export function odfBandText(element) {
+  if (!element) return '';
+  const codes = { 'sheet-name': '&A', 'page-number': '&P', 'page-count': '&N', 'file-name': '&F', date: '&D' };
+  let out = '';
+  const walk = (node) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) out += child.nodeValue;
+      else if (codes[child.localName]) out += codes[child.localName];
+      else if (child.nodeType === 1) {
+        walk(child);
+        if (child.localName === 'p' && child.nextSibling) out += ' ';
+      }
+    }
+  };
+  walk(element);
+  return out.replace(/\s+/g, ' ').trim();
+}

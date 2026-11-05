@@ -1,18 +1,8 @@
 /* Interface styles. */
 
-/* Palette. Light is defined on bare :root so every colour has a value even
-   before any media query or theme attribute applies. */
+/* The colours this program adds to those of design.css, theme by theme. */
 
 :root {
-  --bg: #f4f4f5;
-  --bg-raised: #ffffff;
-  --bg-sunken: #e4e4e7;
-  --border: #d4d4d8;
-  --text: #18181b;
-  --text-dim: #6b7280;
-  --accent: #1f6feb;
-  --danger: #c53030;
-  --ok: #1a7f37;
   --page-shadow: rgba(0, 0, 0, 0.18);
   --paper: #ffffff;
   --ink: #111111;
@@ -20,15 +10,6 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #1e1f22;
-    --bg-raised: #2b2d31;
-    --bg-sunken: #141517;
-    --border: #3a3d42;
-    --text: #e6e6e6;
-    --text-dim: #9aa0a6;
-    --accent: #4a9eff;
-    --danger: #e5534b;
-    --ok: #3fb950;
     --page-shadow: rgba(0, 0, 0, 0.5);
     --paper: #ffffff;
     --ink: #111111;
@@ -36,15 +17,6 @@
 }
 
 :root[data-theme="dark"] {
-  --bg: #1e1f22;
-  --bg-raised: #2b2d31;
-  --bg-sunken: #141517;
-  --border: #3a3d42;
-  --text: #e6e6e6;
-  --text-dim: #9aa0a6;
-  --accent: #4a9eff;
-  --danger: #e5534b;
-  --ok: #3fb950;
   --page-shadow: rgba(0, 0, 0, 0.5);
   --paper: #ffffff;
   --ink: #111111;
@@ -52,15 +24,6 @@
 
 /* Sepia: the reading palette of GRT Bible. */
 :root[data-theme="sepia"] {
-  --bg: #ece2cc;
-  --bg-raised: #f6eedb;
-  --bg-sunken: #e0d3b6;
-  --border: #d3c29d;
-  --text: #3b2f20;
-  --text-dim: #68583e;
-  --accent: #8a3a1f;
-  --danger: #9e2a1c;
-  --ok: #4f5e1e;
   --page-shadow: rgba(80, 60, 30, 0.25);
   --paper: #f8f1df;
   --ink: #3b2f20;
@@ -68,15 +31,6 @@
 
 /* Gold: a warm, low-contrast light theme. */
 :root[data-theme="gold"] {
-  --bg: #f5efe1;
-  --bg-raised: #fdfaf3;
-  --bg-sunken: #e8dec8;
-  --border: #d6c8a8;
-  --text: #2e2519;
-  --text-dim: #7a6a4f;
-  --accent: #a67c00;
-  --danger: #a33a2a;
-  --ok: #5c7a1e;
   --page-shadow: rgba(90, 70, 30, 0.22);
   --paper: #ffffff;
   --ink: #111111;
@@ -84,21 +38,10 @@
 
 /* Purple: a deep dark theme. */
 :root[data-theme="purple"] {
-  --bg: #191324;
-  --bg-raised: #241c33;
-  --bg-sunken: #110d1a;
-  --border: #3d3154;
-  --text: #ece7f5;
-  --text-dim: #a094b8;
-  --accent: #b388ff;
-  --danger: #ff6b81;
-  --ok: #5bd68a;
   --page-shadow: rgba(0, 0, 0, 0.6);
   --paper: #ffffff;
   --ink: #111111;
 }
-
-* { box-sizing: border-box; }
 
 html, body {
   margin: 0;
@@ -118,7 +61,6 @@ body {
 
 body > .toolbar { flex: 0 0 auto; }
 
-.hidden { display: none !important; }
 .muted { color: var(--text-dim); }
 .small { font-size: 12px; }
 
@@ -152,7 +94,6 @@ button {
   cursor: pointer;
 }
 
-button:hover:not(:disabled) { background: var(--bg-sunken); }
 button:active:not(:disabled) { transform: translateY(1px); }
 
 button:disabled {
@@ -258,8 +199,6 @@ input[type="search"] {
   z-index: 20;
   max-width: 70vw;
 }
-
-.toast.error { border-color: var(--danger); }
 
 /* Settings dialog */
 
@@ -553,3 +492,55 @@ input[type="search"] {
 
 /* Printed text: the editor's look, without its editing affordances. */
 .surface.print-body { min-height: 0; color: #111111; }
+
+/* Tables */
+.block.table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 6pt 0; }
+.block.table td, .block.table th { padding: 2px 6px; vertical-align: top; white-space: pre-wrap; text-align: inherit; font-weight: inherit; min-width: 1em; height: 1.6em; }
+.block.table th { font-weight: 700; }
+.block.table.borders-all td, .block.table.borders-all th { border: 1px solid #000; }
+.block.table.borders-outer { border: 1px solid #000; }
+.block.table.borders-rows tr + tr td, .block.table.borders-rows tr + tr th { border-top: 1px solid #000; }
+.block.table.borders-none td, .block.table.borders-none th { outline: 1px dashed rgba(127, 127, 127, 0.35); outline-offset: -1px; }
+
+/* Objects in the text */
+.object-char { font-size: 0; }
+.object-note sup { color: var(--accent, #1f6feb); cursor: pointer; padding: 0 1px; }
+.object-bookmark::after, .object-index::after { content: ""; display: inline-block; width: 2px; height: 0.9em; margin: 0 1px; vertical-align: -0.1em; background: rgba(31, 111, 235, 0.45); }
+.object-ref span, .object-seq span, .object-field span { background: rgba(127, 127, 127, 0.14); border-radius: 2px; }
+.text-link { color: #1a55b5; text-decoration: underline; }
+.block.toc, .block.index { margin: 6pt 0 12pt; user-select: none; }
+.generated-line { display: flex; gap: 6px; color: inherit; text-decoration: none; cursor: pointer; padding: 1px 0; }
+.generated-line > span:first-child { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.generated-line::after { content: ""; order: 1; flex: 1; border-bottom: 1px dotted rgba(127, 127, 127, 0.7); margin-bottom: 0.35em; }
+.generated-line .page-of { order: 2; }
+.generated-line.level-2 { padding-left: 1.5em; }
+.generated-line.level-3 { padding-left: 3em; }
+.generated-line.level-4 { padding-left: 4.5em; }
+.block.index .generated-line.level-1 { font-weight: 600; }
+.notes-area { margin-top: 24pt; padding-top: 6pt; border-top: 1px solid rgba(127, 127, 127, 0.5); font-size: 0.85em; user-select: none; }
+.notes-title { font-weight: 600; margin: 6pt 0 2pt; }
+.note-line sup { margin-right: 2px; }
+
+.print-body .object-note sup { color: inherit; }
+.print-body .object-bookmark::after, .print-body .object-index::after { display: none; }
+.print-body .object-ref span, .print-body .object-seq span, .print-body .object-field span { background: none; }
+@media print { .object-bookmark::after, .object-index::after { display: none; } .object-ref span, .object-seq span, .object-field span { background: none; } }
+.block.chart { user-select: none; }
+.block.chart .chart-holder svg { display: block; width: 100%; height: auto; }
+#panel-body .chart-preview { height: 220px; margin-bottom: 10px; border: 1px solid var(--border, #ccc); border-radius: 4px; overflow: hidden; background: #fff; }
+#panel-body textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; }
+#panel-body .style-sample { padding: 8px 10px; margin: 8px 0 10px; border: 1px solid var(--border, #ccc); border-radius: 4px; background: #fff; color: #111; max-height: 120px; overflow: hidden; }
+#panel-body .setting-row { display: flex; gap: 16px; margin: 6px 0 10px; }
+.section-mark { height: 0; margin: 4pt 0; border-top: 1px dashed rgba(127, 127, 127, 0.45); position: relative; user-select: none; }
+.section-mark::after { content: attr(data-label); position: absolute; right: 0; top: -0.9em; font-size: 9px; color: rgba(127, 127, 127, 0.8); background: inherit; }
+.print-body .section-mark { border: none; }
+.print-body .section-mark::after { display: none; }
+.section-columns > * { break-inside: avoid-column; }
+.object-math { cursor: pointer; }
+.object-math svg { vertical-align: middle; max-width: 100%; }
+.object-math.math-display { display: block; text-align: center; margin: 4pt 0; }
+.math-source { font-family: ui-monospace, monospace; font-size: 0.9em; color: #7a4a00; background: rgba(255, 200, 0, 0.12); }
+#panel-body .formula-preview { min-height: 70px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; border: 1px solid var(--border, #ccc); border-radius: 4px; background: #fff; color: #111; overflow: auto; padding: 6px; }
+
+/* Cells chosen together with Shift+click. */
+#surface .cell-chosen { background: color-mix(in srgb, var(--accent) 22%, transparent) !important; }

@@ -40,7 +40,17 @@ Every claim above is meant to be verifiable, not taken on trust.
 Scans a release binary for absolute build paths, contactable addresses,
 telemetry libraries and debug symbols. The list of strings it tolerates is
 [scripts/allowed-strings.txt](scripts/allowed-strings.txt), plain text, with a
-written reason beside each one.
+written reason beside each one. Release builds go through
+`scripts/tauri-build.mjs`, which rewrites every build path so that no user name
+is left in the binary.
+
+```bash
+./scripts/check-weight.sh grt-read
+```
+
+Weighs a module's binary and packages against
+[scripts/weight-budget.txt](scripts/weight-budget.txt). A version that goes over
+its budget does not ship.
 
 ```bash
 cd modules/grt-read

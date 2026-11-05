@@ -885,3 +885,60 @@ fn an_export_carries_no_timestamp_and_no_user() {
         assert!(!all.contains(leak), "the export mentions {leak}");
     }
 }
+
+/// Runs a statement as if the user had typed it in the SQL editor.
+fn typed(database: &mut Database, sql: &str) -> Result<serde_json::Value, String> {
+    db::as_user(database, sql, |database| {
+        if is_write(sql) {
+            undo::step(database, Some(sql), |connection| db::run(connection, sql, &[]))
+        } else {
+            db::run(&database.connection, sql, &[])
+        }
+    })
+}
+
+#[test]
+fn a_database_from_elsewhere_cannot_reach_outside_itself() {
+    let dir = std::env::temp_dir().join(format!("grt-tables-guard-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let mut database = memory();
+    contacts(&database);
+    let outside = dir.join("copy.sqlite");
+    for sql in [
+        format!("ATTACH DATABASE '{}' AS other", outside.display()),
+        format!("VACUUM INTO '{}'", outside.display()),
+        format!("vacuum main /* hidden */ into '{}'", outside.display()),
+        "SELECT load_extension('/tmp/evil.so')".to_string(),
+        "PRAGMA writable_schema = ON".to_string(),
+        "PRAGMA journal_mode = WAL".to_string(),
+        "PRAGMA trusted_schema = ON".to_string(),
+        "PRAGMA foreign_keys = OFF".to_string(),
+    ] {
+        assert!(typed(&mut database, &sql).is_err(), "{sql} ran");
+    }
+    assert!(!outside.exists());
+    assert_eq!(database.connection.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(database.connection.query_row("PRAGMA trusted_schema", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_user_still_reads_the_schema_and_vacuums_in_place() {
+    let mut database = memory();
+    contacts(&database);
+    for sql in ["PRAGMA table_info(contacts)", "PRAGMA foreign_keys", "PRAGMA integrity_check", "SELECT count(*) FROM contacts"] {
+        assert!(typed(&mut database, sql).is_ok(), "{sql} refused");
+    }
+    assert!(!db::writes_elsewhere("VACUUM; INSERT INTO contacts (name) VALUES ('a')"));
+    assert!(typed(&mut database, "INSERT INTO contacts (name) VALUES ('Ada')").is_ok());
+    assert!(undo::undo(&mut database).is_ok());
+}
+
+#[test]
+fn a_query_that_never_ends_is_stopped() {
+    let mut database = memory();
+    let start = std::time::Instant::now();
+    let error = typed(&mut database, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n").unwrap_err();
+    assert!(error.contains("stopped"), "{error}");
+    assert!(start.elapsed() < db::MAX_QUERY + std::time::Duration::from_secs(5));
+}

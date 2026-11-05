@@ -437,3 +437,76 @@ describe('the edit buffer, whatever order the events arrive in', () => {
     expect(at(0, 0)).toBe('kept');
   });
 });
+
+describe('AutoSum and the quick number formats', () => {
+  it('sums the numbers above, or to the left, and formats as currency or percent', () => {
+    const sheet = new SheetController(new GridModel());
+    for (const [r, v] of [[0, '4'], [1, '5'], [2, '6']]) sheet.setCell(r, 0, v);
+    sheet.select(3, 0);
+    expect(sheet.autoSum()).toBe(true);
+    expect(sheet.sheet.cell(3, 0).f ?? sheet.sheet.cell(3, 0).t).toMatch(/SUM\(A1:A3\)/);
+    sheet.setCell(5, 0, '1');
+    sheet.setCell(5, 1, '2');
+    sheet.select(5, 2);
+    sheet.autoSum();
+    expect(JSON.stringify(sheet.sheet.cell(5, 2))).toMatch(/SUM\(A6:B6\)/);
+    sheet.select(0, 0);
+    sheet.setNumberFormat('0.00%');
+    expect(sheet.styleAt(0, 0).format).toBe('0.00%');
+    sheet.select(10, 5);
+    expect(sheet.autoSum()).toBe(false);
+  });
+});
+
+describe('filling four ways, sizes and the reference cycle', () => {
+  it('fills right and up, sets widths, and cycles A1 through its dollar forms', async () => {
+    const sheet = new SheetController(new GridModel());
+    sheet.setCell(0, 0, '=1+1');
+    sheet.selectRange(0, 0, 0, 2);
+    expect(sheet.fill('right')).toBe(true);
+    expect(JSON.stringify(sheet.sheet.cell(0, 2))).toMatch(/1\+1/);
+    sheet.setCell(5, 3, 'x');
+    sheet.selectRange(2, 3, 5, 3);
+    sheet.fill('up');
+    expect(sheet.sheet.cell(2, 3).v).toBe('x');
+    sheet.selectRange(0, 1, 0, 1);
+    sheet.setSize('col', 150);
+    expect(sheet.sheet.columnWidth(1)).toBe(150);
+  });
+});
+
+describe('F4 on a reference', async () => {
+  const { cycleReference } = await import('../src/js/references.js');
+  it('goes A1, $A$1, A$1, $A1 and back, leaving function names alone', () => {
+    let text = '=SUM(A1:B2)+LOG10(4)';
+    const steps = [];
+    for (let i = 0; i < 4; i += 1) {
+      const out = cycleReference(text, 6);
+      text = out.text;
+      steps.push(text.slice(5, 10));
+    }
+    expect(steps).toEqual(['$A$1:', 'A$1:B', '$A1:B', 'A1:B2']);
+    expect(cycleReference('=LOG10(4)', 5)).toBe(null);
+  });
+});
+
+describe('the running texts of a printed sheet', async () => {
+  const { runningLine, fromExcelBand, odfBandParts } = await import('../src/js/core/formats/sheet-print.js');
+  it('fill their codes, come from Excel without its side marks, and become ODF fields', () => {
+    expect(runningLine('&A, page &P of &N', { sheet: 'Sales', page: 2, pages: 5 })).toBe('Sales, page 2 of 5');
+    expect(fromExcelBand('&L&"Arial,Bold"&12Budget &CPage &P')).toBe('Budget Page &P');
+    const tag = (name, attrs, ...children) => ({ name, children });
+    expect(odfBandParts('Page &P of &N', tag).map((p) => (typeof p === 'string' ? p : p.name))).toEqual(['Page ', 'text:page-number', ' of ', 'text:page-count']);
+  });
+});
+
+describe('macro-enabled templates', async () => {
+  const { isTemplate, baseFormat, asTemplate } = await import('../src/js/core/formats/templates.js');
+  it('open as templates of their kind and are never written as such', () => {
+    expect(isTemplate('xltm')).toBe(true);
+    expect(baseFormat('xltm')).toBe('xlsx');
+    expect(baseFormat('DOTM')).toBe('docx');
+    const entries = [{ name: 'x', data: 'y' }];
+    expect(asTemplate(entries, 'xltm')).toBe(entries);
+  });
+});

@@ -297,7 +297,7 @@ describe('other programs’ formats', () => {
   // The command that showed a panel finishes a few turns after it closes.
   const idle = async () => { for (let i = 0; i < 10; i += 1) await settle(); };
 
-  /** A Word file with a table, which Paper keeps only as text. */
+  /** A Word file with a table inside a table, which Paper keeps only as text. */
   async function wordFile() {
     const { writeDocx } = await import('../src/js/core/formats/docx-write.js');
     const { encodeBlock } = await import('../src/js/core/package.js');
@@ -306,7 +306,7 @@ describe('other programs’ formats', () => {
     });
     const index = entries.findIndex((entry) => entry.name === 'word/document.xml');
     entries[index].data = entries[index].data.replace('<w:sectPr>',
-      '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:sectPr>');
+      '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>Inner</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p/></w:tc></w:tr></w:tbl><w:sectPr>');
     return encodeBlock(entries);
   }
 
@@ -328,7 +328,7 @@ describe('other programs’ formats', () => {
     document.getElementById('btn-open').click();
     await until(dialogOpen);
     expect(title()).toBe('Opened letter.docx');
-    expect(document.getElementById('panel-body').textContent).toContain('Tables, kept as text');
+    expect(document.getElementById('panel-body').textContent).toContain('Tables inside tables, kept as text');
     document.getElementById('panel-cancel').click();
     await until(() => !dialogOpen());
     expect(surface.textContent).toContain('From Word');

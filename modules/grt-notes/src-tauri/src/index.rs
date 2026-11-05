@@ -30,7 +30,8 @@ pub fn open(path: Option<&Path>) -> Result<Connection, String> {
     // `path` and `modified` are UNINDEXED.
     connection
         .execute_batch(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS notes USING fts5(
+            "PRAGMA secure_delete = ON;
+             CREATE VIRTUAL TABLE IF NOT EXISTS notes USING fts5(
                  path UNINDEXED,
                  title,
                  tags,
@@ -76,6 +77,13 @@ pub fn remove(connection: &Connection, path: &str) -> Result<(), String> {
         .execute("DELETE FROM notes WHERE path = ?1", params![path])
         .map_err(|e| format!("Cannot remove from the index: {e}"))?;
     Ok(())
+}
+
+/// Rewrites the index so that removed notes leave no words behind, in its segments or in free pages.
+pub fn purge(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch("INSERT INTO notes(notes) VALUES('optimize'); VACUUM;")
+        .map_err(|e| format!("Cannot compact the index: {e}"))
 }
 
 /// What the index currently believes, so the caller can spot what changed.

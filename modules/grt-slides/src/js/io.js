@@ -1,5 +1,7 @@
 /** The only bridge between the interface and the filesystem. */
 
+import { drawable, NOT_DRAWN } from './core/images.js';
+
 const { invoke } = window.__TAURI__.core;
 
 export const FILTERS = {
@@ -12,11 +14,14 @@ export const FILTERS = {
   pptx: [{ name: 'PowerPoint presentation', extensions: ['pptx'] }],
   odp: [{ name: 'OpenDocument presentation', extensions: ['odp'] }],
   fodp: [{ name: 'Flat OpenDocument presentation', extensions: ['fodp'] }],
+  otp: [{ name: 'OpenDocument presentation template', extensions: ['otp'] }],
+  potx: [{ name: 'PowerPoint template', extensions: ['potx'] }],
   presentations: [
-    { name: 'Presentations', extensions: ['grt', 'odp', 'fodp', 'pptx'] },
+    { name: 'Presentations', extensions: ['grt', 'odp', 'fodp', 'pptx', 'otp', 'potx', 'potm'] },
     { name: 'GRT document', extensions: ['grt'] },
     { name: 'OpenDocument presentation', extensions: ['odp', 'fodp'] },
     { name: 'PowerPoint presentation', extensions: ['pptx'] },
+    { name: 'Templates', extensions: ['otp', 'potx', 'potm'] },
   ],
   font: [{ name: 'Font', extensions: ['ttf', 'otf', 'woff', 'woff2'] }],
 };
@@ -42,13 +47,13 @@ export async function pickToSave(defaultPath, filters = FILTERS.grt, title = 'Sa
 }
 
 /** Reads the text parts of a document, plus the names of its resources. */
-export async function readDocument(path) {
-  return invoke('read_grt', { path });
+export async function readDocument(path, password = null) {
+  return invoke('read_grt', { path, password });
 }
 
 /** Reads one resource as raw bytes. */
-export async function readResource(path, name) {
-  return new Uint8Array(await invoke('read_resource', { path, name }));
+export async function readResource(path, name, password = null) {
+  return new Uint8Array(await invoke('read_resource', { path, name, password }));
 }
 
 /** Holds a binary part for the next save. */
@@ -62,8 +67,8 @@ export async function clearStaged() {
   return invoke('clear_staged');
 }
 
-export async function writeDocument(path, parts) {
-  return invoke('write_grt', { path, parts });
+export async function writeDocument(path, parts, password = null) {
+  return invoke('write_grt', { path, parts, password });
 }
 
 export async function writeText(path, text) {
@@ -131,6 +136,7 @@ export function mediaTypeFor(name) {
 
 /** Bytes to a data URL, for inlining an image into the exported HTML. */
 export function toDataUrl(bytes, name) {
+  if (!drawable(bytes)) return NOT_DRAWN;
   let binary = '';
   // Chunked: a single spread of a multi-megabyte array overflows the stack.
   for (let i = 0; i < bytes.length; i += 8192) {

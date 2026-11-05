@@ -15,14 +15,14 @@ fn is_ephemeral() -> bool {
 }
 
 /// Reads a file and hands the bytes back as a raw ArrayBuffer.
-#[tauri::command]
+#[tauri::command(async)]
 fn read_file(path: String) -> Result<Response, String> {
     let bytes = fs::read(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
     Ok(Response::new(bytes))
 }
 
 /// Writes a file atomically.
-#[tauri::command]
+#[tauri::command(async)]
 fn write_file_atomic(request: Request<'_>) -> Result<(), String> {
     let encoded = request
         .headers()
@@ -197,6 +197,10 @@ pub fn run() {
             grt_app::commands::recovery_discard,
             grt_app::commands::recovery_list,
             grt_app::commands::recovery_remove,
+            grt_app::commands::read_package,
+            grt_app::commands::write_package,
+            grt_app::commands::read_pdf,
+            grt_app::commands::write_pdf,
             read_file,
             write_file_atomic,
             file_exists,

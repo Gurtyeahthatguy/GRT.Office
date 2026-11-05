@@ -1,5 +1,6 @@
 /** PowerPoint presentations into Slides' document. */
 
+import { readOoxmlChartPart, C as CHART_NS } from './chart-object.js';
 import { NS, kids, kid, is } from '../xml.js';
 import { Losses } from '../losses.js';
 import { relationships, mainPart, readPart, relIs } from './ooxml.js';
@@ -8,6 +9,7 @@ import { presetOutline, mirrorOutline } from '../paths.js';
 import {
   readDrawingTheme, readColorMap, colorOf, isTransparent, readXfrm, groupTransform, unwrap, toPx, customGeometry,
 } from './drawingml.js';
+import { declareExternal } from './external.js';
 
 const P = NS.p;
 const A = NS.a;
@@ -46,6 +48,7 @@ class PptxReader {
     this.rels = relationships(pkg, main);
     this.losses = new Losses();
     if (pkg.damage) this.losses.add('The file was damaged, and only what could still be read was opened');
+    declareExternal(pkg, this.losses);
     this.images = new Map();
     this.imageNames = new Map();
     this.layouts = new Map();
@@ -212,9 +215,8 @@ class PptxReader {
     const master = layout?.master ?? null;
     const colorMap = readOverride(root) ?? layout?.colorMap ?? master?.colorMap ?? readColorMap(null);
     const theme = master?.theme ?? { colors: {}, major: null, minor: null };
-    const context = { slide: { root, rels }, layout, master, rels, colorMap, theme };
+    const context = { slide: { root, rels }, layout, master, rels, colorMap, theme, footer: { text: '', number: false, date: null } };
 
-    if (root.getAttribute('show') === '0') this.losses.add('Hidden slides, shown');
     const timing = kid(root, P, 'timing');
     if (timing && timing.getElementsByTagNameNS(P, 'spTgt').length > 0) this.losses.add('Animations');
 
@@ -223,14 +225,20 @@ class PptxReader {
     elements.forEach((element, i) => { element.z = i + 1; });
 
     const showsLayout = root.getAttribute('showMasterSp') !== '0';
+    const { footer } = context;
     return {
       id: this.id('s'),
-      master: showsLayout ? layout?.modelMaster?.id ?? null : null,
+      master: layout?.modelMaster?.id ?? null,
+      ...(showsLayout ? {} : { hideMaster: true }),
+      footer: footer.text || footer.number || footer.date ? {
+        text: footer.text, number: footer.number, date: footer.date ? (footer.date.auto ? 'auto' : 'fixed') : null, dateText: footer.date?.auto ? '' : footer.date?.text ?? '',
+      } : null,
       background: this.background(root, context) ?? (layout?.background !== master?.background ? layout?.background ?? null : null),
       section: null,
       notes: this.notes(rels),
       transition: this.transition(root),
       elements,
+      ...(root.getAttribute('show') === '0' ? { hidden: true } : {}),
     };
   }
 
@@ -282,6 +290,16 @@ class PptxReader {
     const ph = nv ? kid(kid(nv, P, 'nvPr'), P, 'ph') : null;
     // On a master or a layout, placeholders are where slides put their own content.
     if (context.decoration && ph) return;
+    // A slide's footer, number and date placeholders are its footer line.
+    const footerPart = { ftr: 'text', sldNum: 'number', dt: 'date' }[ph?.getAttribute('type')];
+    if (footerPart && context.footer) {
+      const text = [...node.getElementsByTagNameNS(A, 't')].map((t) => t.textContent).join('');
+      const field = node.getElementsByTagNameNS(A, 'fld')[0]?.getAttribute('type') ?? '';
+      if (footerPart === 'text') context.footer.text = text;
+      else if (footerPart === 'number') context.footer.number = true;
+      else context.footer.date = field.startsWith('datetime') ? { auto: true } : { auto: false, text };
+      return;
+    }
 
     if (node.localName === 'grpSp') {
       const xfrm = kid(kid(node, P, 'grpSpPr'), A, 'xfrm');
@@ -336,7 +354,13 @@ class PptxReader {
         fill: shapeFill, ...(stroke ? { stroke: stroke.color, strokeWidth: stroke.width } : {}), data: {},
       });
     }
-    if (text) out.push({ id: this.id('e'), kind: 'text', ...rounded(box), ...text, data: {} });
+    if (text) {
+      // A slide's own title or body placeholder stays one, so a layout can place it again.
+      const type = ph?.getAttribute('type') ?? (ph ? 'body' : null);
+      const bodies = out.filter((e) => /^body\d*$/.test(e.placeholder ?? '')).length;
+      const placeholder = { title: 'title', ctrTitle: 'title', subTitle: 'subtitle', body: bodies ? `body${bodies + 1}` : 'body' }[type] ?? null;
+      out.push({ id: this.id('e'), kind: 'text', ...rounded(box), ...text, ...(placeholder ? { placeholder } : {}), data: {} });
+    }
   }
 
   /** Where a slide's placeholder inherits from: its layout's, then its master's. */
@@ -446,9 +470,17 @@ class PptxReader {
     const uri = data?.getAttribute('uri') ?? '';
     if (!raw) return;
     const box = place(raw);
+    if (/chart/.test(uri)) {
+      const ref = data.getElementsByTagNameNS(CHART_NS, 'chart')[0];
+      const rel = ref ? context.rels?.get(ref.getAttributeNS(NS.r, 'id')) : null;
+      const part = rel && !rel.external ? readPart(this.pkg, rel.target, 'a chart') : null;
+      const chart = part ? readOoxmlChartPart(part) : null;
+      if (chart) out.push({ id: this.id('e'), kind: 'chart', ...rounded(box), style: 'body', ...chart });
+      else this.losses.add('Charts');
+      return;
+    }
     if (uri !== TABLE_URI) {
-      if (/chart/.test(uri)) this.losses.add('Charts');
-      else if (/diagram/.test(uri)) this.losses.add('SmartArt diagrams');
+      if (/diagram/.test(uri)) this.losses.add('SmartArt diagrams');
       else this.losses.add('Embedded objects');
       return;
     }

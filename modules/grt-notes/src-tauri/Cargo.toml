@@ -1,6 +1,6 @@
 [package]
 name = "grt-notes"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local notebooks and notes, searchable across the whole archive"
 authors = ["GRT Project"]
 license = "MIT"
@@ -25,7 +25,7 @@ grt-container = { path = "../../../core/grt-container" }
 grt-app = { path = "../../../core/grt-app" }
 
 # The search index (of GRT_NOTES_DATES.md).
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [profile.release]
 opt-level = "z"

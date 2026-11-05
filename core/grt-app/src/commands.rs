@@ -2,11 +2,14 @@
 
 use std::path::Path;
 
+use grt_container::encryption::Protection;
 use percent_encoding::percent_decode_str;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Runtime, State, Webview, Window};
 
-use crate::{is_ephemeral, lock, package, recovery, recovery_dir, release, CloseGuard, Recovery};
+use tauri::Manager;
+
+use crate::{is_ephemeral, lock, package, recovery, recovery_dir, release, templates, CloseGuard, Recovery};
 
 /// Holds the main window open while it has unsaved work, or lets it go.
 #[tauri::command]
@@ -105,31 +108,66 @@ pub fn recovery_remove<R: Runtime>(
         .map_err(|e| format!("Cannot remove the recovery copy: {e}"))
 }
 
-/// Reads a ZIP package (ODF, OOXML, .grt) whole, as one raw block.
-#[tauri::command]
-pub fn read_package(path: String) -> Result<Response, String> {
-    package::read_block(Path::new(&path))
+/// Reads a ZIP package (ODF, OOXML, .grt) whole, as one raw block, opening it with the password if it has one.
+#[tauri::command(async)]
+pub fn read_package(path: String, password: Option<String>) -> Result<Response, String> {
+    package::read_block(Path::new(&path), password.as_deref())
         .map(Response::new)
-        .map_err(|e| format!("Cannot read {path}: {e}"))
+        .map_err(|e| if e.starts_with("grt:") { e } else { format!("Cannot read {path}: {e}") })
 }
 
-/// Writes a ZIP package from a raw block, its path in the `x-grt-path` header.
-#[tauri::command]
-pub fn write_package(request: Request<'_>) -> Result<(), String> {
-    let encoded = request
-        .headers()
-        .get("x-grt-path")
-        .ok_or_else(|| "Missing destination path".to_string())?
-        .to_str()
-        .map_err(|e| format!("Malformed destination path: {e}"))?;
-    let path = percent_decode_str(encoded)
+fn header(request: &Request<'_>, name: &str) -> Result<Option<String>, String> {
+    let Some(value) = request.headers().get(name) else { return Ok(None) };
+    let raw = value.to_str().map_err(|e| format!("Malformed {name}: {e}"))?;
+    percent_decode_str(raw)
         .decode_utf8()
-        .map_err(|e| format!("Destination path is not valid UTF-8: {e}"))?
-        .to_string();
+        .map(|text| Some(text.to_string()))
+        .map_err(|e| format!("{name} is not valid UTF-8: {e}"))
+}
+
+/// Writes a ZIP package from a raw block, its path in `x-grt-path`, sealed with `x-grt-protection` and `x-grt-password` when they are given.
+#[tauri::command(async)]
+pub fn write_package(request: Request<'_>) -> Result<(), String> {
+    let path = header(&request, "x-grt-path")?.ok_or_else(|| "Missing destination path".to_string())?;
+    let protection = header(&request, "x-grt-protection")?;
+    let password = header(&request, "x-grt-password")?;
+    let seal = match (protection.as_deref(), password.as_deref()) {
+        (Some(kind), Some(password)) if !password.is_empty() => {
+            let kind = Protection::from_name(kind).ok_or_else(|| format!("Unknown protection {kind}"))?;
+            Some((kind, password))
+        }
+        _ => None,
+    };
     let InvokeBody::Raw(block) = request.body() else {
         return Err("Expected a raw byte payload, got JSON".to_string());
     };
-    package::write_block(Path::new(&path), block).map_err(|e| format!("Cannot write {path}: {e}"))
+    package::write_block(Path::new(&path), block, seal).map_err(|e| if e.starts_with("grt:") { e } else { format!("Cannot write {path}: {e}") })
+}
+
+/// Reads a PDF in the clear, opening it with the password if it has one.
+#[tauri::command(async)]
+pub fn read_pdf(path: String, password: Option<String>) -> Result<Response, String> {
+    package::read_pdf(Path::new(&path), password.as_deref()).map(Response::new)
+}
+
+/// Writes a PDF from raw bytes, its path in `x-grt-path`, sealed when `x-grt-password` is given.
+#[tauri::command(async)]
+pub fn write_pdf(request: Request<'_>) -> Result<(), String> {
+    let path = header(&request, "x-grt-path")?.ok_or_else(|| "Missing destination path".to_string())?;
+    let password = header(&request, "x-grt-password")?;
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected a raw byte payload, got JSON".to_string());
+    };
+    package::write_pdf(Path::new(&path), bytes, password.as_deref())
+}
+
+/// Prints the page straight to a PDF file, on paper of the given width and height in millimetres.
+#[tauri::command]
+pub async fn print_to_pdf<R: Runtime>(webview: Webview<R>, width: f64, height: f64, path: String) -> Result<(), String> {
+    if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0) {
+        return Err("The paper has no size".to_string());
+    }
+    crate::print::print_to_pdf(&webview, width, height, Path::new(&path))
 }
 
 /// Prints the page, on paper of the given width and height in millimetres.
@@ -139,4 +177,20 @@ pub async fn print_page<R: Runtime>(webview: Webview<R>, width: f64, height: f64
         return Err("The paper has no size".to_string());
     }
     crate::print::print(&webview, width, height).map_err(|e| format!("Cannot print: {e}"))
+}
+
+/// The templates folder, Templates in the user's Documents, and the templates in it with one of the extensions given.
+#[tauri::command(async)]
+pub fn list_templates<R: Runtime>(app: AppHandle<R>, extensions: Vec<String>) -> Result<serde_json::Value, String> {
+    let folder = app.path().document_dir().map_err(|e| format!("No Documents folder: {e}"))?.join("Templates");
+    let items = templates::list(&folder, &extensions);
+    Ok(serde_json::json!({ "folder": folder.to_string_lossy(), "items": items }))
+}
+
+/// Makes the templates folder if it is not there, and says where it is.
+#[tauri::command(async)]
+pub fn templates_folder<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    let folder = app.path().document_dir().map_err(|e| format!("No Documents folder: {e}"))?.join("Templates");
+    std::fs::create_dir_all(&folder).map_err(|e| format!("Cannot make {}: {e}", folder.display()))?;
+    Ok(folder.to_string_lossy().into_owned())
 }

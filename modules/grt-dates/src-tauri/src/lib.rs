@@ -15,14 +15,14 @@ fn is_ephemeral() -> bool {
 }
 
 /// Reads a file and hands the bytes back as a raw ArrayBuffer.
-#[tauri::command]
+#[tauri::command(async)]
 fn read_file(path: String) -> Result<Response, String> {
     let bytes = fs::read(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
     Ok(Response::new(bytes))
 }
 
 /// Writes a file atomically.
-#[tauri::command]
+#[tauri::command(async)]
 fn write_file_atomic(request: Request<'_>) -> Result<(), String> {
     let encoded = request
         .headers()
@@ -53,6 +53,44 @@ fn write_file_atomic(request: Request<'_>) -> Result<(), String> {
 #[tauri::command]
 fn file_exists(path: String) -> bool {
     Path::new(&path).is_file()
+}
+
+/// Shows a desktop notification through the notification service on the session bus.
+/// The text is the calendar's own, so it is cut short and its markup escaped: a reminder cannot carry links or pictures.
+#[cfg(target_os = "linux")]
+#[tauri::command(async)]
+fn notify_desktop(summary: String, body: String) -> Result<(), String> {
+    use std::collections::HashMap;
+    use glib::prelude::*;
+
+    let summary: String = summary.chars().filter(|c| !c.is_control()).take(200).collect();
+    let body: String = body.chars().take(1000).collect();
+    let body = glib::markup_escape_text(&body).to_string();
+    let connection = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)
+        .map_err(|e| format!("No session bus: {e}"))?;
+    let hints: HashMap<String, glib::Variant> = HashMap::new();
+    let actions: Vec<String> = Vec::new();
+    let parameters = ("GRT Dates", 0u32, "x-office-calendar", summary, body, actions, hints, -1i32).to_variant();
+    connection
+        .call_sync(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "Notify",
+            Some(&parameters),
+            glib::VariantTy::new("(u)").ok(),
+            gio::DBusCallFlags::NONE,
+            5000,
+            gio::Cancellable::NONE,
+        )
+        .map(|_| ())
+        .map_err(|e| format!("The desktop did not show the reminder: {e}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn notify_desktop(_summary: String, _body: String) -> Result<(), String> {
+    Err("Desktop notifications are not available here".to_string())
 }
 
 /// Deletes a calendar file.
@@ -260,6 +298,7 @@ pub fn run() {
             write_file_atomic,
             file_exists,
             remove_calendar,
+            notify_desktop,
             list_calendars,
             runtime_info,
             read_settings,

@@ -72,7 +72,7 @@ describe('reading Obsidian’s Markdown', () => {
   it('makes blocks of what the editor knows, and keeps the rest as written', () => {
     expect(kinds).toEqual([
       'heading', 'paragraph', 'callout', 'quote', 'todo', 'todo', 'list', 'list', 'code',
-      'raw', 'raw', 'raw', 'paragraph', 'paragraph', 'paragraph', 'paragraph',
+      'table', 'raw', 'raw', 'embed', 'paragraph', 'paragraph', 'paragraph',
     ]);
   });
 

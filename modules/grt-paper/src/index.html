@@ -4,9 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GRT Paper</title>
+    <link rel="stylesheet" href="css/design.css" />
     <link rel="stylesheet" href="css/app.css" />
   </head>
   <body>
+    <nav id="menubar" aria-label="Menus"></nav>
     <header class="toolbar">
       <div class="group">
         <button id="btn-new" title="New document (Ctrl+N)">New</button>
@@ -54,6 +56,7 @@
         <button id="btn-find" title="Find and replace (Ctrl+F)">Find</button>
         <button id="btn-outline" title="Table of contents">Contents</button>
         <button id="btn-page-setup" title="Page size and margins">Page</button>
+        <button id="btn-pdf" title="Export as PDF, exactly as it prints">PDF</button>
         <button id="btn-export" title="Export">Export</button>
         <button id="btn-print" title="Print (Ctrl+P)">Print</button>
       </div>
@@ -81,6 +84,7 @@
           ></div>
         </div>
       </section>
+      <aside id="properties"></aside>
     </main>
 
     <div id="overlay" class="overlay hidden">

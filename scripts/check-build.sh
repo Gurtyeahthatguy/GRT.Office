@@ -25,7 +25,10 @@ FAILED=0
 # --- 1. Absolute build paths ----------------------------------------------
 # These reveal the user name and filesystem layout of whoever compiled.
 echo "[1/4] Absolute paths..."
-PATHS=$(strings "$BINARY" | grep -E '(/home/[a-zA-Z0-9._-]+/|/Users/[a-zA-Z0-9._-]+/|[A-Z]:\\Users\\)' | sort -u)
+PATHS=$( {
+  strings "$BINARY" | grep -E '(/home/[a-zA-Z0-9._-]+/|/Users/[a-zA-Z0-9._-]+/|[A-Z]:\\Users\\)'
+  strings "$BINARY" | grep -E '/redacted/[^/]+/' | grep -vE '/redacted/(cargo|grt|home)/'
+} | sort -u)
 if [[ -n "$PATHS" ]]; then
   echo "  FOUND:"
   echo "$PATHS" | head -20 | sed 's/^/    /'

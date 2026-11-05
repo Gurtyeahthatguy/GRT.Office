@@ -7,11 +7,14 @@ export const FILTERS = {
   ods: [{ name: 'OpenDocument spreadsheet', extensions: ['ods'] }],
   fods: [{ name: 'Flat OpenDocument spreadsheet', extensions: ['fods'] }],
   xlsx: [{ name: 'Excel workbook', extensions: ['xlsx'] }],
+  ots: [{ name: 'OpenDocument spreadsheet template', extensions: ['ots'] }],
+  xltx: [{ name: 'Excel template', extensions: ['xltx'] }],
   spreadsheets: [
-    { name: 'Spreadsheets', extensions: ['grt', 'ods', 'fods', 'xlsx'] },
+    { name: 'Spreadsheets', extensions: ['grt', 'ods', 'fods', 'xlsx', 'ots', 'xltx', 'xltm'] },
     { name: 'GRT spreadsheet', extensions: ['grt'] },
     { name: 'OpenDocument spreadsheet', extensions: ['ods', 'fods'] },
     { name: 'Excel workbook', extensions: ['xlsx'] },
+    { name: 'Templates', extensions: ['ots', 'xltx', 'xltm'] },
   ],
   csv: [{ name: 'Comma-separated values', extensions: ['csv', 'tsv', 'txt'] }],
   pdf: [{ name: 'PDF', extensions: ['pdf'] }],
@@ -49,17 +52,18 @@ export async function notify(message, title = 'GRT Grid') {
   } catch { /** a dialog that will not open must not stop the program. */ }
 }
 
-export async function readDocument(path) {
-  const { parts } = await invoke('read_grt', { path });
+export async function readDocument(path, password = null) {
+  const { parts } = await invoke('read_grt', { path, password });
   const raw = parts['content/main.json'];
   if (!raw) throw new Error('That file has no spreadsheet in it');
   return JSON.parse(raw);
 }
 
-export async function writeDocument(path, document) {
+export async function writeDocument(path, document, password = null) {
   return invoke('write_grt', {
     path,
     parts: { 'content/main.json': `${JSON.stringify(document, null, 2)}\n` },
+    password,
   });
 }
 

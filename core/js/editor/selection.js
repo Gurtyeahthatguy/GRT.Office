@@ -1,5 +1,7 @@
 /** Where the cursor is, in the model's own terms. */
 
+import { itemsOf, itemIndices, isSolid } from './model.js';
+
 /**
  * A position: a block, optionally one item of a list, and a character offset.
  */
@@ -61,9 +63,7 @@ export function containersInRange(selection, model) {
 
   for (let i = startIndex; i <= endIndex; i += 1) {
     const block = model.blocks[i];
-    const items = block.kind === 'list'
-      ? block.items.map((_, index) => index)
-      : [null];
+    const items = itemIndices(block);
 
     for (const itemIndex of items) {
       const isFirst = i === startIndex && (itemIndex ?? 0) === (start.itemIndex ?? 0);
@@ -93,9 +93,10 @@ export function containersInRange(selection, model) {
 
 export function lengthOf(model, block, itemIndex = null) {
   if (!block) return 0;
-  if (block.kind === 'image') return 0;
-  const runs = block.kind === 'list'
-    ? block.items[itemIndex ?? 0]?.runs ?? []
+  if (isSolid(block)) return 0;
+  const items = itemsOf(block);
+  const runs = items
+    ? items[itemIndex ?? itemIndices(block)[0] ?? 0]?.runs ?? []
     : block.runs ?? [];
   return runs.reduce((total, run) => total + run.text.length, 0);
 }
@@ -107,9 +108,11 @@ export function clamp(at, model) {
   const block = model.block(at?.blockId) ?? model.blocks[0];
   if (!block) return null;
 
-  const itemIndex = block.kind === 'list'
-    ? Math.max(0, Math.min(at?.itemIndex ?? 0, block.items.length - 1))
-    : null;
+  const indices = itemIndices(block);
+  const wanted = at?.itemIndex ?? indices[0];
+  // A cell covered by a merged one sends the cursor to the nearest one before it that can hold it.
+  const itemIndex = indices[0] === null ? null
+    : indices.includes(wanted) ? wanted : [...indices].reverse().find((i) => i < wanted) ?? indices[0];
 
   return {
     blockId: block.id,
@@ -151,28 +154,26 @@ export function startOfNext(at, model) {
   const block = model.block(at.blockId);
   if (!block) return null;
 
-  if (block.kind === 'list' && (at.itemIndex ?? 0) < block.items.length - 1) {
-    return point(block.id, 0, (at.itemIndex ?? 0) + 1);
-  }
+  const indices = itemIndices(block);
+  const after = indices.find((i) => i !== null && i > (at.itemIndex ?? -1));
+  if (after !== undefined) return point(block.id, 0, after);
 
   const next = model.blocks[model.indexOf(at.blockId) + 1];
   if (!next) return null;
-  return point(next.id, 0, next.kind === 'list' ? 0 : null);
+  return point(next.id, 0, itemIndices(next)[0]);
 }
 
 export function endOfPrevious(at, model) {
   const block = model.block(at.blockId);
   if (!block) return null;
 
-  if (block.kind === 'list' && (at.itemIndex ?? 0) > 0) {
-    const itemIndex = (at.itemIndex ?? 0) - 1;
-    return point(block.id, lengthOf(model, block, itemIndex), itemIndex);
-  }
+  const before = [...itemIndices(block)].reverse().find((i) => i !== null && i < (at.itemIndex ?? 0));
+  if (before !== undefined) return point(block.id, lengthOf(model, block, before), before);
 
   const previous = model.blocks[model.indexOf(at.blockId) - 1];
   if (!previous) return null;
 
-  const itemIndex = previous.kind === 'list' ? previous.items.length - 1 : null;
+  const itemIndex = itemIndices(previous).at(-1);
   return point(previous.id, lengthOf(model, previous, itemIndex), itemIndex);
 }
 

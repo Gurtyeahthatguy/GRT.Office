@@ -16,6 +16,25 @@ pub fn print<R: Runtime>(webview: &Webview<R>, width: f64, height: f64) -> tauri
     }
 }
 
+/// Prints the webview to a PDF file with no dialog, the paper as `print` sets it; returns when the file is written.
+pub fn print_to_pdf<R: Runtime>(webview: &Webview<R>, width: f64, height: f64, path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let (done, wait) = std::sync::mpsc::channel::<Result<(), String>>();
+        let target = path.to_path_buf();
+        webview
+            .with_webview(move |platform| linux::print_to_file(&platform.inner(), width, height, &target, done))
+            .map_err(|e| e.to_string())?;
+        wait.recv_timeout(std::time::Duration::from_secs(300))
+            .map_err(|_| "The PDF took too long to write".to_string())?
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (webview, width, height, path);
+        Err("Saving a PDF straight from the pages is not available here; print to PDF instead".to_string())
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use std::cell::RefCell;
@@ -46,8 +65,8 @@ mod linux {
         PaperSize::new_custom(&format!("custom_{width:.0}x{height:.0}mm"), &label, width, height, Unit::Mm)
     }
 
-    pub fn print(webview: &WebView, width: f64, height: f64) {
-        // Wide pages get wide paper rather than a landscape setup.
+    /// The page setup every print uses: the pages' own paper, no margins, portrait.
+    fn page_setup(width: f64, height: f64) -> (PageSetup, PaperSize) {
         let setup = PageSetup::new();
         let size = paper(width, height);
         setup.set_paper_size(&size);
@@ -55,6 +74,42 @@ mod linux {
         for set in [PageSetup::set_top_margin, PageSetup::set_bottom_margin, PageSetup::set_left_margin, PageSetup::set_right_margin] {
             set(&setup, 0.0, Unit::Mm);
         }
+        (setup, size)
+    }
+
+    /// Prints to a PDF file through GTK's own file printer; nothing leaves the machine.
+    pub fn print_to_file(
+        webview: &WebView,
+        width: f64,
+        height: f64,
+        path: &std::path::Path,
+        done: std::sync::mpsc::Sender<Result<(), String>>,
+    ) {
+        let (setup, size) = page_setup(width, height);
+        let settings = PrintSettings::new();
+        // GTK names its file printer in the desktop's language, so the name is asked of GTK's own translation.
+        settings.set_printer(&gtk::glib::dgettext(Some("gtk30"), "Print to File"));
+        settings.set("output-file-format", Some("pdf"));
+        let uri = gtk::glib::filename_to_uri(path, None).map(|u| u.to_string()).unwrap_or_default();
+        settings.set("output-uri", Some(&uri));
+        settings.set_paper_size(&size);
+        settings.set_orientation(PageOrientation::Portrait);
+        let operation = PrintOperation::new(webview);
+        operation.set_page_setup(&setup);
+        operation.set_print_settings(&settings);
+        let finished = done.clone();
+        operation.connect_finished(move |_| {
+            let _ = finished.send(Ok(()));
+        });
+        operation.connect_failed(move |_, error| {
+            let _ = done.send(Err(format!("The PDF could not be written: {error}")));
+        });
+        operation.print();
+    }
+
+    pub fn print(webview: &WebView, width: f64, height: f64) {
+        // Wide pages get wide paper rather than a landscape setup.
+        let (setup, size) = page_setup(width, height);
 
         let operation = PrintOperation::new(webview);
         operation.set_page_setup(&setup);

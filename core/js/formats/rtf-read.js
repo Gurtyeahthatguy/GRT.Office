@@ -60,6 +60,9 @@ function latin1(bytes) {
   return out;
 }
 
+/** Groups nested deeper than this are skipped. */
+const MAX_GROUPS = 400;
+
 const OLD_BULLETS = -1;
 const OLD_NUMBERS = -2;
 
@@ -90,6 +93,7 @@ class RtfReader {
     this.row = null;
     this.pendingBreak = false;
     this.list = null;
+    this.depth = 0;
   }
 
   read() {
@@ -118,6 +122,20 @@ class RtfReader {
   group(outer, opened = false) {
     const state = { ...outer, char: { ...outer.char }, para: outer.para };
     if (!opened && this.text[this.at] === '{') this.at += 1;
+    if (this.depth >= MAX_GROUPS) {
+      this.losses.add(`Groups nested more than ${MAX_GROUPS} deep, skipped`);
+      this.skipGroup();
+      return state;
+    }
+    this.depth += 1;
+    try {
+      return this.groupBody(state);
+    } finally {
+      this.depth -= 1;
+    }
+  }
+
+  groupBody(state) {
     let first = true;
     let bytes = [];
 

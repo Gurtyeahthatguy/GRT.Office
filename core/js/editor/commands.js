@@ -1,7 +1,7 @@
 /** Every change the document can undergo. */
 
 import {
-  normaliseRuns, splitRuns, sliceRuns, formatRuns, runsLength, makeBlock,
+  normaliseRuns, splitRuns, sliceRuns, formatRuns, runsLength, makeBlock, itemIndices, isSolid, OBJECT,
 } from './model.js';
 import {
   point, collapsed, normalise, containersInRange, isCollapsed, lengthOf,
@@ -31,6 +31,26 @@ export function insertText(model, selection, text, marks = {}) {
   );
 
   return collapsed(point(where.blockId, where.offset + text.length, where.itemIndex));
+}
+
+/** Puts an object in the text at the cursor, such as a note or a bookmark, and the cursor after it. */
+export function insertObject(model, selection, object) {
+  let at = selection;
+  if (!isCollapsed(at)) at = collapsed(deleteRange(model, at));
+  const where = at.anchor;
+  const [before, after] = splitRuns(model.runsOf(where.blockId, where.itemIndex), where.offset);
+  model.setRuns(where.blockId, [...before, { text: OBJECT, object }, ...after], where.itemIndex);
+  return collapsed(point(where.blockId, where.offset + 1, where.itemIndex));
+}
+
+/** The object at a position of the text, if the character there is one. */
+export function objectAt(model, at) {
+  let seen = 0;
+  for (const run of model.runsOf(at.blockId, at.itemIndex)) {
+    if (at.offset >= seen && at.offset < seen + run.text.length) return run.object ?? null;
+    seen += run.text.length;
+  }
+  return null;
 }
 
 /**
@@ -68,6 +88,17 @@ export function deleteRange(model, selection) {
   const firstBlock = model.block(first.blockId);
   const lastBlock = model.block(last.blockId);
 
+  // A table keeps its shape: the text in the cells the range touches goes, the cells stay.
+  if (firstBlock?.kind === 'table' || lastBlock?.kind === 'table') {
+    for (const container of containers) {
+      const runs = model.runsOf(container.blockId, container.itemIndex);
+      model.setRuns(container.blockId, [...splitRuns(runs, container.from)[0], ...splitRuns(runs, container.to)[1]], container.itemIndex);
+    }
+    for (const id of doomed) model.removeBlock(id);
+    model.dirty = true;
+    return point(first.blockId, first.from, first.itemIndex);
+  }
+
   if (firstBlock?.kind === 'list' && lastBlock === firstBlock) {
     // Inside one list: keep the first item, drop the ones the range
     // swallowed.
@@ -104,6 +135,17 @@ export function deleteBackward(model, selection) {
   const previous = endOfPrevious(at, model);
   if (!previous) return selection;
 
+  // Cells never merge; an empty paragraph after a table goes, and the cursor ends in its last cell.
+  const current = model.block(at.blockId);
+  if (current?.kind === 'table') return selection;
+  if (model.block(previous.blockId)?.kind === 'table') {
+    if (current.kind !== 'list' && lengthOf(model, current, at.itemIndex) === 0 && model.blocks.length > 1) {
+      model.removeBlock(current.id);
+      return collapsed(previous);
+    }
+    return selection;
+  }
+
   return collapsed(mergeBackward(model, at, previous));
 }
 
@@ -132,7 +174,7 @@ export function deleteForward(model, selection) {
     return selection;
   }
 
-  if (!nextBlock || nextBlock.kind === 'image') return selection;
+  if (!nextBlock || isSolid(nextBlock) || nextBlock.kind === 'table' || block?.kind === 'table') return selection;
 
   const nextRuns = nextBlock.kind === 'list'
     ? nextBlock.items[0].runs
@@ -167,7 +209,7 @@ function mergeBackward(model, at, previous) {
 
   // Backspace at the start of a paragraph that follows an image removes the
   // image rather than trying to merge text into it.
-  if (previousBlock.kind === 'image') {
+  if (isSolid(previousBlock)) {
     model.removeBlock(previousBlock.id);
     return point(at.blockId, 0, at.itemIndex);
   }
@@ -190,6 +232,9 @@ export function splitBlock(model, selection) {
   const where = at.anchor;
   const block = model.block(where.blockId);
   if (!block) return at;
+
+  // Enter in a cell starts a new line in it.
+  if (block.kind === 'table') return insertText(model, at, '\n');
 
   const runs = model.runsOf(where.blockId, where.itemIndex);
   const [before, after] = splitRuns(runs, where.offset);
@@ -303,7 +348,7 @@ export function insertBlockAt(model, selection, block, { enter = false } = {}) {
     model.insertBlock(makeBlock('paragraph'), model.blocks.length);
   }
 
-  if (enter) return collapsed(point(created.id, 0));
+  if (enter) return collapsed(point(created.id, 0, itemIndices(created)[0]));
   const next = model.blocks[model.indexOf(created.id) + 1];
   return collapsed(point(next ? next.id : created.id, 0));
 }

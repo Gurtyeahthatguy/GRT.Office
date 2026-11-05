@@ -1,10 +1,73 @@
 /** The document, and the only thing that is true about it. */
 
 import { makeId } from './ids.js';
+import { normaliseChartData } from '../formats/chart-object.js';
+import { CHART_TYPES as CHART_KINDS } from '../charts.js';
 
 export const FORMAT_VERSION = 1;
 
-export const BLOCK_KINDS = ['paragraph', 'heading', 'list', 'image', 'code', 'quote'];
+export const BLOCK_KINDS = ['paragraph', 'heading', 'list', 'image', 'code', 'quote', 'table', 'toc', 'index', 'chart', 'section'];
+
+/** Blocks drawn from something else, such as a picture or the headings, with no text of their own to type in. */
+export const isSolid = (block) => ['image', 'toc', 'index', 'chart', 'section'].includes(block?.kind);
+
+/** The most rows and columns a table may have, so a file cannot ask for millions. */
+export const TABLE_LIMITS = { rows: 2000, cols: 64 };
+
+/** The containers of text a block holds besides its own runs: list items, or a table's cells row by row. */
+export function itemsOf(block) {
+  if (block?.kind === 'list') return block.items;
+  if (block?.kind === 'table') return block.rows.flatMap((row) => row.cells);
+  return null;
+}
+
+/** The items the cursor can go into: every list item, every table cell not covered by a merged one. */
+export function itemIndices(block) {
+  const items = itemsOf(block);
+  if (!items) return [null];
+  return items.map((item, i) => (item.covered ? null : i)).filter((i) => i !== null);
+}
+
+/** A table's cell at a row and column, and its flat index. */
+export function cellAt(block, row, col) {
+  const cols = block.rows[0]?.cells.length ?? 0;
+  return { cell: block.rows[row]?.cells[col] ?? null, index: row * cols + col };
+}
+
+/** A table cleaned up: every row as wide as the widest, spans inside the table, the cells they cover marked. */
+export function normaliseTable(block) {
+  const rows = (Array.isArray(block.rows) ? block.rows : []).slice(0, TABLE_LIMITS.rows);
+  const width = Math.max(1, Math.min(TABLE_LIMITS.cols, ...rows.map((r) => r?.cells?.length ?? 0)));
+  block.rows = (rows.length ? rows : [{ cells: [] }]).map((row) => ({
+    ...(row?.header ? { header: true } : {}),
+    cells: Array.from({ length: width }, (_, c) => {
+      const cell = row?.cells?.[c] ?? {};
+      const out = { runs: normaliseRuns(cell.runs) };
+      for (const key of ['bg', 'align', 'valign']) if (typeof cell[key] === 'string') out[key] = cell[key];
+      if (cell.colspan > 1) out.colspan = Math.floor(cell.colspan);
+      if (cell.rowspan > 1) out.rowspan = Math.floor(cell.rowspan);
+      return out;
+    }),
+  }));
+  for (const [r, row] of block.rows.entries()) {
+    for (const [c, cell] of row.cells.entries()) {
+      if (cell.covered) continue;
+      const rowspan = Math.min(cell.rowspan ?? 1, block.rows.length - r);
+      const colspan = Math.min(cell.colspan ?? 1, width - c);
+      if (rowspan > 1) cell.rowspan = rowspan; else delete cell.rowspan;
+      if (colspan > 1) cell.colspan = colspan; else delete cell.colspan;
+      for (let dr = 0; dr < rowspan; dr += 1) {
+        for (let dc = 0; dc < colspan; dc += 1) {
+          if (dr || dc) Object.assign(block.rows[r + dr].cells[c + dc], { covered: true, runs: [{ text: '' }] });
+        }
+      }
+    }
+  }
+  const widths = Array.isArray(block.widths) ? block.widths.slice(0, width).map((w) => (Number(w) > 0 ? Number(w) : 1)) : [];
+  block.widths = widths.length === width ? widths : Array(width).fill(1);
+  block.borders ??= 'all';
+  return block;
+}
 
 /** Adds block kinds belonging to one module. */
 export function registerBlockKinds(...kinds) {
@@ -14,6 +77,71 @@ export function registerBlockKinds(...kinds) {
   return BLOCK_KINDS;
 }
 export const LIST_TYPES = ['bullet', 'number'];
+/** How a numbered list counts, and what a bulleted one shows. */
+export const NUMBER_FORMATS = ['decimal', 'lower-alpha', 'upper-alpha', 'lower-roman', 'upper-roman'];
+export const BULLETS = ['•', '◦', '▪', '–', '✓', '➢'];
+
+/** The fields a style may set, paragraph or character, and their kinds. */
+const STYLE_FIELDS = {
+  font: 'string', size: 'number', lineHeight: 'number', bold: 'boolean', italic: 'boolean', underline: 'boolean', strike: 'boolean',
+  color: 'color', highlight: 'color', spaceBefore: 'number', spaceAfter: 'number', indent: 'number', firstLine: 'number', name: 'string',
+  rule: 'boolean',
+};
+
+/** A style as stored: only the fields styles have, of the right kinds, within sane bounds. */
+export function normaliseStyle(style) {
+  const out = {};
+  for (const [field, kind] of Object.entries(STYLE_FIELDS)) {
+    const value = style?.[field];
+    if (value === undefined || value === null) continue;
+    if (kind === 'number' && Number.isFinite(Number(value))) out[field] = Math.max(-200, Math.min(400, Number(value)));
+    else if (kind === 'boolean') out[field] = !!value;
+    else if (kind === 'color' && /^#[0-9a-f]{6}$/i.test(value)) out[field] = value.toLowerCase();
+    else if (kind === 'string' && typeof value === 'string') out[field] = value.slice(0, 100);
+  }
+  return out;
+}
+
+/** A paragraph's own spacing, over its style's: line height as a multiple, the rest in points. */
+const PARA_LIMITS = { lineHeight: [0.5, 4], spaceBefore: [0, 200], spaceAfter: [0, 200], indent: [0, 400] };
+
+/** A paragraph's own spacing as stored, or null when it sets nothing. */
+export function normalisePara(para) {
+  const out = {};
+  for (const [field, [low, high]] of Object.entries(PARA_LIMITS)) {
+    const value = Number(para?.[field]);
+    if (para?.[field] !== undefined && para?.[field] !== null && Number.isFinite(value)) out[field] = Math.round(Math.max(low, Math.min(high, value)) * 100) / 100;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** How headings are numbered, or null when they are not: one format for every level, down to `depth`. */
+export function normaliseHeadingNumbers(numbers) {
+  if (!numbers || !NUMBER_FORMATS.includes(numbers.format)) return null;
+  return {
+    format: numbers.format,
+    full: numbers.full !== false,
+    after: typeof numbers.after === 'string' ? numbers.after.slice(0, 5) : '',
+    depth: Math.max(1, Math.min(4, Math.round(Number(numbers.depth) || 4))),
+  };
+}
+
+/** How footnotes and endnotes are counted: their format and first number. */
+export const NOTE_DEFAULTS = { foot: { format: 'decimal', start: 1 }, end: { format: 'lower-roman', start: 1 } };
+
+export function normaliseNoteSettings(settings) {
+  const one = (kind) => {
+    const given = settings?.[kind] ?? {};
+    return {
+      format: NUMBER_FORMATS.includes(given.format) ? given.format : NOTE_DEFAULTS[kind].format,
+      start: Math.max(1, Math.min(9999, Math.round(Number(given.start) || 1))),
+    };
+  };
+  return { foot: one('foot'), end: one('end') };
+}
+
+/** A key for a style of the person's own, from its name. */
+export const styleKey = (name, prefix = 'c') => `${prefix}-${String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'style'}`;
 export const ALIGNMENTS = ['left', 'center', 'right', 'justify'];
 
 /** Run attributes that are simply on or off. */
@@ -110,7 +238,55 @@ const DEFAULT_STYLES = {
   h4: { font: 'sans', size: 11.5, bold: true, lineHeight: 1.4, spaceBefore: 8, spaceAfter: 4 },
   quote: { font: 'serif', size: 11, italic: true, lineHeight: 1.5, indent: 20, spaceAfter: 8 },
   code: { font: 'mono', size: 10, lineHeight: 1.45, indent: 12, spaceAfter: 8 },
+  caption: { font: 'serif', size: 10, italic: true, lineHeight: 1.4, spaceBefore: 2, spaceAfter: 8 },
+  title: { font: 'sans', size: 28, bold: true, lineHeight: 1.2, spaceBefore: 12, spaceAfter: 6 },
+  subtitle: { font: 'sans', size: 18, lineHeight: 1.25, spaceBefore: 3, spaceAfter: 6 },
+  // LibreOffice's Horizontal Line: a small empty paragraph ruled underneath.
+  hr: { font: 'serif', size: 6, lineHeight: 1.15, spaceBefore: 0, spaceAfter: 14, rule: true },
 };
+
+/** The character an object in the text stands on: a note, a bookmark, a reference, a field. */
+export const OBJECT = '\uFFFC';
+
+export const OBJECT_TYPES = ['note', 'bookmark', 'ref', 'seq', 'field', 'index', 'math'];
+export const FIELDS = ['page', 'pages', 'date', 'time', 'chapter'];
+
+const word = (value, limit = 200) => (typeof value === 'string' ? value.slice(0, limit) : null);
+
+/** An object as stored, or null when it is not one Paper knows. */
+export function normaliseObject(object) {
+  switch (object?.type) {
+    case 'note': {
+      // A note's text has no objects of its own, so notes never nest.
+      const runs = normaliseRuns((object.runs ?? []).filter((run) => !run.object)).map((run) => ({ ...run, text: run.text.replaceAll(OBJECT, '') }));
+      // A note may show a character of its own choosing instead of a number.
+      const mark = typeof object.mark === 'string' ? [...object.mark.replaceAll(OBJECT, '').trim()].slice(0, 4).join('') : '';
+      return { type: 'note', kind: object.kind === 'end' ? 'end' : 'foot', runs: normaliseRuns(runs), ...(mark ? { mark } : {}) };
+    }
+    case 'bookmark': return word(object.name) ? { type: 'bookmark', name: word(object.name) } : null;
+    case 'ref': {
+      if (!word(object.target)) return null;
+      let show = ['text', 'number', 'page'].includes(object.show) ? object.show : 'number';
+      // A heading is referred to by its words or its page; its number is its words.
+      if (object.target.startsWith('heading:') && show === 'number') show = 'text';
+      return { type: 'ref', target: word(object.target), show };
+    }
+    case 'seq': return { type: 'seq', name: word(object.name, 60) || 'Figure', id: word(object.id, 60) || `seq${Math.random().toString(36).slice(2, 10)}` };
+    case 'field': return FIELDS.includes(object.field) ? { type: 'field', field: object.field } : null;
+    case 'math': {
+      // A formula keeps its TeX when it has one, and the MathML the files carry.
+      const tex = typeof object.tex === 'string' && object.tex.trim() ? object.tex.slice(0, 5000) : null;
+      const mathml = typeof object.mathml === 'string' && /^\s*<math[\s>]/.test(object.mathml) ? object.mathml.slice(0, 100000) : null;
+      if (!tex && !mathml) return null;
+      return { type: 'math', ...(tex ? { tex } : {}), ...(mathml ? { mathml } : {}), ...(object.display ? { display: true } : {}) };
+    }
+    case 'index': return word(object.term) ? { type: 'index', term: word(object.term), ...(word(object.sub) ? { sub: word(object.sub) } : {}) } : null;
+    default: return null;
+  }
+}
+
+/** A link is kept when it goes to a place in the document, or to a web or mail address. */
+const safeLink = (href) => (typeof href === 'string' && /^(#[^\s]{1,200}|https?:\/\/[^\s]{1,2000}|mailto:[^\s]{1,500})$/i.test(href) ? href : null);
 
 /**
  * Merges adjacent runs that carry identical formatting, and drops empty ones.
@@ -123,11 +299,24 @@ export function normaliseRuns(runs) {
   for (const run of runs ?? []) {
     if (typeof run?.text !== 'string' || run.text === '') continue;
 
-    const clean = { text: run.text };
+    // An object is one character of its own; the character alone, without its object, means nothing.
+    const object = run.object ? normaliseObject(run.object) : null;
+    const text = object ? OBJECT : run.text.replaceAll(OBJECT, '');
+    if (text === '') continue;
+
+    const clean = { text };
     for (const mark of MARKS) if (run[mark]) clean[mark] = true;
+    if (typeof run.cstyle === 'string' && run.cstyle) clean.cstyle = run.cstyle.slice(0, 60);
     if (run.color) clean.color = run.color;
     if (run.highlight) clean.highlight = run.highlight;
     if (run.size) clean.size = run.size;
+    const link = safeLink(run.link);
+    if (link) clean.link = link;
+    if (object) {
+      clean.object = object;
+      out.push(clean);
+      continue;
+    }
 
     const last = out[out.length - 1];
     if (last && sameFormatting(last, clean)) {
@@ -141,10 +330,13 @@ export function normaliseRuns(runs) {
 }
 
 export function sameFormatting(a, b) {
+  if (a.object || b.object) return false;
   for (const mark of MARKS) {
     if (!!a[mark] !== !!b[mark]) return false;
   }
   return (a.color ?? null) === (b.color ?? null)
+    && (a.link ?? null) === (b.link ?? null)
+    && (a.cstyle ?? null) === (b.cstyle ?? null)
     && (a.highlight ?? null) === (b.highlight ?? null)
     && (a.size ?? null) === (b.size ?? null);
 }
@@ -225,7 +417,8 @@ export function formatRuns(runs, from, to, mark, value = null) {
 export class DocumentModel {
   constructor(document = null) {
     this.page = structuredClone(DEFAULT_PAGE);
-    this.styles = structuredClone(DEFAULT_STYLES);
+    this.styles = Object.fromEntries(Object.entries(DEFAULT_STYLES).map(([key, style]) => [key, normaliseStyle(style)]));
+    this.charStyles = {};
     this.blocks = [];
     this.fonts = [];
     this.path = null;
@@ -247,13 +440,12 @@ export class DocumentModel {
     return this.blocks.findIndex((b) => b.id === id);
   }
 
-  /** Runs of a block, or of one item of a list block. */
+  /** Runs of a block, or of one item of a list or cell of a table. */
   runsOf(id, itemIndex = null) {
     const block = this.block(id);
     if (!block) return [];
-    if (block.kind === 'list') {
-      return block.items[itemIndex ?? 0]?.runs ?? [];
-    }
+    const items = itemsOf(block);
+    if (items) return items[itemIndex ?? itemIndices(block)[0] ?? 0]?.runs ?? [];
     return block.runs ?? [];
   }
 
@@ -261,8 +453,9 @@ export class DocumentModel {
     const block = this.block(id);
     if (!block) return;
 
-    if (block.kind === 'list') {
-      const item = block.items[itemIndex ?? 0];
+    const items = itemsOf(block);
+    if (items) {
+      const item = items[itemIndex ?? itemIndices(block)[0] ?? 0];
       if (item) item.runs = normaliseRuns(runs);
     } else {
       block.runs = normaliseRuns(runs);
@@ -276,7 +469,8 @@ export class DocumentModel {
       if (block.kind === 'list') {
         return block.items.map((item) => runsText(item.runs)).join('\n');
       }
-      if (block.kind === 'image') return '';
+      if (block.kind === 'table') return block.rows.map((row) => row.cells.map((cell) => runsText(cell.runs)).join('\t')).join('\n');
+      if (isSolid(block)) return '';
       return runsText(block.runs);
     }).join('\n');
   }
@@ -332,6 +526,7 @@ export class DocumentModel {
     const rebuilt = makeBlock(kind, options);
     rebuilt.id = block.id;
     rebuilt.align = block.align;
+    if (block.para) rebuilt.para = { ...block.para };
 
     if (kind === 'list') {
       rebuilt.items = text.map((runs) => ({ level: 0, runs: normaliseRuns(runs) }));
@@ -354,6 +549,21 @@ export class DocumentModel {
     this.dirty = true;
   }
 
+  /** Sets or, with null, takes away a paragraph's own line height, spacing or indent. */
+  setPara(id, patch) {
+    const block = this.block(id);
+    if (!block || !('runs' in block || block.kind === 'list')) return;
+    const merged = { ...(block.para ?? {}) };
+    for (const [field, value] of Object.entries(patch)) {
+      if (value === null) delete merged[field];
+      else merged[field] = value;
+    }
+    const para = normalisePara(merged);
+    if (para) block.para = para;
+    else delete block.para;
+    this.dirty = true;
+  }
+
   setAlign(id, align) {
     const block = this.block(id);
     if (!block || !ALIGNMENTS.includes(align)) return;
@@ -365,7 +575,32 @@ export class DocumentModel {
 
   setStyle(name, patch) {
     if (!this.styles[name]) return;
-    this.styles[name] = { ...this.styles[name], ...patch };
+    this.styles[name] = normaliseStyle({ ...this.styles[name], ...patch });
+    this.dirty = true;
+  }
+
+  /** A paragraph style of the person's own, taken from another, under a name of its own. */
+  addStyle(name, from = 'body') {
+    let key = styleKey(name);
+    for (let n = 2; this.styles[key]; n += 1) key = `${styleKey(name)}-${n}`;
+    this.styles[key] = normaliseStyle({ ...(this.styles[from] ?? {}), name });
+    this.dirty = true;
+    return key;
+  }
+
+  /** A character style: a look a run takes by name. */
+  addCharStyle(name, look = {}) {
+    let key = styleKey(name, 'k');
+    for (let n = 2; this.charStyles[key]; n += 1) key = `${styleKey(name, 'k')}-${n}`;
+    this.charStyles[key] = normaliseStyle({ ...look, name });
+    this.dirty = true;
+    return key;
+  }
+
+  removeStyle(key) {
+    if (!key.startsWith('c-') || !this.styles[key]) return;
+    delete this.styles[key];
+    for (const block of this.blocks) if (block.style === key) block.style = 'body';
     this.dirty = true;
   }
 
@@ -419,8 +654,11 @@ export class DocumentModel {
       type: this.type,
       page: structuredClone(this.page),
       styles: structuredClone(this.styles),
+      charStyles: structuredClone(this.charStyles ?? {}),
       fonts: structuredClone(this.fonts),
       blocks: structuredClone(this.blocks),
+      ...(this.headingNumbers ? { headingNumbers: { ...this.headingNumbers } } : {}),
+      ...(JSON.stringify(this.noteSettings) !== JSON.stringify(NOTE_DEFAULTS) ? { noteSettings: structuredClone(this.noteSettings) } : {}),
     };
   }
 
@@ -435,9 +673,14 @@ export class DocumentModel {
       margins: { ...DEFAULT_PAGE.margins, ...(document.page?.margins ?? {}) },
       running: normaliseRunning(document.page?.running),
     };
-    this.styles = { ...structuredClone(DEFAULT_STYLES), ...(document.styles ?? {}) };
+    this.styles = Object.fromEntries(Object.entries(DEFAULT_STYLES).map(([key, style]) => [key, normaliseStyle(style)]));
+    for (const [key, style] of Object.entries(document.styles ?? {}).slice(0, 500)) this.styles[key] = normaliseStyle({ ...(this.styles[key] ?? {}), ...style });
+    this.charStyles = {};
+    for (const [key, style] of Object.entries(document.charStyles ?? {}).slice(0, 500)) this.charStyles[key] = normaliseStyle(style);
     this.fonts = Array.isArray(document.fonts) ? structuredClone(document.fonts) : [];
     this.blocks = Array.isArray(document.blocks) ? structuredClone(document.blocks) : [];
+    this.headingNumbers = normaliseHeadingNumbers(document.headingNumbers);
+    this.noteSettings = normaliseNoteSettings(document.noteSettings);
 
     // Missing fields are filled in rather than rejected.
     for (const block of this.blocks) {
@@ -445,18 +688,41 @@ export class DocumentModel {
       block.kind ??= 'paragraph';
       block.style ??= defaultStyleFor(block);
       block.align ??= 'left';
+      if (block.para !== undefined) {
+        const para = normalisePara(block.para);
+        if (para) block.para = para;
+        else delete block.para;
+      }
 
       if (block.kind === 'list') {
         block.listType ??= 'bullet';
+        if (!NUMBER_FORMATS.includes(block.format)) delete block.format;
+        if (!BULLETS.includes(block.bullet)) delete block.bullet;
         block.items = (block.items ?? []).map((item) => ({
           level: Math.max(0, Math.min(item.level ?? 0, 5)),
           runs: normaliseRuns(item.runs),
         }));
         if (block.items.length === 0) block.items = [{ level: 0, runs: [{ text: '' }] }];
+      } else if (block.kind === 'chart') {
+        block.w = Math.max(80, Math.min(2000, Number(block.w) || 480));
+        block.h = Math.max(60, Math.min(2000, Number(block.h) || 300));
+        block.data = normaliseChartData(block.data);
+        block.type = CHART_KINDS.includes(block.type) ? block.type : 'column';
+        block.legend = ['right', 'left', 'top', 'bottom', 'none'].includes(block.legend) ? block.legend : 'right';
+        if (block.link && (typeof block.link.path !== 'string' || typeof block.link.range !== 'string')) delete block.link;
+      } else if (block.kind === 'section') {
+        // Where a run of text starts flowing in columns; one column ends the run.
+        block.columns = Math.max(1, Math.min(4, Math.round(Number(block.columns) || 1)));
+        block.gap = Math.max(0, Math.min(30, Number(block.gap) || 6));
+      } else if (block.kind === 'toc' || block.kind === 'index') {
+        block.title = typeof block.title === 'string' ? block.title.slice(0, 200) : (block.kind === 'toc' ? 'Contents' : 'Index');
+        if (block.kind === 'toc') block.levels = Math.max(1, Math.min(4, Number(block.levels) || 3));
       } else if (block.kind === 'image') {
         block.w ??= 400;
         block.h ??= 260;
         block.caption = normaliseRuns(block.caption ?? []);
+      } else if (block.kind === 'table') {
+        normaliseTable(block);
       } else {
         block.runs = normaliseRuns(block.runs);
         if (block.kind === 'heading') block.level ??= 1;
@@ -472,8 +738,11 @@ export class DocumentModel {
     return {
       page: structuredClone(this.page),
       styles: structuredClone(this.styles),
+      charStyles: structuredClone(this.charStyles ?? {}),
       fonts: structuredClone(this.fonts),
       blocks: structuredClone(this.blocks),
+      headingNumbers: this.headingNumbers ? { ...this.headingNumbers } : null,
+      noteSettings: structuredClone(this.noteSettings),
       dirty: this.dirty,
     };
   }
@@ -481,8 +750,11 @@ export class DocumentModel {
   restore(snapshot) {
     this.page = structuredClone(snapshot.page);
     this.styles = structuredClone(snapshot.styles);
+    this.charStyles = structuredClone(snapshot.charStyles ?? {});
     this.fonts = structuredClone(snapshot.fonts ?? []);
     this.blocks = structuredClone(snapshot.blocks);
+    this.headingNumbers = snapshot.headingNumbers ? { ...snapshot.headingNumbers } : null;
+    this.noteSettings = normaliseNoteSettings(snapshot.noteSettings);
     this.dirty = snapshot.dirty;
   }
 }
@@ -502,6 +774,27 @@ export function makeBlock(kind = 'paragraph', options = {}) {
   if (kind === 'list') {
     block.listType = LIST_TYPES.includes(options.listType) ? options.listType : 'bullet';
     block.items = [{ level: 0, runs: [{ text: '' }] }];
+  } else if (kind === 'table') {
+    const rows = Math.max(1, Math.min(options.rows ?? 2, TABLE_LIMITS.rows));
+    const cols = Math.max(1, Math.min(options.cols ?? 2, TABLE_LIMITS.cols));
+    block.rows = Array.from({ length: rows }, (_, r) => ({
+      ...(r === 0 && options.header ? { header: true } : {}),
+      cells: Array.from({ length: cols }, () => ({ runs: [{ text: '' }] })),
+    }));
+    block.widths = Array(cols).fill(1);
+    block.borders = 'all';
+  } else if (kind === 'chart') {
+    block.type = options.type ?? 'column';
+    block.data = normaliseChartData(options.data ?? { categories: ['A', 'B', 'C'], series: [{ name: 'Series 1', values: [3, 5, 4] }] });
+    block.w = options.w ?? 480;
+    block.h = options.h ?? 300;
+    block.align = 'center';
+  } else if (kind === 'section') {
+    block.columns = options.columns ?? 2;
+    block.gap = options.gap ?? 6;
+  } else if (kind === 'toc' || kind === 'index') {
+    block.title = options.title ?? (kind === 'toc' ? 'Contents' : 'Index');
+    if (kind === 'toc') block.levels = options.levels ?? 3;
   } else if (kind === 'image') {
     block.resource = options.resource ?? null;
     block.w = options.w ?? 400;

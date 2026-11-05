@@ -4,9 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GRT Slides</title>
+    <link rel="stylesheet" href="css/design.css" />
     <link rel="stylesheet" href="css/app.css" />
   </head>
   <body>
+    <nav id="menubar" aria-label="Menus"></nav>
     <header class="toolbar">
       <div class="group">
         <button id="btn-new" title="New presentation">New</button>
@@ -66,12 +68,14 @@
       </div>
     </header>
 
-    <main class="workspace">
+    <main id="workspace" class="workspace">
       <aside id="thumbnails" class="thumbnails" aria-label="Slides"></aside>
       <section id="stage" class="stage">
+        <div id="master-banner" class="master-banner hidden">Editing the master <strong id="master-banner-name"></strong>: what is here shows under every slide that uses it. <button id="btn-master-done">Done</button></div>
         <div id="surface" class="surface"></div>
       </section>
       <aside id="notes-panel" class="notes">
+        <div id="properties"></div>
         <label for="notes">Speaker notes</label>
         <textarea id="notes" placeholder="Visible in the presenter view, never on screen."></textarea>
       </aside>

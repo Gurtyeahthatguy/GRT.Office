@@ -16,6 +16,7 @@ Part of the [GRT Suite](../../README.md).
 - Search the text of a document
 - Undo and redo every structural change
 - Strip metadata from anything it writes, or set it deliberately
+- Open PDFs that have a password, and save with one
 - Show you what a file will contain, before it is written
 - Unsaved work is kept: a recovery copy after a pause, offered back if the
   program stops, or saving straight onto the file; chosen in Settings
@@ -46,11 +47,16 @@ rather than completed quietly.
 Highlight (`H`) is the opposite and says so in the fingerprint panel: it draws
 over the page and removes nothing.
 
-Not implemented: password protection. It is listed as a cheap feature in the
-design document, on the assumption that pdf-lib could do it. pdf-lib has no
-encryption support at all; it can only report that a file is encrypted. Doing
-it would mean a new dependency or an implementation in Rust, and neither is a
-decision to make silently.
+### Passwords
+
+A PDF with a password opens once it is given; one that only restricts editing
+opens without asking. Every revision of the standard handler is read: RC4,
+AES-128 and AES-256. Saving asks whether the copy gets a password, and with one
+it is sealed with AES-256, revision 6, whatever the original used. Extracted and
+split pages keep the password of the document, and so does the recovery copy.
+
+pdf-lib cannot decrypt, so the file is opened in the clear first, by GRT's own
+code in `core/grt-container`, and only then edited.
 
 ## The two claims, and how to check them
 

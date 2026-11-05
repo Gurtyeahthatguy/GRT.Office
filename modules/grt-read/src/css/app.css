@@ -1,98 +1,41 @@
 /* Interface styles. */
 
-/* Palette. Light is defined on bare :root so every colour has a value even
-   before any media query or theme attribute applies. */
+/* The colours this program adds to those of design.css, theme by theme. */
 
 :root {
-  --bg: #f4f4f5;
-  --bg-raised: #ffffff;
-  --bg-sunken: #e4e4e7;
-  --border: #d4d4d8;
-  --text: #18181b;
-  --text-dim: #6b7280;
-  --accent: #1f6feb;
-  --danger: #c53030;
-  --ok: #1a7f37;
   --page-shadow: rgba(0, 0, 0, 0.18);
   --paper: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #1e1f22;
-    --bg-raised: #2b2d31;
-    --bg-sunken: #141517;
-    --border: #3a3d42;
-    --text: #e6e6e6;
-    --text-dim: #9aa0a6;
-    --accent: #4a9eff;
-    --danger: #e5534b;
-    --ok: #3fb950;
     --page-shadow: rgba(0, 0, 0, 0.5);
     --paper: #ffffff;
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #1e1f22;
-  --bg-raised: #2b2d31;
-  --bg-sunken: #141517;
-  --border: #3a3d42;
-  --text: #e6e6e6;
-  --text-dim: #9aa0a6;
-  --accent: #4a9eff;
-  --danger: #e5534b;
-  --ok: #3fb950;
   --page-shadow: rgba(0, 0, 0, 0.5);
   --paper: #ffffff;
 }
 
 /* Sepia: the reading palette of GRT Bible. */
 :root[data-theme="sepia"] {
-  --bg: #ece2cc;
-  --bg-raised: #f6eedb;
-  --bg-sunken: #e0d3b6;
-  --border: #d3c29d;
-  --text: #3b2f20;
-  --text-dim: #68583e;
-  --accent: #8a3a1f;
-  --danger: #9e2a1c;
-  --ok: #4f5e1e;
   --page-shadow: rgba(80, 60, 30, 0.25);
   --paper: #f8f1df;
 }
 
 /* Gold: a warm, low-contrast light theme. */
 :root[data-theme="gold"] {
-  --bg: #f5efe1;
-  --bg-raised: #fdfaf3;
-  --bg-sunken: #e8dec8;
-  --border: #d6c8a8;
-  --text: #2e2519;
-  --text-dim: #7a6a4f;
-  --accent: #a67c00;
-  --danger: #a33a2a;
-  --ok: #5c7a1e;
   --page-shadow: rgba(90, 70, 30, 0.22);
   --paper: #ffffff;
 }
 
 /* Purple: a deep dark theme. */
 :root[data-theme="purple"] {
-  --bg: #191324;
-  --bg-raised: #241c33;
-  --bg-sunken: #110d1a;
-  --border: #3d3154;
-  --text: #ece7f5;
-  --text-dim: #a094b8;
-  --accent: #b388ff;
-  --danger: #ff6b81;
-  --ok: #5bd68a;
   --page-shadow: rgba(0, 0, 0, 0.6);
   --paper: #ffffff;
 }
-
-* { box-sizing: border-box; }
 
 html, body {
   margin: 0;
@@ -112,7 +55,6 @@ body {
 
 body > .toolbar { flex: 0 0 auto; }
 
-.hidden { display: none !important; }
 .muted { color: var(--text-dim); }
 .small { font-size: 12px; }
 
@@ -146,7 +88,6 @@ button {
   cursor: pointer;
 }
 
-button:hover:not(:disabled) { background: var(--bg-sunken); }
 button:active:not(:disabled) { transform: translateY(1px); }
 
 button:disabled {
@@ -366,8 +307,6 @@ input[type="search"] {
   z-index: 20;
   max-width: 70vw;
 }
-
-.toast.error { border-color: var(--danger); }
 
 /* Settings dialog */
 

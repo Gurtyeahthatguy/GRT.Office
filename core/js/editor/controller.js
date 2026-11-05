@@ -9,7 +9,7 @@ import {
   applyFormat, hasFormat, indentList, insertBlockAt, insertBlocks,
 } from './commands.js';
 import { TypingGroup } from './input.js';
-import { runsText, splitRuns, makeBlock } from './model.js';
+import { runsText, splitRuns, makeBlock, itemsOf, itemIndices } from './model.js';
 import { blocksFromHtml, blocksFromText } from './paste.js';
 import { UndoStack } from '../undo.js';
 
@@ -62,7 +62,7 @@ export class EditorController {
 
     const first = model.blocks[0];
     if (first) {
-      this.selection = collapsed(point(first.id, 0, first.kind === 'list' ? 0 : null));
+      this.selection = collapsed(point(first.id, 0, itemIndices(first)[0]));
     }
 
     this.draw();
@@ -96,8 +96,8 @@ export class EditorController {
     const last = this.model.blocks[this.model.blocks.length - 1];
     if (!last) return null;
 
-    const itemIndex = last.kind === 'list' ? Math.max(0, (last.items?.length ?? 1) - 1) : null;
-    const runs = last.kind === 'list' ? (last.items?.[itemIndex]?.runs ?? []) : (last.runs ?? []);
+    const itemIndex = itemIndices(last).at(-1);
+    const runs = itemsOf(last) ? (itemsOf(last)[itemIndex]?.runs ?? []) : (last.runs ?? []);
     this.selection = collapsed(point(last.id, runsText(runs).length, itemIndex));
     return this.selection;
   }
@@ -230,7 +230,7 @@ export class EditorController {
   /** Replaces a block's text and puts the caret at an offset. */
   replaceBlockText(blockId, text, caretOffset) {
     const block = this.model.block(blockId);
-    if (!block || block.kind === 'list') return false;
+    if (!block || itemsOf(block)) return false;
 
     const before = this.model.snapshot();
     const selectionBefore = this.selection;
@@ -335,6 +335,26 @@ export class EditorController {
 
       indent(delta) {
         self.typing.end();
+        // In a table Tab goes to the next cell, and past the last one makes a new row.
+        const at = self.selection?.focus;
+        const block = at ? self.model.block(at.blockId) : null;
+        if (block?.kind === 'table') {
+          const indices = itemIndices(block);
+          const here = indices.indexOf(at.itemIndex);
+          const next = indices[here + delta];
+          if (next !== undefined) {
+            self.selection = collapsed(point(block.id, 0, next));
+            toDom(self.surface, self.selection);
+            self.onChange({});
+          } else if (delta > 0) {
+            self.edit(() => {
+              const cols = block.rows[0].cells.length;
+              block.rows.push({ cells: Array.from({ length: cols }, () => ({ runs: [{ text: '' }] })) });
+              return collapsed(point(block.id, 0, (block.rows.length - 1) * cols));
+            });
+          }
+          return;
+        }
         self.edit(() => indentList(self.model, self.selection, delta));
       },
 
@@ -353,12 +373,11 @@ export class EditorController {
         const last = self.model.blocks[self.model.blocks.length - 1];
         if (!first || !last) return;
 
-        const lastItem = last.kind === 'list' ? Math.max(0, (last.items?.length ?? 1) - 1) : null;
-        const lastRuns = last.kind === 'list'
-          ? (last.items?.[lastItem]?.runs ?? []) : (last.runs ?? []);
+        const lastItem = itemIndices(last).at(-1);
+        const lastRuns = itemsOf(last) ? (itemsOf(last)[lastItem]?.runs ?? []) : (last.runs ?? []);
 
         self.selection = {
-          anchor: point(first.id, 0, first.kind === 'list' ? 0 : null),
+          anchor: point(first.id, 0, itemIndices(first)[0]),
           focus: point(last.id, runsText(lastRuns).length, lastItem),
         };
         toDom(self.surface, self.selection);
@@ -400,9 +419,11 @@ export class EditorController {
 
 /** Clipboard data when the host module has nothing better. */
 function defaultSerialiseCopy(blocks) {
-  const lines = blocks.map((block) => (block.kind === 'list'
-    ? (block.items ?? []).map((item) => runsText(item.runs)).join('\n')
-    : runsText(block.runs ?? [])));
+  const lines = blocks.map((block) => (block.kind === 'table'
+    ? block.rows.map((row) => row.cells.map((cell) => runsText(cell.runs)).join('\t')).join('\n')
+    : block.kind === 'list'
+      ? (block.items ?? []).map((item) => runsText(item.runs)).join('\n')
+      : runsText(block.runs ?? [])));
 
   return {
     text: lines.join('\n\n'),

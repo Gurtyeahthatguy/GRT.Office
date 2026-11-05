@@ -20,13 +20,13 @@ fn is_ephemeral() -> bool {
 
 // Files.
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_file(path: String) -> Result<Response, String> {
     let bytes = fs::read(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
     Ok(Response::new(bytes))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn write_file_atomic(request: Request<'_>) -> Result<(), String> {
     let encoded = request
         .headers()
@@ -163,6 +163,7 @@ fn read_archive(app: AppHandle, root: Option<String>) -> Result<serde_json::Valu
                 "path": notebook.to_string_lossy(),
                 "sections": sections,
                 "pages": pages,
+                "protected": notebook.join(".protected.grt").is_file(),
             }));
         }
     }
@@ -250,21 +251,35 @@ fn check_vault(app: AppHandle, path: String) -> Result<String, String> {
 }
 
 fn markdown_entry(path: &Path) -> Option<serde_json::Value> {
-    if path.extension().and_then(|e| e.to_str()) != Some("md") {
+    // Notes, and Obsidian's views over them, which are files of their own.
+    let extension = path.extension().and_then(|e| e.to_str())?;
+    if extension != "md" && extension != "base" {
         return None;
     }
     let stem = path.file_stem()?.to_str()?.to_string();
-    Some(serde_json::json!({
+    let mut entry = serde_json::json!({
         "path": path.to_string_lossy(),
         "file": stem,
         "modified": modified_seconds(path),
-    }))
+    });
+    if extension == "base" {
+        entry["base"] = serde_json::Value::Bool(true);
+    }
+    Some(entry)
 }
 
-/// The visible entries of a folder, sorted, without hidden ones and the vault's trash.
+/// The most folders a vault is read with.
+const MAX_FOLDERS: usize = 10_000;
+
+/// The visible entries of a folder, sorted, without hidden ones, the vault's trash and links to folders.
 fn visible(dir: &Path) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = fs::read_dir(dir)
-        .map(|read| read.flatten().map(|entry| entry.path()).collect())
+        .map(|read| {
+            read.flatten()
+                .filter(|entry| !(entry.file_type().is_ok_and(|t| t.is_symlink()) && entry.path().is_dir()))
+                .map(|entry| entry.path())
+                .collect()
+        })
         .unwrap_or_default();
     entries.retain(|path| {
         path.file_name()
@@ -285,6 +300,9 @@ fn nested_sections(top: &Path, dir: &Path, depth: usize, out: &mut Vec<serde_jso
         if !child.is_dir() {
             continue;
         }
+        if out.len() >= MAX_FOLDERS {
+            return;
+        }
         let name = child
             .strip_prefix(top)
             .map(|p| p.to_string_lossy().replace('\\', "/"))
@@ -297,7 +315,7 @@ fn nested_sections(top: &Path, dir: &Path, depth: usize, out: &mut Vec<serde_jso
 
 /// Reads a vault in the shape the archive has: the notes at its top, then each
 /// folder with every folder below it.
-#[tauri::command]
+#[tauri::command(async)]
 fn read_vault(root: String) -> Result<serde_json::Value, String> {
     let root = PathBuf::from(&root);
     if !root.is_dir() {
@@ -332,11 +350,9 @@ fn read_vault(root: String) -> Result<serde_json::Value, String> {
 
 // Documents.
 
-#[tauri::command]
-fn read_grt(path: String) -> Result<serde_json::Value, String> {
-    let bytes = fs::read(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
-    let entries = grt_container::read_archive(&bytes)
-        .map_err(|e| format!("{path} is not a readable GRT document: {e}"))?;
+#[tauri::command(async)]
+fn read_grt(path: String, password: Option<String>) -> Result<serde_json::Value, String> {
+    let entries = grt_app::package::read_document(Path::new(&path), password.as_deref())?;
 
     let mut parts = serde_json::Map::new();
     let mut resources = Vec::new();
@@ -353,11 +369,9 @@ fn read_grt(path: String) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "parts": parts, "resources": resources }))
 }
 
-#[tauri::command]
-fn read_resource(path: String, name: String) -> Result<Response, String> {
-    let bytes = fs::read(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
-    let entries = grt_container::read_archive(&bytes)
-        .map_err(|e| format!("{path} is not a readable GRT document: {e}"))?;
+#[tauri::command(async)]
+fn read_resource(path: String, name: String, password: Option<String>) -> Result<Response, String> {
+    let entries = grt_app::package::read_document(Path::new(&path), password.as_deref())?;
 
     entries
         .into_iter()
@@ -366,8 +380,8 @@ fn read_resource(path: String, name: String) -> Result<Response, String> {
         .ok_or_else(|| format!("{name} is not in this document"))
 }
 
-#[tauri::command]
-fn write_grt(path: String, parts: serde_json::Value) -> Result<(), String> {
+#[tauri::command(async)]
+fn write_grt(path: String, parts: serde_json::Value, password: Option<String>) -> Result<(), String> {
     let map = parts
         .as_object()
         .ok_or_else(|| "Document parts must be an object".to_string())?;
@@ -387,8 +401,7 @@ fn write_grt(path: String, parts: serde_json::Value) -> Result<(), String> {
         ));
     }
 
-    let bytes = grt_container::write_archive(entries)
-        .map_err(|e| format!("Cannot build the note: {e}"))?;
+    let bytes = grt_app::package::seal_document(entries, password.as_deref())?;
 
     let target = Path::new(&path);
     if let Some(dir) = target.parent() {
@@ -452,6 +465,11 @@ fn index_upsert(
 #[tauri::command]
 fn index_remove(app: AppHandle, state: State<'_, Index>, path: String) -> Result<(), String> {
     with_index(&app, &state, |connection| index::remove(connection, &path))
+}
+
+#[tauri::command]
+fn index_purge(app: AppHandle, state: State<'_, Index>) -> Result<(), String> {
+    with_index(&app, &state, index::purge)
 }
 
 #[tauri::command]
@@ -647,6 +665,7 @@ pub fn run() {
             index_state,
             index_upsert,
             index_remove,
+            index_purge,
             index_search,
             index_dump,
             index_forget,
@@ -657,4 +676,46 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_vault_whose_folders_link_back_to_themselves_is_read_once() {
+        let root = std::env::temp_dir().join(format!("grt-notes-loop-{}", std::process::id()));
+        let inner = root.join("Projects");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("Note.md"), "x").unwrap();
+        for name in ["again", "and again"] {
+            std::os::unix::fs::symlink(&root, inner.join(name)).unwrap();
+        }
+        let start = std::time::Instant::now();
+        let vault = read_vault(root.to_string_lossy().to_string()).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(vault["notebooks"].as_array().unwrap().len(), 2);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_note_taken_out_of_the_index_leaves_no_words_in_its_file() {
+        let dir = std::env::temp_dir().join(format!("grt-notes-purge-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = index::path_in(&dir);
+        {
+            let connection = index::open(Some(&path)).unwrap();
+            for i in 0..50 {
+                index::upsert(&connection, &format!("/n/{i}.grt"), "filler", "", &"ordinary words ".repeat(40), 1).unwrap();
+            }
+            index::upsert(&connection, "/secret.grt", "Diagnosi", "", "zebrafishsecret medical results", 1).unwrap();
+            index::remove(&connection, "/secret.grt").unwrap();
+            index::purge(&connection).unwrap();
+        }
+        let bytes = fs::read(&path).unwrap();
+        assert!(!bytes.windows(15).any(|w| w == b"zebrafishsecret"));
+        assert!(!bytes.windows(8).any(|w| w == b"Diagnosi"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

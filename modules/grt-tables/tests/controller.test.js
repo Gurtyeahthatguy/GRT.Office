@@ -463,6 +463,15 @@ describe('exporting', () => {
     expect(lines).toHaveLength(121);
   });
 
+  it('shows text that looks like a formula instead of letting a spreadsheet run it', async () => {
+    await withTable('people');
+    await backend.insertRow('people', { name: '=cmd|\' /C calc\'!A0', age: -3 });
+    await sheet.loadPage();
+    const csv = await sheet.exportCsv();
+    expect(csv).toContain("'=cmd|' /C calc'!A0");
+    expect(csv).toContain(',-3');
+  });
+
   it('writes a query result when asked for one', async () => {
     await sheet.runQuery('SELECT a, b FROM t');
     const csv = await sheet.exportCsv({ fromQuery: true });
@@ -472,7 +481,7 @@ describe('exporting', () => {
 
   it('hands the archive off to the backend', async () => {
     await sheet.exportArchive('/tmp/out.grt');
-    expect(backend.exportGrt).toHaveBeenCalledWith('/tmp/out.grt');
+    expect(backend.exportGrt).toHaveBeenCalledWith('/tmp/out.grt', null);
   });
 });
 

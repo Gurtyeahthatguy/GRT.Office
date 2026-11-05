@@ -1,4 +1,4 @@
 Vendored third-party code. Regenerate with: npm run vendor
 
-pdfjs-dist  4.10.38  (Apache-2.0)
-pdf-lib     1.17.1  (MIT)
+pdfjs-dist  6.5.438  (Apache-2.0)
+pdf-lib     1.17.1  (MIT), with a 256 MB limit on one unpacked stream

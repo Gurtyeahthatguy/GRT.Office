@@ -82,7 +82,7 @@ describe('a workbook written as .ods', () => {
     const first = encodeBlock(writeOds(model.toJSON()).entries);
     expect(first).toEqual(encodeBlock(writeOds(model.toJSON()).entries));
     const names = writeOds(model.toJSON()).entries.map((e) => e.name);
-    expect(names).toEqual(['mimetype', 'content.xml', 'settings.xml', 'META-INF/manifest.xml']);
+    expect(names).toEqual(['mimetype', 'content.xml', 'styles.xml', 'settings.xml', 'META-INF/manifest.xml']);
   });
 
   it('CANARY: a changed value does not compare equal', () => {

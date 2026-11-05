@@ -1,18 +1,28 @@
 /** OpenDocument text into the editor's document model. */
 
-import { NS, kids, kid, attr, is } from '../xml.js';
+import { NS, kids, kid, attr, is, parseXml } from '../xml.js';
 import { parseLength } from '../units.js';
-import { normaliseRuns, pageSizeFields } from '../editor/model.js';
+import { normaliseRuns, pageSizeFields, normaliseTable, TABLE_LIMITS, OBJECT, styleKey, BULLETS, normalisePara } from '../editor/model.js';
+
+/** Paragraph styles Paper has its own name for, or that belong to something else; any other named style is one of the person's. */
+const KNOWN_PARAGRAPH = /^(Standard|Text_20_body|Text body|Default_20_Paragraph_20_Style|Heading.*|Title|Subtitle|Quotations|Quote|Preformatted.*|Source_20_Code|Caption|Figure|Table|Illustration|Drawing|Text|Table_20_(Contents|Heading)|Contents.*|Index.*|Footnote|Endnote|List.*|Numbering.*|Header|Footer|Frame_20_contents|Signature|Salutation|Horizontal_20_Line|Sender|Addressee|Marginalia|Hanging_20_indent|First_20_line_20_indent|Text_20_body_20_indent)$/;
+import { makeId } from '../editor/ids.js';
+import { runListsOf } from '../editor/fields.js';
+import { readOdfChartDocument, frameSize } from './chart-object.js';
+import { readMathElement, MATHML } from './math-ml.js';
 import { Losses } from '../losses.js';
 import {
   odfDocuments, OdfStyles, textLook, fontKind, internalHref, extensionOf, DRAWABLE, fromBase64,
-  outlineNumbered,
+  outlineNumbered, headingNumbersOf, noteSettingsOf,
 } from './odf.js';
+import { declareExternal } from './external.js';
 
 const PT_PER_MM = 72 / 25.4;
 const PX_PER_MM = 96 / 25.4;
 const MARKS = ['bold', 'italic', 'underline', 'strike', 'sup', 'sub'];
-const PAPER_STYLES = ['body', 'h1', 'h2', 'h3', 'h4', 'quote', 'code'];
+const PAPER_STYLES = ['body', 'h1', 'h2', 'h3', 'h4', 'quote', 'code', 'title', 'subtitle', 'hr'];
+/** LibreOffice's paragraph styles that are Paper's own styles of plain paragraphs. */
+const PLAIN_STYLES = { Title: 'title', Subtitle: 'subtitle', Horizontal_20_Line: 'hr' };
 
 /**
  * @param {import('../package.js').Package|string} source a package, or a flat file's text
@@ -29,6 +39,7 @@ export function readOdt(source) {
     masterStyles: new OdfStyles(named, docs.styles ?? docs.content),
     pkg: typeof source === 'string' ? null : source,
   });
+  declareExternal(source, reader.losses);
   return reader.read(docs.content);
 }
 
@@ -45,6 +56,12 @@ class TextReader {
     this.images = new Map();
     this.notes = [];
     this.usage = new Map();
+    // Bookmarks LibreOffice puts on headings for references, and the references to resolve once every block has an id.
+    this.headingMarks = new Map();
+    this.references = [];
+    // The person's own styles found in the file: Paper's key to the file's style name.
+    this.customStyles = new Map();
+    this.customChars = new Map();
     this.firstMaster = null;
   }
 
@@ -61,6 +78,15 @@ class TextReader {
       this.losses.add('Footnotes and endnotes, moved to the end of the document', this.notes.length);
     }
 
+    // References to headings point at the heading's block, now that it has one.
+    for (const block of this.blocks) {
+      for (const { runs } of runListsOf(block)) {
+        for (const run of runs) {
+          if (run.object?.type === 'ref' && this.headingMarks.has(run.object.target)) run.object.target = `heading:${this.headingMarks.get(run.object.target)}`;
+        }
+      }
+    }
+
     const blocks = mergeCode(this.blocks);
     if (blocks.length === 0) blocks.push(paragraph('body', 'left', []));
     return {
@@ -69,8 +95,11 @@ class TextReader {
         type: 'paper',
         page: this.page(),
         styles: this.paperStyles(),
+        charStyles: this.charStyles(),
         fonts: [],
         blocks,
+        headingNumbers: headingNumbersOf(this.styles),
+        noteSettings: noteSettingsOf(this.styles),
       },
       images: this.images,
       losses: this.losses,
@@ -93,12 +122,27 @@ class TextReader {
         case 'list':
           this.list(node);
           return;
-        case 'section':
-          this.losses.add('Sections, their text kept and their layout dropped');
+        case 'section': {
+          // A section in columns becomes a mark where they start and one where they end.
+          const props = this.styles.resolve('section', attr(node, NS.text, 'style-name'), 'section');
+          const columns = Math.max(1, Math.min(4, Number(props.columnCount ?? 1)));
+          if (columns > 1) this.blocks.push({ kind: 'section', style: 'body', align: 'left', columns });
           this.walkBlocks(node, context);
+          if (columns > 1) this.blocks.push({ kind: 'section', style: 'body', align: 'left', columns: 1 });
           return;
-        case 'table-of-content':
-        case 'alphabetical-index':
+        }
+        case 'table-of-content': {
+          const source = kid(node, NS.text, 'table-of-content-source');
+          const title = kid(kid(node, NS.text, 'index-body'), NS.text, 'index-title')?.textContent.trim() || kid(source, NS.text, 'index-title-template')?.textContent.trim() || 'Contents';
+          this.blocks.push({ kind: 'toc', style: 'body', align: 'left', title, levels: Math.max(1, Math.min(4, Number(attr(source, NS.text, 'outline-level') ?? 3))) });
+          return;
+        }
+        case 'alphabetical-index': {
+          const source = kid(node, NS.text, 'alphabetical-index-source');
+          const title = kid(kid(node, NS.text, 'index-body'), NS.text, 'index-title')?.textContent.trim() || kid(source, NS.text, 'index-title-template')?.textContent.trim() || 'Index';
+          this.blocks.push({ kind: 'index', style: 'body', align: 'left', title });
+          return;
+        }
         case 'illustration-index':
         case 'table-index':
         case 'object-index':
@@ -144,6 +188,12 @@ class TextReader {
     const styleName = attr(node, NS.text, 'style-name');
     const props = this.styles.resolve('paragraph', styleName, 'paragraph');
     const names = this.styles.names('paragraph', styleName);
+    // What the paragraph's automatic style sets is the paragraph's own formatting.
+    const ownStyle = this.styles.style('paragraph', styleName);
+    const parentPara = ownStyle?.automatic ? directPara(this.styles.resolve('paragraph', ownStyle.parent, 'paragraph')) ?? {} : {};
+    const ownPara = ownStyle?.automatic ? directPara(ownStyle.props.paragraph ?? {}) : null;
+    const para = ownPara && Object.keys(ownPara).some((f) => ownPara[f] !== (parentPara[f] ?? 0))
+      ? Object.fromEntries(Object.entries(ownPara).filter(([f, v]) => v !== (parentPara[f] ?? 0))) : null;
     const chain = this.styles.chain('paragraph', styleName);
 
     const master = chain.find((style) => style.masterPage)?.masterPage ?? null;
@@ -168,7 +218,8 @@ class TextReader {
       }
     }
     if (kind === 'heading') {
-      if (outlineNumbered(this.styles, level)) this.losses.add('Numbered headings, their numbers dropped');
+      // Paper numbers four levels in one format; LibreOffice may number each its own way.
+      if (level > 4 && outlineNumbered(this.styles, level)) this.losses.add('Numbered headings deeper than level 4, their numbers dropped');
       if (level > 4) this.losses.add('Headings deeper than level 4, made level 4');
       level = Math.max(1, Math.min(level, 4));
       style = `h${level}`;
@@ -176,6 +227,8 @@ class TextReader {
       style = 'quote';
     } else if (kind === 'code') {
       style = 'code';
+    } else {
+      style = names.map((n) => PLAIN_STYLES[n]).find(Boolean) ?? style;
     }
 
     const named = this.styles.named('paragraph', styleName);
@@ -188,7 +241,8 @@ class TextReader {
     const baseline = textLook(this.styles.resolve('paragraph', named?.name ?? null, 'text'), this.styles);
     const own = this.styles.resolve('paragraph', styleName, 'text');
     const align = alignment(props['text-align']);
-    const segments = this.inline(node, own, baseline, { ...context, align });
+    const marks = [];
+    const segments = this.inline(node, own, baseline, { ...context, align, marks });
 
     const breakBefore = props['break-before'] === 'page' || (changesPage && this.blocks.length > 0);
 
@@ -204,10 +258,16 @@ class TextReader {
       const runs = normaliseRuns(segment.runs);
       const empty = runs.length === 1 && runs[0].text === '';
       if (empty && segments.length > 1) return;
+      const own = kind === 'paragraph' ? this.customStyle(chain) : null;
       const block = kind === 'heading'
         ? { kind: 'heading', level, style, align, runs }
-        : { kind, style, align, runs };
+        : { kind, style: own ?? (names.some((n) => /^(Caption|Figure|Table|Illustration|Drawing|Text)$/.test(n)) && kind === 'paragraph' ? 'caption' : style), align, runs };
+      if (para) block.para = para;
       if (index === 0 && breakBefore) block.breakBefore = true;
+      if (index === 0 && marks.length) {
+        block.id = makeId('b');
+        for (const name of marks) this.headingMarks.set(name, block.id);
+      }
       this.blocks.push(block);
     });
   }
@@ -218,8 +278,11 @@ class TextReader {
     const state = { lastSpace: true };
     const current = () => segments[segments.length - 1];
 
-    const emit = (text, look) => {
+    const emit = (text, look, object = null) => {
       const run = { text };
+      if (object) run.object = object;
+      if (state.link) run.link = state.link;
+      if (state.cstyle) run.cstyle = state.cstyle;
       for (const mark of MARKS) if (look[mark] && !baseline[mark]) run[mark] = true;
       if (look.color && look.color !== baseline.color && look.color !== '#000000') run.color = look.color;
       if (look.highlight && look.highlight !== baseline.highlight) run.highlight = look.highlight;
@@ -261,47 +324,99 @@ class TextReader {
               continue;
             case 'span': {
               const spanStyle = attr(child, NS.text, 'style-name');
-              walk(child, { ...props, ...this.styles.resolve('text', spanStyle, 'text') });
+              // A named character style is one of the person's; its look comes with it, not as direct formatting.
+              const named = this.styles.chain('text', spanStyle).find((style) => !style.automatic && !/^(Footnote|Endnote|Internet_20_link|Visited_20_Internet_20_Link|Index_20_Link|Numbering_20_Symbols|Bullet_20_Symbols)/.test(style.name));
+              const outer = state.cstyle;
+              if (named) {
+                const display = named.displayName ?? named.name.replace(/_20_/g, ' ');
+                const key = styleKey(display, 'k');
+                if (!this.customChars.has(key)) this.customChars.set(key, { source: named.name, name: display });
+                state.cstyle = key;
+              }
+              walk(child, named ? props : { ...props, ...this.styles.resolve('text', spanStyle, 'text') });
+              state.cstyle = outer;
               continue;
             }
-            case 'a':
-              this.losses.add('Links, kept as their text');
+            case 'a': {
+              const outer = state.link;
+              state.link = attr(child, NS.xlink, 'href');
               walk(child, { ...props, ...this.styles.resolve('text', attr(child, NS.text, 'style-name'), 'text') });
+              state.link = outer;
               continue;
+            }
             case 'ruby':
               this.losses.add('Reading guides above characters (ruby), kept as the base text');
               walk(kid(child, NS.text, 'ruby-base') ?? child, props);
               continue;
             case 'note': {
               const body = kid(child, NS.text, 'note-body');
-              this.notes.push(this.plainRuns(body));
-              emit(`[${this.notes.length}]`, { ...look, sup: true });
+              const kind = attr(child, NS.text, 'note-class') === 'endnote' ? 'end' : 'foot';
+              const mark = attr(kid(child, NS.text, 'note-citation'), NS.text, 'label');
+              emit(OBJECT, look, { type: 'note', kind, runs: this.plainRuns(body), ...(mark ? { mark } : {}) });
               state.lastSpace = false;
               continue;
             }
-            case 'soft-page-break': case 'bookmark': case 'bookmark-start': case 'bookmark-end':
-            case 'reference-mark': case 'reference-mark-start': case 'reference-mark-end':
-            case 'change': case 'change-start': case 'change-end': case 'alphabetical-index-mark':
-            case 'alphabetical-index-mark-start': case 'alphabetical-index-mark-end':
+            case 'bookmark': case 'bookmark-start': case 'reference-mark': case 'reference-mark-start': {
+              const name = attr(child, NS.text, 'name');
+              if (!name) continue;
+              // A heading's bookmark for references is part of the heading, not something placed in it.
+              if (name.startsWith('__RefHeading__')) context.marks?.push(name);
+              else emit(OBJECT, look, { type: 'bookmark', name });
+              continue;
+            }
+            case 'alphabetical-index-mark': {
+              const value = attr(child, NS.text, 'string-value');
+              const key = attr(child, NS.text, 'key1');
+              if (value) emit(OBJECT, look, key ? { type: 'index', term: key, sub: value } : { type: 'index', term: value });
+              continue;
+            }
+            case 'alphabetical-index-mark-start': {
+              const key = attr(child, NS.text, 'key1');
+              const value = attr(child, NS.text, 'string-value');
+              if (key || value) emit(OBJECT, look, { type: 'index', term: key ?? value, ...(key && value ? { sub: value } : {}) });
+              else this.losses.add('Index entries marked over a stretch of text, kept as their text');
+              continue;
+            }
+            case 'soft-page-break': case 'bookmark-end': case 'reference-mark-end':
+            case 'change': case 'change-start': case 'change-end':
+            case 'alphabetical-index-mark-end':
             case 'toc-mark': case 'toc-mark-start': case 'toc-mark-end':
               continue;
             case 'page-number':
+              emit(OBJECT, look, { type: 'field', field: 'page' });
+              continue;
             case 'page-count':
+              emit(OBJECT, look, { type: 'field', field: 'pages' });
+              continue;
+            case 'sequence': {
+              const name = attr(child, NS.text, 'name') ?? 'Figure';
+              emit(OBJECT, look, { type: 'seq', name, id: attr(child, NS.text, 'ref-name') ?? `seq${this.references.length}${Math.random().toString(36).slice(2, 8)}` });
+              continue;
+            }
+            case 'sequence-ref': case 'bookmark-ref': case 'reference-ref': {
+              const format = attr(child, NS.text, 'reference-format') ?? 'text';
+              const object = { type: 'ref', target: attr(child, NS.text, 'ref-name') ?? '', show: format === 'page' ? 'page' : format === 'category-and-value' || format === 'value' || format === 'number' ? 'number' : 'text' };
+              if (!object.target) {
+                walk(child, props);
+                continue;
+              }
+              this.references.push(object);
+              emit(OBJECT, look, object);
+              continue;
+            }
             case 'date':
             case 'time':
+              emit(OBJECT, look, { type: 'field', field: child.localName });
+              continue;
             case 'title':
             case 'subject':
             case 'chapter':
-            case 'sequence':
             case 'file-name':
             case 'author-name':
             case 'user-defined':
             case 'variable-get':
             case 'variable-set':
             case 'user-field-get':
-            case 'bookmark-ref':
-            case 'reference-ref':
-            case 'sequence-ref':
             case 'note-ref':
               this.losses.add('Fields, kept as the text they showed');
               walk(child, props);
@@ -310,6 +425,12 @@ class TextReader {
               walk(child, props);
               continue;
           }
+        }
+        const formula = is(child, NS.draw, 'frame') ? this.formulaObject(kid(child, NS.draw, 'object')) : null;
+        if (formula) {
+          emit(OBJECT, look, formula);
+          state.lastSpace = false;
+          continue;
         }
         if (is(child, NS.draw, 'frame') || is(child, NS.draw, 'a')) {
           const found = this.frameBlocks(child, context, context.align ?? 'left');
@@ -340,7 +461,7 @@ class TextReader {
     for (const p of element ? element.getElementsByTagNameNS(NS.text, 'p') : []) {
       parts.push(p.textContent.replace(/\s+/g, ' ').trim());
     }
-    return [{ text: parts.filter(Boolean).join(' ') }];
+    return [{ text: parts.filter(Boolean).join(' ').replaceAll(OBJECT, '') }];
   }
 
   /** A list, in order: runs of items become list blocks, anything else breaks them. */
@@ -378,7 +499,10 @@ class TextReader {
           this.blocks.push(current);
         }
         const type = this.listType(entry.listStyle, entry.level);
-        if (current.listType === null) current.listType = type;
+        if (current.listType === null) {
+          current.listType = type;
+          Object.assign(current, this.listFormat(entry.listStyle, type));
+        }
         else if (type !== current.listType) this.losses.add('Lists mixing bullets and numbers, shown with one kind');
         if (entry.level > 5) this.losses.add('Lists nested deeper than six levels, flattened');
         current.items.push({ level: Math.min(entry.level, 5), runs: normaliseRuns(runs) });
@@ -423,6 +547,19 @@ class TextReader {
     }
   }
 
+  /** How a list style counts or what bullet it shows, when it is not the plain one. */
+  listFormat(listStyleName, type) {
+    const style = this.styles.lists.get(listStyleName);
+    const first = style ? kids(style).find((element) => Number(attr(element, NS.text, 'level')) === 1) : null;
+    if (!first) return {};
+    if (type === 'number') {
+      const format = { a: 'lower-alpha', A: 'upper-alpha', i: 'lower-roman', I: 'upper-roman' }[attr(first, NS.style, 'num-format')];
+      return format ? { format } : {};
+    }
+    const bullet = attr(first, NS.text, 'bullet-char');
+    return BULLETS.includes(bullet) && bullet !== '•' ? { bullet } : {};
+  }
+
   listType(listStyleName, level) {
     const style = this.styles.lists.get(listStyleName);
     if (!style) return 'bullet';
@@ -436,16 +573,92 @@ class TextReader {
     return 'bullet';
   }
 
+  /** A table: its rows and cells, merged ones included; each cell's paragraphs become lines of its text. */
   table(node, context) {
-    this.losses.add('Tables, kept as text with a tab between cells');
-    const rows = node.getElementsByTagNameNS(NS.table, 'table-row');
-    for (const row of rows) {
-      const cells = kids(row).filter((cell) => is(cell, NS.table, 'table-cell'));
-      const text = cells.map((cell) => kids(cell)
-        .map((child) => child.textContent.replace(/\s+/g, ' ').trim())
-        .filter(Boolean).join(' ')).join('\t');
-      this.blocks.push(paragraph('body', 'left', [{ text }]));
+    const rows = [];
+    const collect = (parent, header) => {
+      for (const child of kids(parent)) {
+        if (is(child, NS.table, 'table-row')) rows.push(this.tableRow(child, header, context));
+        else if (is(child, NS.table, 'table-header-rows')) collect(child, true);
+        else if (is(child, NS.table, 'table-rows') || is(child, NS.table, 'table-row-group')) collect(child, header);
+      }
+    };
+    collect(node, false);
+    if (rows.length > TABLE_LIMITS.rows) this.losses.add('Tables longer than GRT keeps, cut at their last rows');
+    const widths = [];
+    for (const column of kids(node, NS.table, 'table-column')) {
+      const props = this.styles.resolve('table-column', attr(column, NS.table, 'style-name'), 'column');
+      const rel = parseFloat(props['rel-column-width']);
+      const absolute = props['column-width'] ? parseLength(props['column-width']) : null;
+      const repeat = Math.min(64, Number(attr(column, NS.table, 'number-columns-repeated') ?? 1));
+      for (let i = 0; i < repeat; i += 1) widths.push(rel > 0 ? rel : absolute > 0 ? absolute : 1);
     }
+    // The borders, as one of the few patterns Paper draws.
+    const all = rows.flatMap((row) => row.cells).filter((cell) => cell.lines);
+    const every = (test) => all.length > 0 && all.every(test);
+    let borders = 'all';
+    if (every((cell) => !Object.values(cell.lines).some(Boolean))) borders = 'none';
+    else if (!every((cell) => Object.values(cell.lines).every(Boolean))) {
+      borders = all.some((cell) => cell.lines.top && !cell.lines.left && !cell.lines.right) ? 'rows' : 'outer';
+    }
+    for (const cell of all) delete cell.lines;
+    const block = normaliseTable({ id: undefined, kind: 'table', style: 'body', align: 'left', rows, widths, borders });
+    delete block.id;
+    this.blocks.push(block);
+  }
+
+  tableRow(row, header, context) {
+    const cells = [];
+    for (const cell of kids(row)) {
+      if (is(cell, NS.table, 'covered-table-cell')) {
+        cells.push({ runs: [{ text: '' }] });
+        continue;
+      }
+      if (!is(cell, NS.table, 'table-cell')) continue;
+      const repeat = Math.min(64, Number(attr(cell, NS.table, 'number-columns-repeated') ?? 1));
+      const out = this.cellContent(cell, context);
+      const props = this.styles.resolve('table-cell', attr(cell, NS.table, 'style-name'), 'cell');
+      const bg = props['background-color'];
+      if (bg && bg !== 'transparent') out.bg = bg.toLowerCase();
+      if (['top', 'middle', 'bottom'].includes(props['vertical-align'])) out.valign = props['vertical-align'];
+      const line = (side) => {
+        const value = props[`border-${side}`] ?? props.border ?? 'none';
+        return value !== 'none' && !/^0(\.0+)?\w*\s/.test(value);
+      };
+      out.lines = { top: line('top'), right: line('right'), bottom: line('bottom'), left: line('left') };
+      const colspan = Number(attr(cell, NS.table, 'number-columns-spanned') ?? 1);
+      const rowspan = Number(attr(cell, NS.table, 'number-rows-spanned') ?? 1);
+      if (colspan > 1) out.colspan = colspan;
+      if (rowspan > 1) out.rowspan = rowspan;
+      for (let i = 0; i < repeat; i += 1) cells.push(i === 0 ? out : { runs: structuredClone(out.runs) });
+    }
+    return { ...(header ? { header: true } : {}), cells };
+  }
+
+  /** The text of a cell: what its paragraphs read as, one line each. */
+  cellContent(cell, context) {
+    const saved = this.blocks;
+    this.blocks = [];
+    for (const child of kids(cell)) this.block(child, context);
+    const inner = this.blocks;
+    this.blocks = saved;
+    const lines = [];
+    let align = null;
+    for (const block of inner) {
+      if (block.kind === 'table') {
+        this.losses.add('Tables inside tables, kept as text');
+        lines.push([{ text: block.rows.map((r) => r.cells.map((c) => c.runs.map((run) => run.text).join('')).join('\t')).join('\n') }]);
+      } else if (block.kind === 'list') {
+        for (const item of block.items) lines.push(item.runs);
+      } else if (block.kind === 'image') {
+        this.losses.add('Pictures inside tables');
+      } else if (block.runs) {
+        lines.push(block.runs);
+        align ??= block.align && block.align !== 'left' ? block.align : null;
+      }
+    }
+    const runs = normaliseRuns(lines.flatMap((runs, i) => (i ? [{ text: '\n' }, ...runs] : runs)));
+    return align ? { runs, align } : { runs };
   }
 
   frames(node, context, align) {
@@ -481,11 +694,51 @@ class TextReader {
       return found;
     }
 
+    const object = kid(frame, NS.draw, 'object');
+    const chart = object ? this.chartObject(object) : null;
+    if (chart) {
+      const size = frameSize(frame);
+      return [{ kind: 'chart', style: 'body', align: frameAlign(this.styles, frame, align), w: size.width, h: size.height, ...chart }];
+    }
     if (kid(frame, NS.draw, 'object') || kid(frame, NS.draw, 'object-ole')) {
       this.losses.add('Charts, formulas and other embedded objects');
       return [];
     }
     return [];
+  }
+
+  /** An embedded object that is a formula: MathML inline in a flat file, a folder of the package otherwise. */
+  formulaObject(object) {
+    if (!object) return null;
+    const inline = [...object.childNodes].find((node) => node.localName === 'math');
+    if (inline) return readMathElement(inline);
+    const href = attr(object, NS.xlink, 'href');
+    const folder = href ? href.replace(/^\.\//, '').replace(/\/$/, '') : null;
+    if (!folder || folder.includes('..') || typeof this.pkg?.text !== 'function') return null;
+    const text = this.pkg.text(`${folder}/content.xml`);
+    if (!text || !/<(\w+:)?math[\s>]/.test(text)) return null;
+    try {
+      const root = parseXml(text, `${folder}/content.xml`).documentElement;
+      return readMathElement(root.localName === 'math' ? root : root.getElementsByTagNameNS(MATHML, 'math')[0]);
+    } catch {
+      return null;
+    }
+  }
+
+  /** An embedded object that is a chart: inline in a flat file, a folder of the package otherwise. */
+  chartObject(object) {
+    const inline = kid(object, NS.office, 'document');
+    if (inline) return readOdfChartDocument(inline);
+    const href = attr(object, NS.xlink, 'href');
+    const folder = href ? href.replace(/^\.\//, '').replace(/\/$/, '') : null;
+    if (!folder || folder.includes('..') || typeof this.pkg?.text !== 'function') return null;
+    const text = this.pkg.text(`${folder}/content.xml`);
+    if (!text) return null;
+    try {
+      return readOdfChartDocument(parseXml(text, `${folder}/content.xml`).documentElement);
+    } catch {
+      return null;
+    }
   }
 
   frameImage(frame) {
@@ -630,19 +883,72 @@ class TextReader {
   }
 
   /** Paper's seven styles, taken from the styles the document used for each. */
+  /** The person's own paragraph style a chain of styles names, registered the first time. */
+  customStyle(chain) {
+    const named = chain.find((style) => !style.automatic);
+    if (!named || KNOWN_PARAGRAPH.test(named.name) || KNOWN_PARAGRAPH.test(named.displayName ?? '')) return null;
+    const display = named.displayName ?? named.name.replace(/_20_/g, ' ');
+    const key = styleKey(display);
+    if (!this.customStyles.has(key)) this.customStyles.set(key, { source: named.name, name: display });
+    return key;
+  }
+
+  /** A paragraph style of the file as a Paper style. */
+  styleFrom(source) {
+    const text = textLook(this.styles.resolve('paragraph', source, 'text'), this.styles);
+    const para = this.styles.resolve('paragraph', source, 'paragraph');
+    const style = {
+      font: fontKind(text.font, text.generic),
+      size: text.size ?? 12,
+      bold: !!text.bold,
+      italic: !!text.italic,
+      lineHeight: lineHeight(para['line-height']),
+      spaceBefore: points(para['margin-top']),
+      spaceAfter: points(para['margin-bottom']),
+    };
+    const indent = points(para['margin-left']);
+    if (indent > 0) style.indent = indent;
+    const first = points(para['text-indent']);
+    if (first) style.firstLine = first;
+    if (text.underline) style.underline = true;
+    if (text.color && text.color !== '#000000') style.color = text.color;
+    return style;
+  }
+
+  charStyles() {
+    const out = {};
+    for (const [key, { source, name }] of this.customChars) {
+      const props = this.styles.resolve('text', source, 'text');
+      const look = textLook(props, this.styles);
+      const style = { name };
+      for (const mark of ['bold', 'italic', 'underline', 'strike']) if (look[mark]) style[mark] = true;
+      if (look.color) style.color = look.color;
+      if (look.highlight) style.highlight = look.highlight;
+      if (props['font-size'] && !props['font-size'].endsWith('%') && look.size) style.size = look.size;
+      if (look.font) style.font = fontKind(look.font, look.generic);
+      out[key] = style;
+    }
+    return out;
+  }
+
   paperStyles() {
     const out = {};
+    for (const [key, { source, name }] of this.customStyles) out[key] = { ...this.styleFrom(source), name };
     const wellKnown = {
       body: ['Text_20_body', 'Standard', 'Default_20_Paragraph_20_Style'],
-      h1: ['Heading_20_1', 'Title'],
-      h2: ['Heading_20_2', 'Subtitle'],
+      h1: ['Heading_20_1'],
+      h2: ['Heading_20_2'],
       h3: ['Heading_20_3'],
       h4: ['Heading_20_4'],
       quote: ['Quotations'],
+      title: ['Title'],
+      subtitle: ['Subtitle'],
+      hr: ['Horizontal_20_Line'],
       code: ['Preformatted_20_Text'],
     };
     for (const name of PAPER_STYLES) {
-      const used = [...(this.usage.get(name) ?? new Map())].sort((a, b) => b[1] - a[1])[0]?.[0];
+      const customSources = new Set([...this.customStyles.values()].map((c) => c.source));
+      const used = [...(this.usage.get(name) ?? new Map())].filter(([source]) => !customSources.has(source)).sort((a, b) => b[1] - a[1])[0]?.[0];
       const source = used ?? wellKnown[name].find((candidate) => this.styles.style('paragraph', candidate));
       if (!source) continue;
       const text = textLook(this.styles.resolve('paragraph', source, 'text'), this.styles);
@@ -689,8 +995,6 @@ function headingLevel(names) {
   for (const name of names) {
     const match = /^Heading(?:_20_| )?(\d+)$/i.exec(name);
     if (match) return Number(match[1]);
-    if (/^Title$/i.test(name)) return 1;
-    if (/^Subtitle$/i.test(name)) return 2;
   }
   return null;
 }
@@ -717,6 +1021,16 @@ function frameAlign(styles, frame, fallback) {
 function points(length) {
   const mm = parseLength(length);
   return mm === null ? 0 : Math.round(mm * PT_PER_MM * 10) / 10;
+}
+
+/** A paragraph's own spacing from its automatic style's properties. */
+function directPara(props) {
+  const para = {};
+  if (typeof props['line-height'] === 'string' && props['line-height'].endsWith('%')) para.lineHeight = lineHeight(props['line-height']);
+  if (props['margin-top'] !== undefined) para.spaceBefore = points(props['margin-top']);
+  if (props['margin-bottom'] !== undefined) para.spaceAfter = points(props['margin-bottom']);
+  if (props['margin-left'] !== undefined) para.indent = points(props['margin-left']);
+  return normalisePara(para);
 }
 
 function lineHeight(value) {

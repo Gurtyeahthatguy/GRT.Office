@@ -1,11 +1,13 @@
 /** Page rendering and navigation. */
 
 import * as pdfjs from '../vendor/pdf.mjs';
+import { folderUrl } from './assets.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdf.worker.mjs', import.meta.url).href;
 
-const CMAP_URL = new URL('../vendor/cmaps/', import.meta.url).href;
-const STANDARD_FONTS_URL = new URL('../vendor/standard_fonts/', import.meta.url).href;
+const CMAP_URL = folderUrl('../vendor/cmaps/');
+const STANDARD_FONTS_URL = folderUrl('../vendor/standard_fonts/');
+const WASM_URL = folderUrl('../vendor/wasm/');
 
 /** How much memory the canvas cache may hold. */
 function canvasBudgetBytes() {
@@ -73,6 +75,9 @@ export class Viewer {
       disableAutoFetch: true,
       disableStream: true,
       isEvalSupported: false,
+      wasmUrl: WASM_URL,
+      // Forms are drawn, never XFA scripts run.
+      enableXfa: false,
     });
     const doc = await task.promise;
     this.docs.set(sourceId, doc);

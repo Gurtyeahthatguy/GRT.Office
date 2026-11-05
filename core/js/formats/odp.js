@@ -1,6 +1,9 @@
 /** OpenDocument presentations to and from Slides' document. */
 
-import { NS, kids, kid, attr, is, tag, xmlDocument } from '../xml.js';
+import { NS, kids, kid, attr, is, tag, xmlDocument, parseXml } from '../xml.js';
+import { FOOTER_PLACES, FOOTER_TOP, FOOTER_HEIGHT } from './slide-footer.js';
+import { odfChartDocument, readOdfChartDocument, CHART_MIMETYPE } from './chart-object.js';
+import { odfFormulaXml, readMathElement, MATHML, FORMULA_MIMETYPE } from './math-ml.js';
 import { parseLength, formatLength } from '../units.js';
 import { Losses } from '../losses.js';
 import { naturalSize } from '../images.js';
@@ -9,6 +12,7 @@ import {
   odfDocuments, OdfStyles, MIMETYPES, ODF_VERSION, ROOT_NAMESPACES, odfPackage, odfText, internalHref,
   MEDIA_TYPES, extensionOf, fontKind, unquote,
 } from './odf.js';
+import { declareExternal } from './external.js';
 
 const PX_PER_MM = 96 / 25.4;
 const ANIM = 'urn:oasis:names:tc:opendocument:xmlns:animation:1.0';
@@ -67,6 +71,7 @@ class OdpReader {
     this.masterScope = new OdfStyles(named, docs.styles ?? docs.content);
     this.losses = new Losses();
     if (this.pkg?.damage) this.losses.add('The file was damaged, and only what could still be read was opened');
+    declareExternal(source, this.losses);
     this.images = new Map();
     this.imageNames = new Map();
     this.ids = 0;
@@ -106,24 +111,37 @@ class OdpReader {
     }
     const themeBackground = masterInfo.get(attr(firstMaster, NS.style, 'name'))?.background ?? '#ffffff';
 
+    // The footers and dates the slides name.
+    const footerDecls = new Map(kids(this.body, NS.presentation, 'footer-decl').map((d) => [attr(d, NS.presentation, 'name'), d.textContent]));
+    const dateDecls = new Map(kids(this.body, NS.presentation, 'date-time-decl').map((d) => [attr(d, NS.presentation, 'name'),
+      { auto: attr(d, NS.presentation, 'source') === 'current-date', text: d.textContent }]));
+
     const slides = pages.map((page) => {
       const info = masterInfo.get(attr(page, NS.draw, 'master-page-name')) ?? { id: null, background: null };
       const styleName = attr(page, NS.draw, 'style-name');
       const pageProps = this.content.resolve('drawing-page', styleName, 'page');
-      if (pageProps.visibility === 'hidden') this.losses.add('Hidden slides, shown');
       const own = this.pageFill(this.content, styleName);
       const background = own ?? (info.background && info.background !== themeBackground ? info.background : null);
       const elements = this.elements(page, this.content, false);
       elements.forEach((element, i) => { element.z = i + 1; });
       const showsMaster = pageProps['background-objects-visible'] !== 'false';
+      const footerText = pageProps['display-footer'] !== 'false' ? footerDecls.get(attr(page, NS.presentation, 'use-footer-name')) ?? '' : '';
+      const date = pageProps['display-date-time'] !== 'false' ? dateDecls.get(attr(page, NS.presentation, 'use-date-time-name')) ?? null : null;
+      const footer = footerText || date || pageProps['display-page-number'] === 'true' ? {
+        text: footerText, number: pageProps['display-page-number'] === 'true',
+        date: date ? (date.auto ? 'auto' : 'fixed') : null, dateText: date && !date.auto ? date.text : '',
+      } : null;
       return {
         id: this.id('s'),
-        master: showsMaster ? info.id : null,
+        master: info.id,
+        ...(showsMaster ? {} : { hideMaster: true }),
+        footer,
         background,
         section: null,
         notes: this.notes(page),
         transition: this.transition(page, pageProps),
         elements,
+        ...(pageProps.visibility === 'hidden' ? { hidden: true } : {}),
       };
     });
 
@@ -277,12 +295,23 @@ class OdpReader {
     const textBox = kid(node, NS.draw, 'text-box');
     if (textBox) {
       const text = this.text(textBox, styles, look);
-      if (text) out.push({ id: this.id('e'), kind: 'text', ...box, ...text, data: {} });
+      const role = attr(node, NS.presentation, 'class');
+      // Outlines take body, body2, body3 and on, in the order they come.
+      const bodies = out.filter((e) => /^body\d*$/.test(e.placeholder ?? '')).length;
+      const placeholder = { title: 'title', subtitle: 'subtitle', outline: bodies ? `body${bodies + 1}` : 'body' }[role];
+      if (text) out.push({ id: this.id('e'), kind: 'text', ...box, ...text, ...(placeholder ? { placeholder } : {}), data: {} });
       return;
     }
     const table = kid(node, NS.table, 'table');
     if (table) {
       this.table(table, box, styles, out);
+      return;
+    }
+    // An object comes first: LibreOffice puts a picture of it beside it, for programs that cannot draw it.
+    const object = kid(node, NS.draw, 'object');
+    const embedded = object ? this.embedded(object) : null;
+    if (embedded) {
+      out.push({ id: this.id('e'), ...box, style: 'body', ...embedded });
       return;
     }
     const images = kids(node, NS.draw, 'image');
@@ -297,6 +326,30 @@ class OdpReader {
     }
     if (kid(node, NS.draw, 'object') || kid(node, NS.draw, 'object-ole')) this.losses.add('Charts and embedded objects');
     else if (kid(node, NS.draw, 'plugin')) this.losses.add('Video and sound');
+  }
+
+  /** An embedded chart or formula: inline in a flat file, a folder of the package otherwise. */
+  embedded(object) {
+    const inline = kid(object, NS.office, 'document') ?? [...object.childNodes].find((n) => n.localName === 'math');
+    let root = inline;
+    if (!root) {
+      const href = attr(object, NS.xlink, 'href');
+      const folder = href ? href.replace(/^\.\//, '').replace(/\/$/, '') : null;
+      if (!folder || folder.includes('..') || !this.pkg) return null;
+      const text = this.pkg.text(`${folder}/content.xml`);
+      if (!text) return null;
+      try {
+        root = parseXml(text, `${folder}/content.xml`).documentElement;
+      } catch {
+        return null;
+      }
+    }
+    if (root.localName === 'math' || root.getElementsByTagNameNS(MATHML, 'math').length) {
+      const formula = readMathElement(root.localName === 'math' ? root : root.getElementsByTagNameNS(MATHML, 'math')[0]);
+      return formula ? { kind: 'formula', tex: formula.tex ?? '', ...(formula.mathml ? { mathml: formula.mathml } : {}), data: {} } : null;
+    }
+    const chart = readOdfChartDocument(root);
+    return chart ? { kind: 'chart', ...chart } : null;
   }
 
   image(href) {
@@ -561,6 +614,7 @@ class OdpWriter {
     this.images = images;
     this.losses = new Losses();
     this.pictures = new Map();
+    this.objects = [];
     this.canvas = document.canvas ?? { w: 1920, h: 1080 };
     this.theme = { background: '#ffffff', accent: '#1f6feb', text: '#222222', ...(document.theme ?? {}) };
     this.styles = document.styles ?? {};
@@ -580,7 +634,22 @@ class OdpWriter {
     const masterPage = (name, display, elements) => tag('style:master-page', {
       'style:name': name, 'style:display-name': display, 'style:page-layout-name': 'PM1',
       'draw:style-name': backgroundStyle(masterSink, this.theme.background),
-    }, elements.map((element) => this.element(element, masterSink)));
+    }, elements.map((element) => this.element(element, masterSink)), this.footerFrames(masterSink));
+
+    // Each footer text and fixed date said once, and named by the slides that show it.
+    const declarations = [];
+    const declared = new Map();
+    const declare = (kind, text, source = 'fixed') => {
+      const key = `${kind}|${source}|${text}`;
+      if (!declared.has(key)) {
+        const name = `${kind === 'footer' ? 'ftr' : 'dtd'}${declared.size + 1}`;
+        declared.set(key, name);
+        declarations.push(kind === 'footer'
+          ? tag('presentation:footer-decl', { 'presentation:name': name }, odfText(text))
+          : tag('presentation:date-time-decl', { 'presentation:name': name, 'presentation:source': source }, source === 'fixed' ? odfText(text) : null));
+      }
+      return declared.get(key);
+    };
     const masters = [
       masterPage('Default', 'Default', []),
       ...(this.doc.masters ?? []).map((master, i) => masterPage(`GRT_Master_${i + 1}`, master.name ?? `Master ${i + 1}`, sortByZ(master.elements ?? []))),
@@ -589,12 +658,19 @@ class OdpWriter {
 
     const pages = slides.map((slide, i) => {
       const id = `page${i + 1}`;
+      const footer = slide.footer ?? null;
       const pageStyle = content.add('drawing-page', 'dp', [tag('style:drawing-page-properties', {
-        'presentation:background-visible': 'true', 'presentation:background-objects-visible': 'true',
+        'presentation:background-visible': 'true', 'presentation:background-objects-visible': slide.hideMaster ? 'false' : 'true',
+        'presentation:display-footer': footer?.text ? 'true' : 'false',
+        'presentation:display-page-number': footer?.number ? 'true' : 'false',
+        'presentation:display-date-time': footer?.date ? 'true' : 'false',
+        ...(slide.hidden ? { 'presentation:visibility': 'hidden' } : {}),
         ...(slide.background ? { 'draw:background-size': 'full', 'draw:fill': 'solid', 'draw:fill-color': slide.background } : {}),
       })]);
       return tag('draw:page', {
         'draw:name': id, 'draw:style-name': pageStyle, 'draw:master-page-name': masterName.get(slide.master) ?? 'Default',
+        'presentation:use-footer-name': footer?.text ? declare('footer', footer.text) : null,
+        'presentation:use-date-time-name': footer?.date ? declare('date', footer.dateText ?? '', footer.date === 'auto' ? 'current-date' : 'fixed') : null,
         'xml:id': id, 'draw:id': id,
       },
       sortByZ(slide.elements ?? []).map((element) => this.element(element, content)),
@@ -612,11 +688,12 @@ class OdpWriter {
     };
     const markers = tag('office:styles', {},
       tag('draw:marker', { 'draw:name': 'Arrow', 'svg:viewBox': '0 0 20 30', 'svg:d': 'M10 0l-10 30h20z' }));
-    const body = tag('office:body', {}, tag('office:presentation', {}, pages));
+    const body = tag('office:body', {}, tag('office:presentation', {}, declarations, pages));
     const pictures = [...this.pictures.values()].map((p) => ({ name: p.name, data: p.bytes, mediaType: MEDIA_TYPES[p.extension] ?? 'application/octet-stream' }));
 
     if (flat) {
       for (const picture of this.pictures.values()) this.losses.add('Pictures, which a flat file does not carry');
+      if (this.objects.length) this.losses.add('Charts and formulas, which a flat file of Slides does not carry');
       const root = tag('office:document', { ...namespaces, 'office:mimetype': MIMETYPES.presentation },
         markers,
         tag('office:automatic-styles', {}, pageLayout, masterSink.elements, content.elements),
@@ -637,6 +714,10 @@ class OdpWriter {
         { name: 'content.xml', data: xmlDocument(contentXml), mediaType: 'text/xml' },
         { name: 'styles.xml', data: xmlDocument(styles), mediaType: 'text/xml' },
         ...pictures,
+        ...this.objects.flatMap((object) => [
+          { name: `${object.folder}/`, mediaType: object.mediaType, manifestOnly: true },
+          { name: `${object.folder}/content.xml`, data: object.xml, mediaType: 'text/xml' },
+        ]),
       ]),
       losses: this.losses,
     };
@@ -648,7 +729,19 @@ class OdpWriter {
     if (element.kind === 'line') return this.line(element, sink);
     if (element.kind === 'image') return this.picture(element, sink);
     if (element.kind === 'table') return this.table(element, sink);
+    if (element.kind === 'chart' || element.kind === 'formula') return this.object(element, sink);
     return null;
+  }
+
+  /** A chart or a formula as an embedded object, the chart's data and the formula's TeX inside it. */
+  object(element, sink) {
+    const folder = `Object ${this.objects.length + 1}`;
+    const chart = element.kind === 'chart';
+    const xml = chart ? xmlDocument(odfChartDocument(element, { width: element.w, height: element.h })) : odfFormulaXml({ tex: element.tex, mathml: element.mathml, display: true });
+    this.objects.push({ folder, xml, mediaType: chart ? CHART_MIMETYPE : FORMULA_MIMETYPE });
+    const graphic = sink.add('graphic', 'gr', [tag('style:graphic-properties', { 'draw:stroke': 'none', 'draw:fill': 'none' })]);
+    return tag('draw:frame', { 'draw:style-name': graphic, ...placement(element), 'presentation:class': chart ? 'chart' : 'object' },
+      tag('draw:object', { 'xlink:href': `./${folder}`, 'xlink:type': 'simple', 'xlink:show': 'embed', 'xlink:actuate': 'onLoad' }));
   }
 
   /** What an element's text looks like, its own settings over its named style. */
@@ -667,15 +760,39 @@ class OdpWriter {
     };
   }
 
+  /** The master's footer, date and number boxes, filled by each slide from what it shows. */
+  footerFrames(sink) {
+    const { w, h } = this.canvas;
+    return FOOTER_PLACES.map(([part, x, width, align]) => {
+      const look = this.look({ style: 'caption', align });
+      const style = sink.add('presentation', 'pr', [tag('style:graphic-properties', {
+        'draw:stroke': 'none', 'draw:fill': 'none', 'draw:auto-grow-height': 'false', 'draw:textarea-vertical-align': 'middle',
+        'fo:padding-top': '0cm', 'fo:padding-bottom': '0cm', 'fo:padding-left': '0cm', 'fo:padding-right': '0cm',
+      })]);
+      const paragraph = sink.add('paragraph', 'P', [
+        tag('style:paragraph-properties', { 'fo:text-align': { center: 'center', right: 'end' }[align] ?? 'start' }),
+        tag('style:text-properties', textProperties({}, look)),
+      ]);
+      const field = { footer: tag('presentation:footer', {}), date: tag('presentation:date-time', {}), number: tag('text:page-number', {}, '<number>') }[part];
+      return tag('draw:frame', {
+        'presentation:style-name': style, 'draw:layer': 'backgroundobjects', 'presentation:class': { date: 'date-time', number: 'page-number', footer: 'footer' }[part],
+        'svg:x': cm(x * w), 'svg:y': cm(FOOTER_TOP * h), 'svg:width': cm(width * w), 'svg:height': cm(FOOTER_HEIGHT * h),
+      }, tag('draw:text-box', {}, tag('text:p', { 'text:style-name': paragraph }, field)));
+    });
+  }
+
   textFrame(element, sink) {
     const look = this.look(element);
-    const graphic = sink.add('graphic', 'gr', [tag('style:graphic-properties', {
+    // A placeholder's look is a presentation style, as LibreOffice keeps a placeholder only with one.
+    const placeholder = /^body\d*$/.test(element.placeholder ?? '') ? 'outline' : { title: 'title', subtitle: 'subtitle' }[element.placeholder] ?? null;
+    const graphic = sink.add(placeholder ? 'presentation' : 'graphic', placeholder ? 'pr' : 'gr', [tag('style:graphic-properties', {
       'draw:stroke': 'none', 'draw:fill': 'none', 'draw:auto-grow-height': 'false', 'draw:auto-grow-width': 'false',
       'draw:textarea-vertical-align': element.valign ?? 'top', 'draw:textarea-horizontal-align': 'justify',
       'fo:padding-top': '0cm', 'fo:padding-bottom': '0cm', 'fo:padding-left': '0cm', 'fo:padding-right': '0cm',
       'fo:min-height': '0cm', 'fo:wrap-option': 'wrap', 'draw:shadow': 'hidden',
     })]);
-    return tag('draw:frame', { 'draw:style-name': graphic, ...placement(element) },
+    // A placeholder of the slide's layout says which, as LibreOffice and PowerPoint mark titles and bodies.
+    return tag('draw:frame', { [placeholder ? 'presentation:style-name' : 'draw:style-name']: graphic, ...placement(element), 'presentation:class': placeholder, 'presentation:user-transformed': placeholder ? 'true' : null },
       tag('draw:text-box', {}, this.paragraphs(element.content ?? [], look, sink)));
   }
 

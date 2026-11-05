@@ -101,9 +101,10 @@ export function isPrintPreviewOpen() {
  * @param {object} options.setup the settings the pages are built from
  * @param {(setup: object) => string} options.controls the settings' HTML, fields marked data-print-field
  * @param {(setup: object) => Promise<{width: number, height: number, pages: HTMLElement[]}>|object} options.build
+ * @param {?() => Promise<?string>} options.pdfTo where a PDF of the pages goes; with it, the preview offers to save one
  * @returns {Promise<object>} the settings as they were when the preview closed
  */
-export function printPreview({ title, setup, controls = () => '', build }) {
+export function printPreview({ title, setup, controls = () => '', build, pdfTo = null }) {
   ensureStyle();
   open = true;
   let current = { ...setup };
@@ -117,6 +118,7 @@ export function printPreview({ title, setup, controls = () => '', build }) {
       <span class="print-spacer"></span>
       <span class="print-count" aria-live="polite"></span>
       <button type="button" data-print="close">Close</button>
+      ${pdfTo ? '<button type="button" data-print="pdf">Save as PDF…</button>' : ''}
       <button type="button" class="primary" data-print="go">Print…</button>
     </div>
     <div class="print-pages"></div>`;
@@ -183,6 +185,22 @@ export function printPreview({ title, setup, controls = () => '', build }) {
     }
     document.addEventListener('keydown', onKey, true);
     view.querySelector('[data-print="close"]').onclick = close;
+    const pdfButton = view.querySelector('[data-print="pdf"]');
+    if (pdfButton) {
+      pdfButton.onclick = async () => {
+        const path = await pdfTo();
+        if (!path) return;
+        await building;
+        await picturesReady(pagesHost);
+        count.textContent = 'Writing the PDF…';
+        try {
+          await savePrintedPdf(paper, path);
+          count.textContent = 'PDF saved';
+        } catch (error) {
+          count.textContent = String(error?.message ?? error);
+        }
+      };
+    }
     view.querySelector('[data-print="go"]').onclick = async () => {
       await building;
       await picturesReady(pagesHost);
@@ -194,6 +212,50 @@ export function printPreview({ title, setup, controls = () => '', build }) {
     };
     rebuild();
   });
+}
+
+/**
+ * The pages printed straight to a PDF file by the webview's own printing, so they look exactly as printed:
+ * tables, charts, formulas and pictures included. The file is then cleared of what the printing system writes into it.
+ */
+async function savePrintedPdf(paper, path) {
+  const { invoke } = window.__TAURI__.core;
+  await invoke('print_to_pdf', { ...paper, path });
+  const { PDFDocument } = await import('../../vendor/pdf-lib.esm.js');
+  const { stripMetadata } = await import('./metadata.js');
+  const doc = await PDFDocument.load(new Uint8Array(await invoke('read_file', { path })), { updateMetadata: false });
+  stripMetadata(doc);
+  const bytes = await doc.save({ useObjectStreams: true });
+  await invoke('write_file_atomic', bytes, { headers: { 'x-grt-path': encodeURIComponent(path) } });
+}
+
+/**
+ * Builds the pages out of sight and saves them as a PDF, without the preview: what an Export as PDF button does.
+ * @param {(setup: object) => Promise<{width: number, height: number, pages: HTMLElement[]}>|object} build
+ */
+export async function exportPdf({ setup, build, path }) {
+  ensureStyle();
+  const view = document.createElement('div');
+  view.id = 'print-view';
+  // Off the screen, but laid out, so the printing sees the pages as they are.
+  view.style.cssText = 'left: -100000px; right: auto; width: 2000px; visibility: visible;';
+  view.innerHTML = '<div class="print-pages"></div>';
+  document.body.append(view);
+  try {
+    const { width, height, pages } = await build({ ...setup });
+    setPaper(width, height);
+    view.querySelector('.print-pages').replaceChildren(...pages.map((page) => {
+      const frame = document.createElement('div');
+      frame.className = 'print-frame';
+      frame.append(page);
+      return frame;
+    }));
+    await picturesReady(view);
+    await savePrintedPdf({ width, height }, path);
+    return pages.length;
+  } finally {
+    view.remove();
+  }
 }
 
 // Flowing text onto pages
@@ -227,7 +289,10 @@ export function textLines(element, origin) {
  * @returns {{start: number, end: number}[]}
  */
 export function flowBreaks(column, height, rules = {}) {
-  const { keepWithNext = () => false, breakBefore = () => false, whole = () => false } = rules;
+  const { keepWithNext = () => false, breakBefore = () => false, whole = () => false, reserve = () => 0 } = rules;
+  // A table breaks between its rows, and the rows of its heading start every page it runs onto.
+  const rowsOf = (element) => (element.matches?.('table') ? [...element.querySelectorAll(':scope > tbody > tr')] : null);
+  const headOf = (element) => (element.matches?.('table') ? element.querySelector(':scope > thead') : null);
   height = Math.max(height, 24);
   const origin = column.getBoundingClientRect().top;
   const blocks = [...column.children].map((element) => {
@@ -239,7 +304,18 @@ export function flowBreaks(column, height, rules = {}) {
   // Every place a page may end, and where the next one then starts.
   const cuts = [];
   blocks.forEach((block, i) => {
-    if (!whole(block.element)) {
+    const rows = rowsOf(block.element);
+    if (rows) {
+      for (let k = 1; k < rows.length; k += 1) {
+        const at = rows[k].getBoundingClientRect().top - origin;
+        if (at > block.top && at < block.bottom) cuts.push({ end: at, next: at, rank: 1 });
+      }
+      const head = headOf(block.element);
+      if (head) {
+        const box = head.getBoundingClientRect();
+        block.head = { bottom: box.bottom - origin, height: box.height };
+      }
+    } else if (!whole(block.element)) {
       const lines = textLines(block.element, origin);
       // Two lines at least stay on each side of a split.
       for (let k = 1; k < lines.length - 1; k += 1) {
@@ -264,25 +340,37 @@ export function flowBreaks(column, height, rules = {}) {
   const pages = [];
   let start = Math.min(0, blocks[0].top);
   while (start < last - 0.5) {
-    const limit = start + height;
+    // A page that starts inside a table below its heading leaves room for the heading again.
+    const within = blocks.find((b) => b.head && start > b.head.bottom - 0.5 && start < b.bottom - 0.5);
+    const headRoom = within && within.head.height < height / 2 ? within.head.height : 0;
+    const limit = start + height - headRoom;
+    const repeat = headRoom ? { element: within.element, height: headRoom } : null;
     const forced = cuts.find((c) => c.forced && c.next > start && c.end <= limit);
     if (forced) {
-      pages.push({ start, end: forced.end });
+      pages.push({ start, end: forced.end, ...(repeat ? { repeat } : {}) });
       start = forced.next;
       continue;
     }
-    if (last <= limit) {
-      pages.push({ start, end: last });
+    if (last <= limit - reserve(start, last)) {
+      pages.push({ start, end: last, ...(repeat ? { repeat } : {}) });
       break;
     }
-    const open = cuts.filter((c) => c.next > start && c.end <= limit && c.end > start);
-    const cut = open.filter((c) => c.rank < 2).pop() ?? open.pop();
+    // Room kept at the foot for what the page carries there, such as footnotes, then the cut found again inside it.
+    let room = limit;
+    let cut = null;
+    for (let round = 0; round < 4; round += 1) {
+      const open = cuts.filter((c) => c.next > start && c.end <= room && c.end > start);
+      cut = open.filter((c) => c.rank < 2).pop() ?? open.pop() ?? null;
+      const needed = limit - reserve(start, cut ? cut.end : room);
+      if (needed >= room - 0.5) break;
+      room = Math.max(start + 24, needed);
+    }
     if (cut) {
-      pages.push({ start, end: cut.end });
+      pages.push({ start, end: cut.end, ...(repeat ? { repeat } : {}) });
       start = cut.next;
     } else {
       // A picture or a line taller than the page is cut where the page ends.
-      pages.push({ start, end: limit });
+      pages.push({ start, end: limit, ...(repeat ? { repeat } : {}) });
       start = limit;
     }
   }
@@ -290,12 +378,21 @@ export function flowBreaks(column, height, rules = {}) {
 }
 
 /** One page's window of a laid-out column, as copies of the blocks that show in it. */
-export function flowPage(column, { start, end }) {
+export function flowPage(column, { start, end, repeat = null }) {
   const box = column.getBoundingClientRect();
   const body = document.createElement('div');
+  const shift = repeat?.height ?? 0;
   body.style.position = 'relative';
   body.style.overflow = 'hidden';
-  body.style.height = `${Math.max(0, end - start)}px`;
+  body.style.height = `${Math.max(0, end - start) + shift}px`;
+  if (repeat) {
+    // The table's heading, alone, at the top of the page.
+    const rect = repeat.element.getBoundingClientRect();
+    const heading = repeat.element.cloneNode(true);
+    heading.querySelector(':scope > tbody')?.remove();
+    Object.assign(heading.style, { position: 'absolute', top: '0px', left: `${rect.left - box.left}px`, width: `${rect.width}px`, margin: '0', boxSizing: 'border-box' });
+    body.append(heading);
+  }
   for (const element of column.children) {
     const rect = element.getBoundingClientRect();
     const top = rect.top - box.top;
@@ -304,7 +401,7 @@ export function flowPage(column, { start, end }) {
     const copy = element.cloneNode(true);
     Object.assign(copy.style, {
       position: 'absolute',
-      top: `${top - start}px`,
+      top: `${top - start + shift}px`,
       left: `${rect.left - box.left}px`,
       width: `${rect.width}px`,
       margin: '0',

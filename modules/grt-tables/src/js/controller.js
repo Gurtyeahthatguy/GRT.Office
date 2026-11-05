@@ -4,6 +4,7 @@ import { parseCsv, sniff, coerce, toCsv } from './core/csv.js';
 import { inferSchema, createTableSql, quoteIdent } from './schema.js';
 
 export const PAGE_SIZE = 100;
+export const OBJECTS = '_grt_objects';
 
 export class TablesController {
   /**
@@ -235,6 +236,15 @@ export class TablesController {
     return this.backend.inspectSql(sql);
   }
 
+  /** Rows read for a form or a report: the query tab's result is left alone and nothing is redrawn. */
+  async read(sql, params = []) {
+    try {
+      return await this.backend.runQuery(sql, params);
+    } catch {
+      return null;
+    }
+  }
+
   async runQuery(sql, params = []) {
     this.lastError = null;
     try {
@@ -343,7 +353,7 @@ export class TablesController {
   async exportCsv({ fromQuery = false, separator = ',' } = {}) {
     const { columns, rows } = await this.allRows({ fromQuery });
     if (!fromQuery && !this.table) return '';
-    return toCsv([columns, ...rows], { separator });
+    return toCsv([columns, ...rows], { separator, neutralise: true });
   }
 
   /**
@@ -386,14 +396,55 @@ export class TablesController {
     return { name: table, columns: columns ?? [], rows, types: (columns ?? []).map((name) => declared.get(name) ?? '') };
   }
 
-  // The readable archive
+  // Saved queries, forms and reports, kept inside the database as Base keeps them inside its file.
 
-  async exportArchive(path) {
-    return this.backend.exportGrt(path);
+  async objects(kind) {
+    const result = await this.read(`SELECT name, body FROM ${OBJECTS} WHERE kind = ? ORDER BY name COLLATE NOCASE`, [kind]);
+    return (result?.rows ?? []).map(([name, body]) => {
+      try {
+        return { name, ...JSON.parse(body) };
+      } catch {
+        return { name };
+      }
+    });
   }
 
-  async importArchive(archive, into = null) {
-    this.database = await this.backend.importGrt(archive, into);
+  async saveObject(kind, name, body) {
+    this.requireWritable();
+    await this.backend.runSchema(`CREATE TABLE IF NOT EXISTS ${OBJECTS} (kind TEXT NOT NULL, name TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (kind, name));`);
+    await this.backend.runQuery(`INSERT OR REPLACE INTO ${OBJECTS} (kind, name, body) VALUES (?, ?, ?)`, [kind, String(name), JSON.stringify(body)]);
+    this.database = await this.backend.databaseInfo();
+    this.onChange({ objects: true });
+  }
+
+  async deleteObject(kind, name) {
+    this.requireWritable();
+    await this.backend.runQuery(`DELETE FROM ${OBJECTS} WHERE kind = ? AND name = ?`, [kind, name]);
+    this.onChange({ objects: true });
+  }
+
+  async renameObject(kind, from, to) {
+    this.requireWritable();
+    await this.backend.runQuery(`UPDATE ${OBJECTS} SET name = ? WHERE kind = ? AND name = ?`, [to, kind, from]);
+    this.onChange({ objects: true });
+  }
+
+  /** A database built from SQL that GRT wrote itself, such as a Base file read into SQLite. */
+  async importSql(schema, data, into = null) {
+    this.database = await this.backend.importSql(schema, data, into);
+    this.table = null;
+    await this.afterSchemaChange();
+    return this.database;
+  }
+
+  // The readable archive
+
+  async exportArchive(path, password = null) {
+    return this.backend.exportGrt(path, password);
+  }
+
+  async importArchive(archive, into = null, password = null) {
+    this.database = await this.backend.importGrt(archive, into, password);
     await this.afterSchemaChange();
     return this.database;
   }

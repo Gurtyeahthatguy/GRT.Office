@@ -1,9 +1,29 @@
 /** The presentation, independent of how it is drawn. */
 
 import { makeId } from './ids.js';
+import { footerBoxes } from './core/formats/slide-footer.js';
+import { normaliseChartData } from './core/formats/chart-object.js';
 
 export const FORMAT_VERSION = 1;
-export const KINDS = ['text', 'image', 'shape', 'line', 'table'];
+export const KINDS = ['text', 'image', 'shape', 'line', 'table', 'chart', 'formula'];
+
+/** Where a layout puts its placeholders, as parts of the slide: x, y, width, height. */
+export const LAYOUTS = {
+  title: { label: 'Title slide', places: [['title', 'title', 0.08, 0.3, 0.84, 0.2], ['subtitle', 'body', 0.15, 0.53, 0.7, 0.14]] },
+  titleContent: { label: 'Title and content', places: [['title', 'title', 0.06, 0.05, 0.88, 0.15], ['body', 'body', 0.06, 0.24, 0.88, 0.68]] },
+  twoContent: { label: 'Two contents', places: [['title', 'title', 0.06, 0.05, 0.88, 0.15], ['body', 'body', 0.06, 0.24, 0.43, 0.68], ['body2', 'body', 0.51, 0.24, 0.43, 0.68]] },
+  section: { label: 'Section header', places: [['title', 'title', 0.08, 0.36, 0.84, 0.18], ['subtitle', 'caption', 0.08, 0.56, 0.84, 0.1]] },
+  titleOnly: { label: 'Title only', places: [['title', 'title', 0.06, 0.05, 0.88, 0.15]] },
+  blank: { label: 'Blank', places: [] },
+  centredText: { label: 'Centred text', places: [['body', 'body', 0.12, 0.3, 0.76, 0.4]] },
+  threeLeft: { label: 'One left, two right', places: [['title', 'title', 0.06, 0.05, 0.88, 0.15], ['body', 'body', 0.06, 0.24, 0.43, 0.68], ['body2', 'body', 0.51, 0.24, 0.43, 0.33], ['body3', 'body', 0.51, 0.59, 0.43, 0.33]] },
+  threeRight: { label: 'Two left, one right', places: [['title', 'title', 0.06, 0.05, 0.88, 0.15], ['body', 'body', 0.06, 0.24, 0.43, 0.33], ['body2', 'body', 0.06, 0.59, 0.43, 0.33], ['body3', 'body', 0.51, 0.24, 0.43, 0.68]] },
+  twoStacked: { label: 'One over another', places: [['title', 'title', 0.06, 0.05, 0.88, 0.15], ['body', 'body', 0.06, 0.24, 0.88, 0.33], ['body2', 'body', 0.06, 0.59, 0.88, 0.33]] },
+  threeTop: { label: 'Two on top, one below', places: [['title', 'title', 0.06, 0.05, 0.88, 0.15], ['body', 'body', 0.06, 0.24, 0.43, 0.33], ['body2', 'body', 0.51, 0.24, 0.43, 0.33], ['body3', 'body', 0.06, 0.59, 0.88, 0.33]] },
+  four: { label: 'Four contents', places: [['title', 'title', 0.06, 0.05, 0.88, 0.15], ['body', 'body', 0.06, 0.24, 0.43, 0.33], ['body2', 'body', 0.51, 0.24, 0.43, 0.33], ['body3', 'body', 0.06, 0.59, 0.43, 0.33], ['body4', 'body', 0.51, 0.59, 0.43, 0.33]] },
+  six: { label: 'Six contents', places: [['title', 'title', 0.06, 0.05, 0.88, 0.15], ['body', 'body', 0.06, 0.24, 0.28, 0.33], ['body2', 'body', 0.36, 0.24, 0.28, 0.33], ['body3', 'body', 0.66, 0.24, 0.28, 0.33], ['body4', 'body', 0.06, 0.59, 0.28, 0.33], ['body5', 'body', 0.36, 0.59, 0.28, 0.33], ['body6', 'body', 0.66, 0.59, 0.28, 0.33]] },
+};
+export const PLACEHOLDERS = ['title', 'subtitle', 'body', 'body2', 'body3', 'body4', 'body5', 'body6'];
 
 /** Shapes, the same vocabulary GRT Graphs offers. */
 export const SHAPES = [
@@ -40,6 +60,18 @@ const DEFAULT_STYLES = {
   body: { font: 'sans', size: 32, color: '#333333', align: 'left', bold: false, italic: false },
   caption: { font: 'sans', size: 22, color: '#666666', align: 'left', bold: false, italic: false },
 };
+
+/** A slide's footer line: its text, the slide number and the date, each shown or not. */
+export function normaliseFooter(footer) {
+  if (!footer || typeof footer !== 'object') return null;
+  const out = {
+    text: typeof footer.text === 'string' ? footer.text.slice(0, 200) : '',
+    number: footer.number === true,
+    date: ['auto', 'fixed'].includes(footer.date) ? footer.date : null,
+    dateText: typeof footer.dateText === 'string' ? footer.dateText.slice(0, 60) : '',
+  };
+  return out.text || out.number || out.date ? out : null;
+}
 
 const DEFAULT_THEME = {
   background: '#ffffff',
@@ -106,14 +138,22 @@ export class SlidesModel {
 
   // Slides
 
+  /** A slide, or a master being edited as one. */
   slide(id) {
+    const master = this.masters?.find((m) => m.id === id);
+    if (master) {
+      master.elements ??= [];
+      return master;
+    }
     return this.slides.find((s) => s.id === id) ?? null;
   }
 
-  addSlide(atIndex = this.slides.length) {
+  addSlide(atIndex = this.slides.length, layout = null) {
     const slide = {
       id: makeId('s'),
-      master: null,
+      master: this.slides[Math.max(0, Math.min(atIndex, this.slides.length) - 1)]?.master ?? null,
+      // A new slide carries the footer of the one before it, as LibreOffice does.
+      footer: structuredClone(this.slides[Math.max(0, Math.min(atIndex, this.slides.length) - 1)]?.footer ?? null),
       // Present from the start, and null rather than absent.
       background: null,
       section: null,
@@ -122,8 +162,31 @@ export class SlidesModel {
       elements: [],
     };
     this.slides.splice(Math.max(0, Math.min(atIndex, this.slides.length)), 0, slide);
+    if (layout) this.setLayout(slide.id, layout);
     this.dirty = true;
     return slide;
+  }
+
+  /**
+   * Gives a slide a layout: its placeholders go where the layout puts them, made when missing,
+   * and placeholders the layout has no place for, if empty, go.
+   */
+  setLayout(slideId, layout) {
+    const slide = this.slide(slideId);
+    const spec = LAYOUTS[layout];
+    if (!slide || !spec) return;
+    const { w, h } = this.canvas;
+    const wanted = new Set(spec.places.map(([name]) => name));
+    slide.elements = slide.elements.filter((e) => !e.placeholder || wanted.has(e.placeholder)
+      || (e.kind === 'text' && (e.content ?? []).some((run) => run.text.trim() !== '')));
+    for (const [name, style, x, y, width, height] of spec.places) {
+      const box = { x: Math.round(x * w), y: Math.round(y * h), w: Math.round(width * w), h: Math.round(height * h) };
+      const existing = slide.elements.find((e) => e.placeholder === name);
+      if (existing) Object.assign(existing, box);
+      else this.addElement(slide.id, { kind: 'text', style, placeholder: name, ...box, content: [{ text: '' }] });
+    }
+    slide.layout = layout;
+    this.dirty = true;
   }
 
   /** Copies a slide, giving everything in it new identifiers. */
@@ -168,6 +231,32 @@ export class SlidesModel {
     if (!slide) return;
     // null means "follow the theme", which is different from white.
     slide.background = colour || null;
+    this.dirty = true;
+  }
+
+  /** A slide kept but skipped when presenting. */
+  /** Sets the footer of some slides, or takes it away with null. */
+  setFooter(ids, footer) {
+    const clean = normaliseFooter(footer);
+    for (const id of ids) {
+      const slide = this.slide(id);
+      if (slide) slide.footer = clean ? { ...clean } : null;
+    }
+    this.dirty = true;
+  }
+
+  /** Shows the master's objects on a slide, or hides them. */
+  setMasterObjects(id, shown) {
+    const slide = this.slide(id);
+    if (!slide) return;
+    if (shown) delete slide.hideMaster; else slide.hideMaster = true;
+    this.dirty = true;
+  }
+
+  setHidden(id, hidden) {
+    const slide = this.slide(id);
+    if (!slide) return;
+    if (hidden) slide.hidden = true; else delete slide.hidden;
     this.dirty = true;
   }
 
@@ -256,7 +345,11 @@ export class SlidesModel {
           cells: normaliseCells(element.cells, element.rows ?? 3, element.cols ?? 2),
         }
         : {}),
-      data: element.data ?? {},
+      ...(element.kind === 'chart'
+        ? { type: element.type ?? 'column', data: normaliseChartData(element.data), title: element.title ?? '', legend: element.legend ?? 'right', ...(element.stacked ? { stacked: element.stacked } : {}) }
+        : { data: element.data ?? {} }),
+      ...(element.kind === 'formula' ? { tex: element.tex ?? '', ...(element.mathml ? { mathml: element.mathml } : {}) } : {}),
+      ...(PLACEHOLDERS.includes(element.placeholder) ? { placeholder: element.placeholder } : {}),
     };
 
     slide.elements.push(created);
@@ -529,6 +622,18 @@ export class SlidesModel {
     return this.masters.find((m) => m.id === id) ?? null;
   }
 
+  renameMaster(id, name) {
+    const master = this.master(id);
+    if (master) master.name = String(name).slice(0, 100);
+    this.dirty = true;
+  }
+
+  deleteMaster(id) {
+    this.masters = this.masters.filter((m) => m.id !== id);
+    for (const slide of this.slides) if (slide.master === id) slide.master = null;
+    this.dirty = true;
+  }
+
   assignMaster(slideId, masterId) {
     const slide = this.slide(slideId);
     if (!slide) return;
@@ -541,11 +646,19 @@ export class SlidesModel {
     const slide = this.slide(slideId);
     if (!slide) return [];
 
-    const master = slide.master ? this.master(slide.master) : null;
+    const master = slide.master && !slide.hideMaster ? this.master(slide.master) : null;
     const fromMaster = (master?.elements ?? []).map((e) => ({ ...e, fromMaster: true }));
 
-    return [...fromMaster, ...slide.elements]
+    return [...fromMaster, ...slide.elements, ...this.footerElements(slide)]
       .sort((a, b) => (a.z ?? 0) - (b.z ?? 0));
+  }
+
+  /** The footer, date and number of a slide as text boxes along its foot, drawn but not edited. */
+  footerElements(slide, today = new Date()) {
+    return footerBoxes(slide.footer, this.canvas, this.slides.indexOf(slide) + 1, today).map(({ part, align, text, x, y, w, h }) => ({
+      id: `footer-${part}`, kind: 'text', style: 'caption', footerPart: part, align, valign: 'middle', rotation: 0, z: 10000, fromMaster: true,
+      x, y, w, h, content: [{ text }],
+    }));
   }
 
   // Whole document
@@ -581,6 +694,8 @@ export class SlidesModel {
       slide.notes ??= '';
       slide.transition ??= 'none';
       slide.master ??= null;
+      slide.footer = normaliseFooter(slide.footer);
+      if (slide.hideMaster !== true) delete slide.hideMaster;
       slide.background ??= null;
       slide.section ??= null;
       slide.elements ??= [];
@@ -603,6 +718,9 @@ export class SlidesModel {
           element.cells = normaliseCells(element.cells, element.rows, element.cols);
         }
         if (element.kind === 'text') element.content ??= [{ text: '' }];
+        if (element.kind === 'chart') element.data = normaliseChartData(element.data);
+        if (element.kind === 'formula') element.tex = typeof element.tex === 'string' ? element.tex.slice(0, 5000) : '';
+        if (!KINDS.includes(element.kind)) element.kind = 'text';
       }
     }
 

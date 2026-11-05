@@ -33,7 +33,8 @@ export function paginate(blocks, pageHeight) {
     // foot of a page.
     let groupHeight = block.height;
     let groupEnd = i;
-    while (blocks[groupEnd]?.keepWithNext && groupEnd + 1 < blocks.length) {
+    // A page break asked for wins over keeping a block with the next.
+    while (blocks[groupEnd]?.keepWithNext && groupEnd + 1 < blocks.length && !blocks[groupEnd + 1].breakBefore) {
       groupEnd += 1;
       groupHeight += blocks[groupEnd].height;
     }
@@ -104,12 +105,14 @@ export class Measurer {
       const lineHeight = (style.size ?? 11) * (style.lineHeight ?? 1.5) * (96 / 72);
 
       const height = element?.getBoundingClientRect().height ?? lineHeight;
+      // A table breaks between rows, so its rows count as its lines.
+      const rows = block.kind === 'table' ? block.rows.length : 0;
 
       const entry = {
         id: block.id,
         height,
-        lineHeight,
-        lines: Math.max(1, Math.round(height / lineHeight)),
+        lineHeight: rows ? height / rows : lineHeight,
+        lines: rows || Math.max(1, Math.round(height / lineHeight)),
         // A heading belongs with what follows it; an image cannot be split.
         keepWithNext: block.kind === 'heading',
         breakBefore: !!block.breakBefore,
@@ -129,7 +132,9 @@ function signatureOf(block) {
     block.w, block.h,
     block.kind === 'list'
       ? block.items.map((i) => [i.level, i.runs.map((r) => r.text).join('')])
-      : (block.runs ?? []).map((r) => r.text).join(''),
+      : block.kind === 'table'
+        ? [block.widths, block.borders, block.rows.map((row) => [row.header, row.cells.map((c) => [c.colspan, c.rowspan, c.runs.map((r) => r.text).join('')])])]
+        : (block.runs ?? []).map((r) => r.text).join(''),
   ]);
 }
 

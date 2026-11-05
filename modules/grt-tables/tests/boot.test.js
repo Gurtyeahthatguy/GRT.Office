@@ -311,7 +311,7 @@ describe('the query editor', () => {
 
     // The dialog stub answers No, so the statement must not have run.
     const asked = backend.calls.some(asking);
-    const ran = backend.calls.some((c) => c.command === 'run_query');
+    const ran = backend.calls.some((c) => c.command === 'run_query' && /DELETE/.test(c.payload?.sql));
     expect(asked).toBe(true);
     expect(ran).toBe(false);
   });
@@ -323,8 +323,9 @@ describe('the query editor', () => {
       await settle();
       document.getElementById('query-input').value = 'DELETE FROM contacts';
       document.getElementById('btn-run-query').click();
-      await until(() => backend.calls.some((c) => c.command === 'run_query'));
-      expect(backend.calls.some((c) => c.command === 'run_query')).toBe(true);
+      const deleting = (c) => c.command === 'run_query' && /DELETE/.test(c.payload?.sql);
+      await until(() => backend.calls.some(deleting));
+      expect(backend.calls.some(deleting)).toBe(true);
     } finally {
       delete window.__ANSWER__;
     }
@@ -336,9 +337,10 @@ describe('the query editor', () => {
 
     document.getElementById('query-input').value = 'SELECT n FROM t';
     document.getElementById('btn-run-query').click();
-    await until(() => backend.calls.some((c) => c.command === 'run_query'));
+    const selecting = (c) => c.command === 'run_query' && c.payload?.sql === 'SELECT n FROM t';
+    await until(() => backend.calls.some(selecting));
 
-    expect(backend.calls.some((c) => c.command === 'run_query')).toBe(true);
+    expect(backend.calls.some(selecting)).toBe(true);
   });
 });
 

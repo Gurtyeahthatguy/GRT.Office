@@ -5,6 +5,7 @@ import { Viewer } from './viewer.js';
 import { Thumbnails } from './thumbnails.js';
 import { UndoStack } from './core/undo.js';
 import { buildBytesFromPlan } from './save.js';
+import { LEVELS } from './compress.js';
 import { encodeSession, decodeSession } from './session.js';
 import { Keeper } from './core/keeper.js';
 import { inspectBytes, renderReport } from './fingerprint.js';
@@ -16,12 +17,14 @@ import { printPreview, isPrintPreviewOpen } from './core/print.js';
 import { PAGE_SIZES } from './core/editor/model.js';
 import { pageRenderer, printablePages } from './printing.js';
 import { escapeHtml } from './core/panel.js';
+import { readPackage, writePackage } from './core/package.js';
+import { withPassword, passwordFields, wirePasswordFields, passwordFrom } from './core/protection.js';
 import {
   showPanel, readFields, isDialogOpen,
   stampForm, cropForm, metadataForm, splitForm, settingsForm,
 } from './dialogs.js';
 import {
-  pickPdfToOpen, pickPdfToSave, pickDirectory, readFileBytes, writeFileBytes, fileExists,
+  pickPdfToOpen, pickPdfToSave, pickDirectory, readFileBytes, writeFileBytes, readPdf, writePdf, fileExists,
   runtimeInfo, onFilesDropped, baseName, withSuffix, joinPath,
 } from './io.js';
 
@@ -43,6 +46,8 @@ const viewer = new Viewer(ui.pages);
 const thumbs = new Thumbnails(ui.thumbs, viewer);
 
 let model = null;
+/** The password the document is saved with, or null. */
+let password = null;
 let undo = null;
 let busy = false;
 let searchHits = [];
@@ -67,7 +72,9 @@ const keeper = new Keeper({
   name: () => baseName(model?.path) ?? 'Untitled',
   path: () => model?.path ?? null,
   canSaveInPlace: () => !!model?.path && /\.pdf$/i.test(model.path),
-  writeCopy: (path) => writeFileBytes(encodeSession(model, exportOptions), path),
+  writeCopy: (path) => (password
+    ? writePackage(path, [{ name: 'session', data: encodeSession(model, exportOptions) }], { protection: 'grt', password })
+    : writeFileBytes(encodeSession(model, exportOptions), path)),
   save: (options) => saveDocument(false, options),
   openRecovered: (file, meta) => openRecovered(file, meta),
 }, { program: 'GRT Read', extension: 'session', toast });
@@ -90,7 +97,10 @@ async function guard(label, action) {
 // Opening
 
 async function openPath(path) {
-  const bytes = await readFileBytes(path);
+  const opened = await withPassword(baseName(path), (given) => readPdf(path, given));
+  if (!opened) return;
+  const bytes = opened.value;
+  password = opened.password;
 
   await viewer.reset();
   // The page count comes from PDF.js, so the model is built already knowing
@@ -110,7 +120,16 @@ async function openConfirmed(path) {
 
 /** Opens a recovery copy as the document it was, with its changes unsaved. */
 async function openRecovered(file, meta) {
-  const session = decodeSession(await readFileBytes(file));
+  let raw = await readFileBytes(file);
+  let sealedWith = null;
+  // A copy of a document with a password is sealed with it.
+  if (raw[0] === 0x50 && raw[1] === 0x4B) {
+    const opened = await withPassword(meta.name || 'Untitled', (given) => readPackage(file, { password: given }));
+    if (!opened) throw new Error('the copy is kept for next time');
+    raw = opened.value.bytes('session');
+    sealedWith = opened.password;
+  }
+  const session = decodeSession(raw);
 
   await viewer.reset();
   const counts = [];
@@ -122,6 +141,7 @@ async function openRecovered(file, meta) {
   }
 
   model = new DocumentModel(session.sources[0], counts[0], meta.path ?? null);
+  password = sealedWith;
   for (let id = 1; id < session.sources.length; id += 1) {
     model.appendSource(session.sources[id], counts[id]);
   }
@@ -149,7 +169,9 @@ async function showDocument(options) {
 }
 
 async function appendPath(path) {
-  const bytes = await readFileBytes(path);
+  const opened = await withPassword(baseName(path), (given) => readPdf(path, given));
+  if (!opened) return;
+  const bytes = opened.value;
   const sourceId = model.sources.length;
   const pageCount = await viewer.addSource(sourceId, bytes);
 
@@ -375,21 +397,39 @@ function reportContext() {
 }
 
 /** The path every write goes through. */
-async function writeWithConfirmation(bytes, path, title) {
+async function writeWithConfirmation(bytes, path, title, sealWith = password) {
   if (settings().fingerprintBeforeSave) {
     const report = await inspectBytes(bytes);
     const approved = await showPanel(title, renderReport(report, reportContext()), 'Save');
     if (!approved) return false;
   }
-  await writeFileBytes(bytes, path);
+  await writePdf(bytes, path, sealWith);
   return true;
+}
+
+/** Asks whether the copy gets a password; undefined when the person cancels. */
+async function askSavePassword() {
+  let problem = '';
+  for (;;) {
+    const answer = showPanel('Save as', `
+      ${passwordFields(password, problem)}
+      <p class="hint">A PDF with a password is sealed with AES-256 and opens in any PDF reader that asks for it.</p>`, 'Choose file');
+    wirePasswordFields();
+    if (!await answer) return undefined;
+    const chosen = passwordFrom(readFields());
+    if (!chosen.error) return chosen.password;
+    problem = chosen.error;
+  }
 }
 
 /** Saves the document; silent, it asks and reports nothing. Resolves false when nothing was saved. */
 async function saveDocument(forceDialog, { silent = false } = {}) {
   let path = forceDialog ? null : model.path;
+  let sealWith = password;
   if (!path) {
     if (silent) return false;
+    sealWith = await askSavePassword();
+    if (sealWith === undefined) return false;
     path = await pickPdfToSave(model.path ?? 'document.pdf', 'Save PDF');
     if (!path) return false;
   }
@@ -398,11 +438,12 @@ async function saveDocument(forceDialog, { silent = false } = {}) {
   const revision = keeper.revision;
   const bytes = await buildBytesFromPlan(model, model.buildPlan(), buildOptions());
   if (silent) {
-    await writeFileBytes(bytes, path);
-  } else if (!await writeWithConfirmation(bytes, path, `Fingerprint: ${baseName(path)}`)) {
+    await writePdf(bytes, path, sealWith);
+  } else if (!await writeWithConfirmation(bytes, path, `Fingerprint: ${baseName(path)}`, sealWith)) {
     return false;
   }
 
+  password = sealWith;
   model.path = path;
   model.dirty = keeper.revision !== revision;
   undo.markSaved();
@@ -431,7 +472,26 @@ function extract() {
     const written = await writeWithConfirmation(
       bytes, path, `Fingerprint: ${targets.length} extracted page(s)`,
     );
-    if (written) toast(`Extracted ${targets.length} page(s)`);
+    if (written) toast(`Extracted ${targets.length} page(s)${password ? ', with the password of the document' : ''}`);
+  });
+}
+
+/** A copy with its pictures encoded again, smaller; the document open stays as it is. */
+function saveSmaller() {
+  return guard('Compress', async () => {
+    const confirmed = await showPanel('Save a smaller copy', `
+      ${Object.entries(LEVELS).map(([key, level], i) => `<label class="inline"><input type="radio" name="level" data-field="level_${key}"${i === 1 ? ' checked' : ''}> ${escapeHtml(level.label)}</label>`).join('')}
+      <p class="hint">Pictures are drawn again at the size chosen and kept only where that makes them smaller. Text and drawings are not touched.</p>`, 'Choose file');
+    if (!confirmed) return;
+    const fields = readFields();
+    const level = LEVELS[Object.keys(LEVELS).find((key) => fields[`level_${key}`]) ?? 'medium'];
+    const path = await pickPdfToSave(withSuffix(model.path, '-smaller'), 'Save the smaller copy');
+    if (!path) return;
+    const bytes = await buildBytesFromPlan(model, model.buildPlan(), { ...buildOptions(), compress: level });
+    const before = model.sources.reduce((n, source) => n + (source?.bytes?.length ?? 0), 0);
+    const written = await writeWithConfirmation(bytes, path, `Fingerprint: ${baseName(path)}`);
+    const size = (n) => `${(n / 1048576).toFixed(n < 1048576 ? 2 : 1)} MB`;
+    if (written) toast(`Saved ${baseName(path)}: ${size(before)} became ${size(bytes.length)}`);
   });
 }
 
@@ -461,10 +521,10 @@ function split() {
         model, model.buildPlanFor(indices), buildOptions(false),
       );
       const name = `${prefix}-${String(chunk + 1).padStart(width, '0')}.pdf`;
-      await writeFileBytes(bytes, joinPath(directory, name));
+      await writePdf(bytes, joinPath(directory, name), password);
     }
 
-    toast(`Wrote ${chunks} file${chunks === 1 ? '' : 's'} into ${baseName(directory)}`);
+    toast(`Wrote ${chunks} file${chunks === 1 ? '' : 's'} into ${baseName(directory)}${password ? ', with the password of the document' : ''}`);
   });
 }
 
@@ -610,6 +670,7 @@ function commands() {
     needsDoc('Append another PDF…', '', () => el('btn-merge').click()),
     needsDoc('Split into several files…', '', () => split()),
     needsDoc('Extract selected pages…', '', () => extract()),
+    needsDoc('Save a smaller copy…', 'Compress', () => saveSmaller()),
     needsDoc('Fingerprint', '', () => showFingerprint()),
     needsDoc('Print…', 'Ctrl+P', () => guard('Print', printDocument)),
 

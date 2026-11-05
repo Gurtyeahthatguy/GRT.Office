@@ -1,6 +1,6 @@
 /** Formula text to tokens. */
 
-export const ERRORS = ['#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#N/A', '#NUM!', '#NULL!'];
+export const ERRORS = ['#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#N/A', '#NUM!', '#NULL!', '#SPILL!', '#CALC!'];
 
 export const TOKEN = {
   number: 'number',
@@ -15,6 +15,8 @@ export const TOKEN = {
   separator: 'separator',
   colon: 'colon',
   sheet: 'sheet',             // Sheet2! prefix.
+  spill: 'spill',             // the # after A1#.
+  array: 'array',             // {1,2;3,4}.
 };
 
 const OPERATORS = ['<=', '>=', '<>', '+', '-', '*', '/', '^', '%', '&', '=', '<', '>'];
@@ -37,6 +39,7 @@ export function tokenize(text) {
       if (/\s/.test(character)) { i += 1; continue; }
 
       if (character === '"') { i = readString(source, i, tokens); continue; }
+      if (character === '{') { i = readArray(source, i, tokens); continue; }
       if (character === '(') { tokens.push({ type: TOKEN.open }); i += 1; continue; }
       if (character === ')') { tokens.push({ type: TOKEN.close }); i += 1; continue; }
       if (character === ',' || character === ';') {
@@ -44,6 +47,10 @@ export function tokenize(text) {
       }
       if (character === ':') { tokens.push({ type: TOKEN.colon }); i += 1; continue; }
 
+      // A1# is the whole of what A1 spills.
+      if (character === '#' && tokens.at(-1)?.type === TOKEN.reference && !ERRORS.some((e) => source.startsWith(e, i))) {
+        tokens.push({ type: TOKEN.spill }); i += 1; continue;
+      }
       if (character === '#') { i = readError(source, i, tokens); continue; }
       if (/[0-9]/.test(character) || (character === '.' && /[0-9]/.test(source[i + 1] ?? ''))) {
         i = readNumber(source, i, tokens); continue;
@@ -61,6 +68,39 @@ export function tokenize(text) {
   }
 
   return { tokens, error: null };
+}
+
+/** Reads an array constant: columns split by commas, rows by semicolons. */
+function readArray(source, start, tokens) {
+  const rows = [[]];
+  let i = start + 1;
+  for (;;) {
+    while (/\s/.test(source[i] ?? '')) i += 1;
+    const c = source[i];
+    if (c === undefined) throw new Failure('An array was never closed');
+    if (c === '}') { i += 1; break; }
+    if (c === ',') { i += 1; continue; }
+    if (c === ';') { rows.push([]); i += 1; continue; }
+    const found = [];
+    if (c === '"') i = readString(source, i, found);
+    else if (c === '#') i = readError(source, i, found);
+    else if (/[0-9.+-]/.test(c)) {
+      const sign = c === '-' ? -1 : 1;
+      if (c === '-' || c === '+') i += 1;
+      i = readNumber(source, i, found);
+      found[0].value *= sign;
+    } else {
+      const word = /^(TRUE|FALSE)/i.exec(source.slice(i));
+      if (!word) throw new Failure('An array may hold only numbers, text, logical values and errors');
+      found.push({ type: TOKEN.boolean, value: word[1].toUpperCase() === 'TRUE' });
+      i += word[1].length;
+    }
+    rows[rows.length - 1].push(found[0].value);
+  }
+  const width = rows[0].length;
+  if (width === 0 || rows.some((row) => row.length !== width)) throw new Failure('Every row of an array must be as long as the first');
+  tokens.push({ type: TOKEN.array, value: rows });
+  return i;
 }
 
 /** Reads a literal string. */
@@ -137,7 +177,8 @@ function readWord(source, start, tokens) {
     return i;
   }
 
-  if (/^\$?[A-Za-z]+\$?[0-9]+$/.test(word)) {
+  // DAYS360( and LOG10( are functions, not cells.
+  if (/^\$?[A-Za-z]+\$?[0-9]+$/.test(word) && source[i] !== '(') {
     tokens.push({ type: TOKEN.reference, value: word });
     return i;
   }

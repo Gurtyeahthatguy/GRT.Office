@@ -9,17 +9,35 @@ export const DEFAULT_COLUMN_WIDTH = 96;
 export const DEFAULT_ROW_HEIGHT = 24;
 
 export const DEFAULT_STYLES = {
-  normal: {},
-  header: { bold: true, bg: '#eeeeee' },
-  currency: { format: '#,##0.00' },
-  percent: { format: '0.00%' },
-  date: { format: 'yyyy-mm-dd' },
+  normal: { name: 'Default' },
+  header: { name: 'Heading', bold: true, bg: '#eeeeee' },
+  currency: { name: 'Currency', format: '#,##0.00' },
+  percent: { name: 'Percent', format: '0.00%' },
+  date: { name: 'Date', format: 'yyyy-mm-dd' },
+  // LibreOffice's own cell styles, with its colours, so a sheet styled there looks the same here.
+  accent: { name: 'Accent', bold: true },
+  accent1: { name: 'Accent 1', bold: true, color: '#ffffff', bg: '#000000' },
+  accent2: { name: 'Accent 2', bold: true, color: '#ffffff', bg: '#808080' },
+  accent3: { name: 'Accent 3', bold: true, bg: '#dddddd' },
+  heading1: { name: 'Heading 1', bold: true, size: 18 },
+  heading2: { name: 'Heading 2', bold: true, size: 12 },
+  good: { name: 'Good', color: '#006600', bg: '#ccffcc' },
+  bad: { name: 'Bad', color: '#cc0000', bg: '#ffcccc' },
+  neutral: { name: 'Neutral', color: '#996600', bg: '#ffffcc' },
+  error: { name: 'Error', bold: true, color: '#ffffff', bg: '#cc0000' },
+  warning: { name: 'Warning', color: '#cc0000' },
+  footnote: { name: 'Footnote', italic: true, color: '#808080', size: 10 },
+  note: { name: 'Note', color: '#333333', bg: '#ffffcc', borders: { top: { style: 'solid', width: 1, color: '#808080' }, bottom: { style: 'solid', width: 1, color: '#808080' }, left: { style: 'solid', width: 1, color: '#808080' }, right: { style: 'solid', width: 1, color: '#808080' } } },
 };
 
 /** How a sheet prints, when nothing has been chosen; files read and write the same. */
 export const PRINT_DEFAULTS = SHEET_PRINT_DEFAULTS;
 
 const index = (value) => (Number.isInteger(value) && value >= 0 ? value : null);
+
+/** Whether something is a block of cells: top, left, bottom and right, in order. */
+export const isArea = (a) => Boolean(a) && [a.top, a.left, a.bottom, a.right].every((v) => index(v) !== null)
+  && a.bottom >= a.top && a.right >= a.left;
 
 /** A sheet's print settings, every field present and sane. */
 export function normalisePrint(raw = {}) {
@@ -87,14 +105,36 @@ const nextId = (prefix) => {
 
 /** One sheet. `cells` maps `"row,col"` to `{v, f, s}`. */
 export class Sheet {
-  constructor({ id = null, name = 'Sheet1', cells = {}, cols = {}, rows = {}, frozen = null, print = null } = {}) {
+  constructor({
+    id = null, name = 'Sheet1', cells = {}, cols = {}, rows = {}, frozen = null, print = null,
+    merges = [], filter = null, conditions = [], validations = [], pivots = [], hidden = false, tab = null,
+  } = {}) {
     this.id = id ?? nextId('sh');
     this.name = name;
+    this.hidden = Boolean(hidden);
+    /** The colour of the sheet's tab, as `#rrggbb`, or null. */
+    this.tab = /^#[0-9a-f]{6}$/i.test(tab ?? '') ? tab.toLowerCase() : null;
     this.cells = new Map(Object.entries(cells));
     this.cols = new Map(Object.entries(cols).map(([k, v]) => [Number(k), v]));
     this.rows = new Map(Object.entries(rows).map(([k, v]) => [Number(k), v]));
     this.frozen = frozen ? { rows: frozen.rows ?? 0, cols: frozen.cols ?? 0 } : { rows: 0, cols: 0 };
     this.print = normalisePrint(print ?? {});
+    /** Blocks shown as one cell, the top-left one holding the content. */
+    this.merges = (merges ?? []).filter(isArea).map((area) => ({ ...area }));
+    /** The autofilter: the area it covers and, by column offset, what each column lets through. */
+    this.filter = filter && isArea(filter.area) ? { area: { ...filter.area }, columns: { ...(filter.columns ?? {}) } } : null;
+    /** Rows the filter hides, worked out again from the filter rather than saved. */
+    this.filtered = new Set();
+    /** Formatting that depends on a cell's value, in the order it is tried. */
+    this.conditions = structuredClone(conditions ?? []);
+    /** Rules on what cells accept. */
+    this.validations = structuredClone(validations ?? []);
+    /** Pivot tables whose results sit on this sheet, each with the area it last filled. */
+    this.pivots = structuredClone(pivots ?? []).filter((p) => p && typeof p.source === 'string' && (!p.area || isArea(p.area)));
+    /** Values a formula spills into the cells beside it, worked out again rather than saved. */
+    this.spills = new Map();
+    /** The cells whose formula spills, with the size of the block. */
+    this.anchors = new Map();
   }
 
   /**
@@ -128,6 +168,21 @@ export class Sheet {
       const span = shiftSpan(print.repeatRows.top, print.repeatRows.bottom, change);
       print.repeatRows = span ? { top: span[0], bottom: span[1] } : null;
     }
+    // Merged blocks, the filter and the areas of conditions and rules move with their cells.
+    const shiftArea = (area) => {
+      const span = shiftSpan(area[low], area[high], change);
+      return span ? { ...area, [low]: span[0], [high]: span[1] } : null;
+    };
+    this.merges = this.merges.map(shiftArea).filter(Boolean);
+    if (this.filter) {
+      const area = shiftArea(this.filter.area);
+      this.filter = area ? { ...this.filter, area } : null;
+    }
+    for (const list of ['conditions', 'validations']) {
+      this[list] = this[list].map((rule) => ({ ...rule, area: shiftArea(rule.area) })).filter((rule) => rule.area);
+    }
+    for (const pivot of this.pivots) if (pivot.area) pivot.area = shiftArea(pivot.area) ?? pivot.area;
+
     const breaks = change.axis === 'row' ? 'rowBreaks' : 'colBreaks';
     print[breaks] = print[breaks].map((at) => shiftIndex(at, change)).filter((at) => at !== null && at > 0);
     this.print = normalisePrint(print);
@@ -139,8 +194,10 @@ export class Sheet {
 
   /** The stored value of a cell. */
   valueAt(row, col) {
-    const cell = this.cells.get(key(row, col));
-    return cell === undefined ? null : (cell.v ?? null);
+    const at = key(row, col);
+    const cell = this.cells.get(at);
+    if (cell !== undefined && (cell.v !== undefined || cell.f !== undefined)) return cell.v ?? null;
+    return this.spills.has(at) ? this.spills.get(at) : null;
   }
 
   formulaAt(row, col) {
@@ -152,7 +209,7 @@ export class Sheet {
   }
 
   /** Writes a cell; null for everything removes it. */
-  set(row, col, { v = undefined, f = undefined, s = undefined } = {}) {
+  set(row, col, { v = undefined, f = undefined, s = undefined, sp = undefined } = {}) {
     const at = key(row, col);
     const existing = this.cells.get(at);
     const cell = { ...(existing ?? {}) };
@@ -160,6 +217,8 @@ export class Sheet {
     if (v !== undefined) { if (v === null) delete cell.v; else cell.v = v; }
     if (f !== undefined) { if (f === null) delete cell.f; else cell.f = f; }
     if (s !== undefined) { if (s === null) delete cell.s; else cell.s = s; }
+    // Marks a formula that spills, so it runs again when the document opens.
+    if (sp !== undefined) { if (sp === null) delete cell.sp; else cell.sp = sp; }
 
     if (Object.keys(cell).length === 0) this.cells.delete(at);
     else this.cells.set(at, cell);
@@ -172,11 +231,32 @@ export class Sheet {
   }
 
   columnWidth(col) {
-    return this.cols.get(col)?.w ?? DEFAULT_COLUMN_WIDTH;
+    const column = this.cols.get(col);
+    return column?.hidden ? 0 : column?.w ?? DEFAULT_COLUMN_WIDTH;
   }
 
   rowHeight(row) {
-    return this.rows.get(row)?.h ?? DEFAULT_ROW_HEIGHT;
+    const line = this.rows.get(row);
+    if (line?.hidden || this.filtered.has(row)) return 0;
+    return line?.h ?? DEFAULT_ROW_HEIGHT;
+  }
+
+  /** Whether a row or column is out of sight, hidden by hand or by the filter. */
+  isHidden(axis, index) {
+    if (axis === 'row') return Boolean(this.rows.get(index)?.hidden) || this.filtered.has(index);
+    return Boolean(this.cols.get(index)?.hidden);
+  }
+
+  setHidden(axis, index, hidden) {
+    const map = axis === 'row' ? this.rows : this.cols;
+    const line = { ...(map.get(index) ?? {}) };
+    if (hidden) line.hidden = true; else delete line.hidden;
+    if (Object.keys(line).length === 0) map.delete(index); else map.set(index, line);
+  }
+
+  /** The merged block a cell belongs to, or null. */
+  mergeAt(row, col) {
+    return this.merges.find((m) => row >= m.top && row <= m.bottom && col >= m.left && col <= m.right) ?? null;
   }
 
   setColumnWidth(col, width) {
@@ -204,6 +284,15 @@ export class Sheet {
       if (col > right) right = col;
     }
 
+    for (const [at, anchor] of this.anchors) {
+      if (anchor.blocked) continue;
+      const { row, col } = parseKey(at);
+      top = Math.min(top, row);
+      left = Math.min(left, col);
+      bottom = Math.max(bottom, row + anchor.rows - 1);
+      right = Math.max(right, col + anchor.cols - 1);
+    }
+
     return top === Infinity ? null : { top, left, bottom, right };
   }
 
@@ -222,7 +311,14 @@ export class Sheet {
       cols: Object.fromEntries([...this.cols.entries()].sort((a, b) => a[0] - b[0])),
       rows: Object.fromEntries([...this.rows.entries()].sort((a, b) => a[0] - b[0])),
       frozen: this.frozen,
+      ...(this.hidden ? { hidden: true } : {}),
+      ...(this.tab ? { tab: this.tab } : {}),
       ...(printJson(this.print) ? { print: printJson(this.print) } : {}),
+      ...(this.merges.length > 0 ? { merges: this.merges.map((m) => ({ ...m })) } : {}),
+      ...(this.filter ? { filter: structuredClone(this.filter) } : {}),
+      ...(this.conditions.length > 0 ? { conditions: structuredClone(this.conditions) } : {}),
+      ...(this.validations.length > 0 ? { validations: structuredClone(this.validations) } : {}),
+      ...(this.pivots.length > 0 ? { pivots: structuredClone(this.pivots) } : {}),
     };
   }
 }
@@ -240,6 +336,8 @@ export class GridModel {
     this.sheets = [];
     this.styles = structuredClone(DEFAULT_STYLES);
     this.charts = [];
+    /** Defined names: upper-case name to the text of what it stands for, such as `=Sheet1!$A$1:$A$9`. */
+    this.names = {};
     this.path = null;
     this.dirty = false;
     this.activeSheetId = null;
@@ -253,8 +351,13 @@ export class GridModel {
   load(document) {
     this.sheets = (document.sheets ?? []).map((sheet) => new Sheet(sheet));
     this.styles = { ...structuredClone(DEFAULT_STYLES), ...(document.styles ?? {}) };
-    this.charts = structuredClone(document.charts ?? []);
-    this.activeSheetId = this.sheets[0]?.id ?? null;
+    // A chart read from a file names its sheet by position.
+    this.charts = structuredClone(document.charts ?? []).map((chart) => (typeof chart.sheet === 'number'
+      ? { ...chart, sheet: this.sheets[chart.sheet]?.id ?? this.sheets[0]?.id } : chart));
+    this.names = { ...(document.names ?? {}) };
+    // One sheet at least stays in view.
+    if (this.sheets.length && this.sheets.every((s) => s.hidden)) this.sheets[0].hidden = false;
+    this.activeSheetId = this.sheets.find((s) => !s.hidden)?.id ?? this.sheets[0]?.id ?? null;
   }
 
   get sheet() {
@@ -291,11 +394,69 @@ export class GridModel {
     if (index === -1) return null;
 
     const [removed] = this.sheets.splice(index, 1);
-    if (this.activeSheetId === id) {
-      this.activeSheetId = this.sheets[Math.min(index, this.sheets.length - 1)].id;
-    }
+    if (this.sheets.every((s) => s.hidden)) this.sheets[0].hidden = false;
+    this.charts = this.charts.filter((chart) => chart.sheet !== id);
+    if (this.activeSheetId === id) this.activeSheetId = this.nearestShown(index);
     this.dirty = true;
     return removed;
+  }
+
+  /** The id of the shown sheet nearest a position, looking forward first. */
+  nearestShown(index) {
+    const after = this.sheets.slice(index).find((s) => !s.hidden);
+    const before = this.sheets.slice(0, index).reverse().find((s) => !s.hidden);
+    return (after ?? before ?? this.sheets[0]).id;
+  }
+
+  /** Hides or shows a sheet; the last one shown is not hidden. */
+  setSheetHidden(id, hidden) {
+    const sheet = this.sheetById(id);
+    if (!sheet || sheet.hidden === hidden) return false;
+    if (hidden && this.sheets.filter((s) => !s.hidden).length <= 1) return false;
+    sheet.hidden = hidden;
+    if (hidden && this.activeSheetId === id) this.activeSheetId = this.nearestShown(this.sheets.indexOf(sheet));
+    this.dirty = true;
+    return true;
+  }
+
+  /** Moves a sheet to a position among the sheets. */
+  moveSheet(id, to) {
+    const from = this.sheets.findIndex((s) => s.id === id);
+    if (from === -1) return false;
+    const at = Math.max(0, Math.min(this.sheets.length - 1, to));
+    if (at === from) return false;
+    const [sheet] = this.sheets.splice(from, 1);
+    this.sheets.splice(at, 0, sheet);
+    this.dirty = true;
+    return true;
+  }
+
+  /** A copy of a sheet, with its charts, put at a position under a free name. */
+  copySheet(id, to = null, name = null) {
+    const source = this.sheetById(id);
+    if (!source) return null;
+    const { id: _id, name: _name, ...rest } = source.toJSON();
+    const taken = new Set(this.sheets.map((s) => s.name.toLowerCase()));
+    const base = name ?? `${source.name}_2`;
+    let chosen = base;
+    for (let n = 2; taken.has(chosen.toLowerCase()); n += 1) chosen = `${name ?? source.name}_${n}`;
+    // Pivot tables stay with the sheet they were made on.
+    const copy = new Sheet({ ...rest, name: chosen, hidden: false, pivots: [] });
+    this.sheets.splice(to ?? this.sheets.indexOf(source) + 1, 0, copy);
+    for (const chart of this.charts.filter((c) => c.sheet === id)) {
+      this.charts.push({ ...structuredClone(chart), id: nextId('chart'), sheet: copy.id });
+    }
+    this.dirty = true;
+    return copy;
+  }
+
+  /** Sets the colour of a sheet's tab; null takes it away. */
+  setTabColour(id, colour) {
+    const sheet = this.sheetById(id);
+    if (!sheet) return false;
+    sheet.tab = /^#[0-9a-f]{6}$/i.test(colour ?? '') ? colour.toLowerCase() : null;
+    this.dirty = true;
+    return true;
   }
 
   renameSheet(id, name) {
@@ -317,6 +478,7 @@ export class GridModel {
       sheets: this.sheets.map((sheet) => sheet.toJSON()),
       styles: structuredClone(this.styles),
       charts: structuredClone(this.charts),
+      names: { ...this.names },
       activeSheetId: this.activeSheetId,
       dirty: this.dirty,
     };
@@ -326,8 +488,33 @@ export class GridModel {
     this.sheets = state.sheets.map((sheet) => new Sheet(sheet));
     this.styles = structuredClone(state.styles);
     this.charts = structuredClone(state.charts);
+    this.names = { ...(state.names ?? {}) };
     this.activeSheetId = state.activeSheetId;
     this.dirty = state.dirty;
+  }
+
+  /** The document as other programs' formats take it: spilled values written out, block formulas marked with their size. */
+  exportJSON() {
+    const json = this.toJSON();
+    json.sheets.forEach((out, i) => {
+      const sheet = this.sheets[i];
+      const cells = { ...out.cells };
+      for (const [at, cell] of Object.entries(cells)) {
+        if (cell.sp) {
+          const { sp, ...rest } = cell;
+          cells[at] = rest;
+        }
+      }
+      for (const [at, anchor] of sheet.anchors) {
+        if (!anchor.blocked && cells[at]) cells[at] = { ...cells[at], a: [anchor.rows, anchor.cols] };
+      }
+      for (const [at, value] of sheet.spills) {
+        if (value !== null && value !== undefined) cells[at] = { ...(cells[at] ?? {}), v: value };
+      }
+      out.cells = cells;
+      if (sheet.filtered.size > 0) out.filteredRows = [...sheet.filtered].sort((x, y) => x - y);
+    });
+    return json;
   }
 
   toJSON() {
@@ -337,6 +524,7 @@ export class GridModel {
       sheets: this.sheets.map((sheet) => sheet.toJSON()),
       styles: this.styles,
       charts: this.charts,
+      ...(Object.keys(this.names).length > 0 ? { names: Object.fromEntries(Object.entries(this.names).sort()) } : {}),
     };
   }
 }

@@ -287,6 +287,12 @@ caret back where it was, or undo disorients.
 A `.grt` container with `"type": "paper"`. Images in `resources/`.
 Deterministic writing.
 
+With a password the whole archive is deflated and sealed with AES-256-GCM, the
+key coming from the password through Argon2id. Beside it stay a `README.txt`
+saying how, and `protection.json` with the settings and the salt. A `.odt` or
+`.docx` with a password is encrypted as LibreOffice and Word do it, and opens
+in both.
+
 ### Export
 
 | Format | Notes |

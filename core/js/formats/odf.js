@@ -74,6 +74,7 @@ const PROPERTY_KINDS = {
   'page-layout-properties': 'layout',
   'header-footer-properties': 'headerFooter',
   'list-level-properties': 'listLevel',
+  'section-properties': 'section',
 };
 
 /** Every attribute of a properties element, by local name. */
@@ -121,6 +122,8 @@ export class OdfStyles {
     this.fonts = new Map();
     this.dataStyles = new Map();
     this.outline = null;
+    /** Each note class's configuration: footnote and endnote. */
+    this.notes = new Map();
 
     for (const doc of named) {
       const root = doc?.documentElement;
@@ -157,6 +160,8 @@ export class OdfStyles {
         this.lists.set(attr(element, NS.style, 'name'), element);
       } else if (element.namespaceURI === NS.text && element.localName === 'outline-style') {
         this.outline = element;
+      } else if (element.namespaceURI === NS.text && element.localName === 'notes-configuration') {
+        this.notes.set(attr(element, NS.text, 'note-class'), element);
       } else if (element.namespaceURI === NS.style && element.localName === 'page-layout') {
         this.layouts.set(attr(element, NS.style, 'name'), element);
       } else if (element.namespaceURI === NS.number) {
@@ -290,6 +295,8 @@ export function manifestXml(mimetype, files) {
   }),
   files.map((file) => tag('manifest:file-entry', {
     'manifest:full-path': file.name,
+    // A document inside the package states its version, and its parts must say the same.
+    ...(file.version ? { 'manifest:version': file.version } : {}),
     'manifest:media-type': file.mediaType,
   }))));
 }
@@ -303,7 +310,7 @@ export function manifestXml(mimetype, files) {
 export function odfPackage(mimetype, files) {
   return [
     { name: 'mimetype', data: mimetype, store: true },
-    ...files.map((file) => ({ name: file.name, data: file.data })),
+    ...files.filter((file) => !file.manifestOnly).map((file) => ({ name: file.name, data: file.data })),
     { name: 'META-INF/manifest.xml', data: manifestXml(mimetype, files) },
   ];
 }
@@ -362,6 +369,34 @@ export function fromBase64(text) {
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
   return out;
+}
+
+const FROM_ODF_NUMBER = { 1: 'decimal', a: 'lower-alpha', A: 'upper-alpha', i: 'lower-roman', I: 'upper-roman' };
+
+/** Heading numbers as Paper keeps them, from the outline style, or null when the first level has none. */
+export function headingNumbersOf(styles) {
+  const levels = new Map(kids(styles.outline).map((element) => [Number(attr(element, NS.text, 'level')), element]));
+  const first = levels.get(1);
+  const format = FROM_ODF_NUMBER[attr(first, NS.style, 'num-format') ?? ''];
+  if (!format) return null;
+  let depth = 1;
+  while (depth < 4 && FROM_ODF_NUMBER[attr(levels.get(depth + 1), NS.style, 'num-format') ?? '']) depth += 1;
+  return {
+    format,
+    full: Number(attr(levels.get(2), NS.text, 'display-levels') ?? 1) > 1,
+    after: attr(first, NS.style, 'num-suffix') ?? '',
+    depth,
+  };
+}
+
+/** Footnote and endnote counting from the notes configurations. */
+export function noteSettingsOf(styles) {
+  const one = (noteClass) => {
+    const element = styles.notes.get(noteClass);
+    if (!element) return undefined;
+    return { format: FROM_ODF_NUMBER[attr(element, NS.style, 'num-format') ?? ''], start: Number(attr(element, NS.text, 'start-value') ?? 0) + 1 };
+  };
+  return { foot: one('footnote'), end: one('endnote') };
 }
 
 /** Whether headings of a level carry numbers from the outline style. */

@@ -1,100 +1,38 @@
 /* Interface styles. */
 
-/* Palette. Light is defined on bare :root so every colour has a value even
-   before any media query or theme attribute applies. */
+/* The colours this program adds to those of design.css, theme by theme. */
 
 :root {
-  --bg: #f4f4f5;
-  --bg-raised: #ffffff;
-  --bg-sunken: #e4e4e7;
-  --border: #d4d4d8;
-  --text: #18181b;
-  --text-dim: #6b7280;
-  --accent: #1f6feb;
-  --danger: #c53030;
-  --ok: #1a7f37;
   --mark: #fde68a;
   --rule: #e8e8ec;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #1e1f22;
-    --bg-raised: #2b2d31;
-    --bg-sunken: #141517;
-    --border: #3a3d42;
-    --text: #e6e6e6;
-    --text-dim: #9aa0a6;
-    --accent: #4a9eff;
-    --danger: #e5534b;
-    --ok: #3fb950;
     --mark: #5a4a12;
     --rule: #303338;
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #1e1f22;
-  --bg-raised: #2b2d31;
-  --bg-sunken: #141517;
-  --border: #3a3d42;
-  --text: #e6e6e6;
-  --text-dim: #9aa0a6;
-  --accent: #4a9eff;
-  --danger: #e5534b;
-  --ok: #3fb950;
   --mark: #5a4a12;
   --rule: #303338;
 }
 
 /* Sepia: the reading palette of GRT Bible. */
 :root[data-theme="sepia"] {
-  --bg: #ece2cc;
-  --bg-raised: #f6eedb;
-  --bg-sunken: #e0d3b6;
-  --border: #d3c29d;
-  --text: #3b2f20;
-  --text-dim: #68583e;
-  --accent: #8a3a1f;
-  --danger: #9e2a1c;
-  --ok: #4f5e1e;
   --mark: #efd78f;
   --rule: #dccfae;
 }
 
 :root[data-theme="gold"] {
-  --bg: #f5efe1;
-  --bg-raised: #fdfaf3;
-  --bg-sunken: #e8dec8;
-  --border: #d6c8a8;
-  --text: #2e2519;
-  --text-dim: #7a6a4f;
-  --accent: #a67c00;
-  --danger: #a33a2a;
-  --ok: #5c7a1e;
   --mark: #f0d79a;
   --rule: #e3d7bd;
 }
 
 :root[data-theme="purple"] {
-  --bg: #191324;
-  --bg-raised: #241c33;
-  --bg-sunken: #110d1a;
-  --border: #3d3154;
-  --text: #ece7f5;
-  --text-dim: #a094b8;
-  --accent: #b388ff;
-  --danger: #ff6b6b;
-  --ok: #7ee787;
   --mark: #4a3570;
   --rule: #332948;
-}
-
-* { box-sizing: border-box; }
-
-html, body {
-  height: 100%;
-  margin: 0;
 }
 
 body {
@@ -107,8 +45,6 @@ body {
      interface. */
   user-select: none;
 }
-
-input, textarea, select { user-select: text; }
 
 /* Toolbar */
 
@@ -146,7 +82,6 @@ button {
 button:hover { background: var(--bg-sunken); }
 button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
 
 input[type="search"], input[type="text"], input[type="date"], input[type="time"],
 textarea, select, input:not([type]) {
@@ -165,7 +100,6 @@ main { flex: 1; min-height: 0; display: flex; }
 
 .spacer { flex: 1; }
 .hint { color: var(--text-dim); font-size: 12px; margin: 8px 0 0; }
-.hidden { display: none !important; }
 
 /* Formula bar */
 
@@ -348,8 +282,6 @@ main { flex: 1; min-height: 0; display: flex; }
 }
 
 .statusbar .spacer { flex: 1; }
-.badge { color: var(--ok); }
-.dim { color: var(--text-dim); }
 
 /* Saving is automatic, so the status bar says so. */
 .save-state { color: var(--text-dim); }
@@ -372,8 +304,6 @@ main { flex: 1; min-height: 0; display: flex; }
   max-width: 70vw;
 }
 
-.toast.error { border-color: var(--danger); }
-
 .overlay {
   position: fixed;
   inset: 0;
@@ -389,7 +319,7 @@ main { flex: 1; min-height: 0; display: flex; }
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 18px;
-  width: min(460px, 92vw);
+  width: min(520px, 92vw);
   max-height: 88vh;
   overflow-y: auto;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
@@ -404,21 +334,11 @@ main { flex: 1; min-height: 0; display: flex; }
   color: var(--text-dim);
 }
 
-#panel-body label.inline {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text);
-  font-size: 13px;
-}
-
-#panel-body label.inline input { width: auto; }
-#panel-body .row { display: flex; gap: 10px; }
-#panel-body .row label { flex: 1; }
 #panel-body code { font-family: ui-monospace, monospace; font-size: 11px; }
 
 .panel-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 14px;
@@ -442,3 +362,70 @@ main { flex: 1; min-height: 0; display: flex; }
 /* Where a new page starts, as set by hand. */
 .cell.break-above { border-top: 2px dashed var(--accent); }
 .cell.break-left { border-left: 2px dashed var(--accent); }
+
+.cell.frozen { z-index: 2; }
+.cell.frozen-corner { z-index: 3; }
+.cell.frozen.active { z-index: 4; }
+.cell.frozen-edge-bottom { border-bottom: 2px solid var(--border); }
+.cell.frozen-edge-right { border-right: 2px solid var(--border); }
+.cell.merged { display: grid; align-content: center; }
+.column-head.frozen, .row-head.frozen { z-index: 1; }
+.row-head.filtered { color: var(--accent); }
+.column-head[hidden], .row-head[hidden] { display: none; }
+.panel-actions button { white-space: nowrap; }
+
+.filter-button, .list-button {
+  position: absolute; right: 1px; top: 50%; transform: translateY(-50%);
+  width: 16px; height: 16px; line-height: 16px; text-align: center; font-size: 11px;
+  border: 1px solid var(--border); border-radius: 3px; background: var(--bg-raised); color: var(--text); cursor: default;
+}
+.filter-button::after, .list-button::after { content: "▾"; }
+.filter-button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.choice-list {
+  position: fixed; z-index: 30; min-width: 120px; max-height: 240px; overflow-y: auto; margin: 0; padding: 3px; list-style: none;
+  background: var(--bg-raised); color: var(--text); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+.choice-list li { padding: 3px 8px; border-radius: 3px; cursor: default; }
+.choice-list li[aria-selected="true"] { background: var(--accent); color: #fff; }
+.cell-help { color: var(--text-dim); font-size: 12px; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+#panel-body .filter-values { max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; padding: 6px; margin-bottom: 8px; }
+#panel-body .design-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; font-size: 12px; }
+#panel-body .design-table th, #panel-body .design-table td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border); }
+#panel-body textarea { width: 100%; box-sizing: border-box; font: inherit; }
+#panel-body .format-preview { display: flex; align-items: center; justify-content: center; height: 64px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-raised); }
+#panel-body .format-preview span { display: block; min-width: 140px; padding: 4px 8px; font-size: 13px; }
+#panel-body .row label > input:not([type="checkbox"]), #panel-body .row label > select { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; }
+#panel-body .row { align-items: flex-end; }
+
+.chart-frame { position: absolute; top: 0; left: 0; z-index: 5; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 4px; box-sizing: border-box; overflow: hidden; cursor: default; }
+.chart-frame > div, .chart-frame svg { display: block; width: 100%; height: 100%; }
+.chart-frame.chosen { outline: 2px solid var(--accent); outline-offset: 1px; cursor: move; }
+.chart-handle { display: none; position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; background: var(--accent); cursor: nwse-resize; border-radius: 2px 0 3px 0; }
+.chart-frame.chosen .chart-handle { display: block; }
+#panel-body .chart-preview { height: 220px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: #ffffff; }
+#panel-body .pivot-fields td { vertical-align: middle; }
+#panel-body .pivot-fields select, #panel-body .pivot-fields input { width: 100%; box-sizing: border-box; font-size: 12px; }
+#panel-body .pivot-preview-box { max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 4px; }
+#panel-body .pivot-preview { border-collapse: collapse; font-size: 12px; width: 100%; }
+#panel-body .pivot-preview td { padding: 2px 6px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+#panel-body .pivot-preview tr.pivot-head td, #panel-body .pivot-preview tr.pivot-total td, #panel-body .pivot-preview tr.pivot-subtotal td { font-weight: 600; }
+#panel-body .pivot-preview tr.pivot-total td, #panel-body .pivot-preview tr.pivot-subtotal td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.panel:has(.pivot-fields), .panel:has(.chart-preview) { width: min(760px, 94vw); }
+
+/* The grid takes what the properties sidebar leaves. */
+main > .grid { flex: 1; min-width: 0; }
+
+/* The list of functions, and the cursor while a look is being copied. */
+.function-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 4px; max-height: 50vh; overflow: auto; margin-top: 8px; }
+.function-list button { text-align: left; font-family: var(--font-mono); font-size: 12px; }
+body.cloning .grid { cursor: copy; }
+
+.sheet-tab.coloured { box-shadow: inset 0 -3px 0 var(--tab); }
+
+.swatch { display: inline-block; width: 18px; height: 14px; border-radius: 3px; vertical-align: middle; border: 1px solid var(--border); }
+
+.grid.no-gridlines .cell { border-right-color: transparent; border-bottom-color: transparent; }
+.cell.crosshair:not(.active) { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--accent) 8%, transparent); }
+.cell.value-number { color: #1f4fd1 !important; }
+.cell.value-formula { color: #13803a !important; }
+.cell.value-text { color: var(--text) !important; }

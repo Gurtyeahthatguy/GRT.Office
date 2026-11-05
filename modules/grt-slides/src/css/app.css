@@ -1,92 +1,35 @@
 /* Interface styles. */
 
-/* Palette. Light is defined on bare :root so every colour has a value even
-   before any media query or theme attribute applies. */
+/* The colours this program adds to those of design.css, theme by theme. */
 
 :root {
-  --bg: #f4f4f5;
-  --bg-raised: #ffffff;
-  --bg-sunken: #e4e4e7;
-  --border: #d4d4d8;
-  --text: #18181b;
-  --text-dim: #6b7280;
-  --accent: #1f6feb;
-  --danger: #c53030;
-  --ok: #1a7f37;
   --page-shadow: rgba(0, 0, 0, 0.18);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #1e1f22;
-    --bg-raised: #2b2d31;
-    --bg-sunken: #141517;
-    --border: #3a3d42;
-    --text: #e6e6e6;
-    --text-dim: #9aa0a6;
-    --accent: #4a9eff;
-    --danger: #e5534b;
-    --ok: #3fb950;
     --page-shadow: rgba(0, 0, 0, 0.5);
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #1e1f22;
-  --bg-raised: #2b2d31;
-  --bg-sunken: #141517;
-  --border: #3a3d42;
-  --text: #e6e6e6;
-  --text-dim: #9aa0a6;
-  --accent: #4a9eff;
-  --danger: #e5534b;
-  --ok: #3fb950;
   --page-shadow: rgba(0, 0, 0, 0.5);
 }
 
 /* Sepia: the reading palette of GRT Bible. */
 :root[data-theme="sepia"] {
-  --bg: #ece2cc;
-  --bg-raised: #f6eedb;
-  --bg-sunken: #e0d3b6;
-  --border: #d3c29d;
-  --text: #3b2f20;
-  --text-dim: #68583e;
-  --accent: #8a3a1f;
-  --danger: #9e2a1c;
-  --ok: #4f5e1e;
   --page-shadow: rgba(80, 60, 30, 0.25);
 }
 
 /* Gold: a warm, low-contrast light theme. */
 :root[data-theme="gold"] {
-  --bg: #f5efe1;
-  --bg-raised: #fdfaf3;
-  --bg-sunken: #e8dec8;
-  --border: #d6c8a8;
-  --text: #2e2519;
-  --text-dim: #7a6a4f;
-  --accent: #a67c00;
-  --danger: #a33a2a;
-  --ok: #5c7a1e;
   --page-shadow: rgba(90, 70, 30, 0.22);
 }
 
 /* Purple: a deep dark theme. */
 :root[data-theme="purple"] {
-  --bg: #191324;
-  --bg-raised: #241c33;
-  --bg-sunken: #110d1a;
-  --border: #3d3154;
-  --text: #ece7f5;
-  --text-dim: #a094b8;
-  --accent: #b388ff;
-  --danger: #ff6b81;
-  --ok: #5bd68a;
   --page-shadow: rgba(0, 0, 0, 0.6);
 }
-
-* { box-sizing: border-box; }
 
 html, body {
   margin: 0;
@@ -106,7 +49,6 @@ body {
 
 body > .toolbar { flex: 0 0 auto; }
 
-.hidden { display: none !important; }
 .muted { color: var(--text-dim); }
 .small { font-size: 12px; }
 
@@ -140,7 +82,6 @@ button {
   cursor: pointer;
 }
 
-button:hover:not(:disabled) { background: var(--bg-sunken); }
 button:active:not(:disabled) { transform: translateY(1px); }
 
 button:disabled {
@@ -246,8 +187,6 @@ input[type="search"] {
   z-index: 20;
   max-width: 70vw;
 }
-
-.toast.error { border-color: var(--danger); }
 
 /* Settings dialog */
 
@@ -643,3 +582,26 @@ input[type="color"] {
 .el.table table { font-size: inherit; color: inherit; }
 .el.table td { overflow: hidden; }
 .el.table td.editing-cell { outline: 2px solid var(--accent); user-select: text; }
+
+.master-banner { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5; padding: 6px 12px; border-radius: 6px; background: var(--accent, #1f6feb); color: #fff; font-size: 13px; display: flex; gap: 10px; align-items: center; }
+.master-banner button { background: #fff; color: #111; border: none; border-radius: 4px; padding: 2px 10px; cursor: pointer; }
+#panel-body .chart-preview { height: 220px; margin-bottom: 10px; border: 1px solid var(--border, #ccc); border-radius: 4px; overflow: hidden; background: #fff; }
+#panel-body .formula-preview { min-height: 70px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; border: 1px solid var(--border, #ccc); border-radius: 4px; background: #fff; color: #111; padding: 6px; }
+#panel-body textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; }
+#panel-body .layout-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+#panel-body .layout-option { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 12px; cursor: pointer; }
+#panel-body .layout-option input { position: absolute; opacity: 0; }
+#panel-body .layout-sketch { position: relative; width: 120px; height: 68px; border: 2px solid var(--border, #ccc); border-radius: 4px; background: #fff; }
+#panel-body .layout-option input:checked + .layout-sketch { border-color: var(--accent, #1f6feb); }
+#panel-body .layout-sketch i { position: absolute; background: #d8dee8; border-radius: 2px; }
+#panel-body .layout-sketch i.title { background: #9aa8bd; }
+#surface .el.text[data-placeholder]:empty::before, #surface .el.text[data-placeholder] > div:empty::before { content: attr(data-placeholder); color: rgba(127, 127, 127, 0.6); }
+
+/* The properties sidebar shares the right-hand column with the speaker notes. */
+.notes .grt-properties { width: auto; flex: 1; min-height: 0; padding: 0 0 8px; background: none; border: none; border-bottom: 1px solid var(--border); }
+.notes textarea#notes { flex: 0 0 30%; }
+
+/* A hidden slide is shown faded, and the sorter lays the slides out side by side. */
+.thumb.hidden-slide .thumb-frame { opacity: 0.4; }
+.workspace.sorter #stage, .workspace.sorter #notes-panel { display: none; }
+.workspace.sorter .thumbnails { flex: 1; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 16px; padding: 16px; max-width: none; overflow-y: auto; }

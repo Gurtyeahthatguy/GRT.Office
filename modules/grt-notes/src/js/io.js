@@ -72,15 +72,24 @@ export async function deleteEntry(path) {
 const isMarkdown = (path) => /\.md$/i.test(path);
 const stem = (path) => String(path).split(/[/\\]/).pop().replace(/\.md$/i, '');
 
-export async function readNote(path) {
+export async function readNote(path, password = null) {
   if (isMarkdown(path)) return fromMarkdown(await readText(path), stem(path));
-  const { parts } = await invoke('read_grt', { path });
+  const { parts } = await invoke('read_grt', { path, password });
   return fromParts(parts);
 }
 
-export async function writeNote(path, note) {
+export async function writeNote(path, note, password = null) {
   if (isMarkdown(path)) return writeText(path, toMarkdown(note));
-  return invoke('write_grt', { path, parts: toParts(note) });
+  return invoke('write_grt', { path, parts: toParts(note), password });
+}
+
+/** Opens the marker of a protected notebook, which only the right password does. */
+export async function readMarker(path, password) {
+  return invoke('read_grt', { path, password });
+}
+
+export async function writeMarker(path, parts, password) {
+  return invoke('write_grt', { path, parts, password });
 }
 
 export async function readText(path) {
@@ -117,6 +126,10 @@ export async function indexUpsert({ path, title, tags, body, modified }) {
 
 export async function indexRemove(path) {
   return invoke('index_remove', { path });
+}
+
+export async function indexPurge() {
+  return invoke('index_purge');
 }
 
 export async function indexSearch(query, limit = 60) {

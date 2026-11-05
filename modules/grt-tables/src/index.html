@@ -4,9 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GRT Tables</title>
+    <link rel="stylesheet" href="css/design.css" />
     <link rel="stylesheet" href="css/app.css" />
   </head>
   <body>
+    <nav id="menubar" aria-label="Menus"></nav>
     <header class="toolbar">
       <div class="group">
         <button id="btn-new">New</button>
@@ -44,6 +46,12 @@
       <aside class="sidebar">
         <h2>Tables</h2>
         <div id="table-list"></div>
+        <h2>Queries</h2>
+        <div id="query-list" class="object-list"></div>
+        <h2>Forms</h2>
+        <div id="form-list" class="object-list"></div>
+        <h2>Reports</h2>
+        <div id="report-list" class="object-list"></div>
       </aside>
 
       <section class="workspace">
@@ -51,6 +59,8 @@
           <button data-view="data" class="tab active">Data</button>
           <button data-view="design" class="tab">Design</button>
           <button data-view="query" class="tab">Query</button>
+          <button data-view="form" class="tab">Form</button>
+          <button data-view="report" class="tab">Report</button>
         </nav>
 
         <div id="view-data" class="view">
@@ -75,11 +85,35 @@
           <pre id="design-sql" class="sql-preview"></pre>
         </div>
 
+        <div id="view-form" class="view hidden">
+          <div class="filter-bar">
+            <button id="btn-form-first" title="First record">⏮</button>
+            <button id="btn-form-prev" title="Previous record">◀</button>
+            <span id="form-position" class="dim"></span>
+            <button id="btn-form-next" title="Next record">▶</button>
+            <button id="btn-form-last" title="Last record">⏭</button>
+            <input id="form-search" type="search" placeholder="Find a record…" />
+            <span class="spacer"></span>
+            <button id="btn-form-new">New record</button>
+            <button id="btn-form-delete">Delete record</button>
+            <button id="btn-form-save" class="primary">Save</button>
+            <button id="btn-save-form" title="Keep this form, with its fields, in the database">Save form…</button>
+          </div>
+          <form id="form-fields" class="form-fields" onsubmit="return false"></form>
+        </div>
+
+        <div id="view-report" class="view hidden">
+          <div id="report-setup" class="report-setup"></div>
+          <div id="report-output" class="report-output"></div>
+        </div>
+
         <div id="view-query" class="view hidden">
           <textarea id="query-input" class="query-input" spellcheck="false"
                     placeholder="SELECT * FROM …"></textarea>
           <div class="query-bar">
             <button id="btn-run-query">Run</button>
+            <button id="btn-save-query" title="Keep this query in the database">Save query…</button>
+            <button id="btn-save-view" title="Keep this query as a view, which can be opened like a table">Save as view…</button>
             <span id="query-note" class="dim"></span>
           </div>
           <div id="query-result" class="data-grid"></div>
@@ -90,6 +124,7 @@
     <footer class="statusbar">
       <span id="db-path" class="dim"></span>
       <span class="spacer"></span>
+      <span id="status-note" class="dim" role="status"></span>
       <span id="ephemeral" class="badge hidden">Ephemeral: the database is in memory</span>
       <span class="dim">GRT Tables <span id="version"></span></span>
     </footer>

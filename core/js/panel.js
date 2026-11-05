@@ -46,7 +46,8 @@ export function showPanel(title, html, confirmLabel = null) {
         event.stopPropagation();
         close(false);
       } else if (event.key === 'Enter' && confirmLabel
-        && !(event.target instanceof HTMLTextAreaElement)) {
+        && (!(event.target instanceof HTMLTextAreaElement) || (event.target.dataset.enterConfirms !== undefined && !event.shiftKey))) {
+        // A text box that says so takes Enter as OK, and Shift+Enter as a new line.
         event.stopPropagation();
         close(true);
       }
@@ -116,6 +117,11 @@ export function readFields() {
   for (const field of el('panel-body').querySelectorAll('[data-field]')) {
     const key = field.dataset.field;
     if (field.type === 'checkbox') values[key] = field.checked;
+    else if (field.type === 'radio') {
+      // A radio with a value of its own names the choice made; one without says whether it is the one chosen.
+      if (!field.hasAttribute('value')) values[key] = field.checked;
+      else if (field.checked) values[key] = field.value;
+    }
     else if (field.type === 'number') values[key] = Number(field.value);
     else values[key] = field.value;
   }

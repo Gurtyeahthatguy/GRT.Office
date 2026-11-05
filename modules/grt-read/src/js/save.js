@@ -5,6 +5,7 @@ import { stripMetadata, auditBytes } from './core/metadata.js';
 import {
   applyCrops, applyWatermark, applyPageNumbers, applyMetadata, applyMarks,
 } from './operations.js';
+import { recompressImages } from './compress.js';
 
 /**
  * Builds the final PDF bytes from an explicit page plan.
@@ -15,10 +16,12 @@ import {
  * @param {Object} [options.watermark] {text, opacity, size}
  * @param {Object} [options.pageNumbers] {start, position, format, size}
  * @param {Object} [options.metadata] fields the user asked to set deliberately
+ * @param {Object} [options.compress] {quality, maxSide}: pictures encoded again, smaller
+ * @param {Function} [options.encode] how a picture is encoded again; the webview's canvas unless a test says otherwise
  * @returns {Promise<Uint8Array>}
  */
 export async function buildBytesFromPlan(model, plan, options = {}) {
-  const { audit = true, watermark, pageNumbers, metadata } = options;
+  const { audit = true, watermark, pageNumbers, metadata, compress, encode } = options;
 
   if (plan.length === 0) {
     throw new Error('No pages to save');
@@ -85,6 +88,7 @@ export async function buildBytesFromPlan(model, plan, options = {}) {
   // they go through exactly the same serialisation as everything else.
   if (watermark?.text) await applyWatermark(output, copiedByPosition, watermark);
   if (pageNumbers) await applyPageNumbers(output, copiedByPosition, pageNumbers);
+  if (compress) await recompressImages(output, compress, encode);
 
   // Metadata stripping AFTER construction.
   stripMetadata(output);

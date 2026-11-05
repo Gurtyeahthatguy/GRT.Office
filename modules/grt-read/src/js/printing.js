@@ -1,6 +1,7 @@
 /** A PDF on paper: its pages drawn as they would be saved, each fitted to the sheet. */
 
 import * as pdfjs from '../vendor/pdf.mjs';
+import { folderUrl } from './assets.js';
 import { makePage } from './core/print.js';
 import { PAGE_SIZES, pageDimensions } from './core/editor/model.js';
 
@@ -30,6 +31,7 @@ export function parseRange(text, count) {
 export async function pageRenderer(bytes) {
   const doc = await pdfjs.getDocument({
     data: bytes.slice(0), disableAutoFetch: true, disableStream: true, isEvalSupported: false,
+    wasmUrl: folderUrl('../vendor/wasm/'), enableXfa: false,
   }).promise;
   const drawn = new Map();
   return {

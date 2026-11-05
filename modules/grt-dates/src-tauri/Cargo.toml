@@ -1,6 +1,6 @@
 [package]
 name = "grt-dates"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local calendar and task list, kept in plain iCalendar files"
 authors = ["GRT Project"]
 license = "MIT"
@@ -22,6 +22,11 @@ percent-encoding = "2"
 
 # No grt-container here; the shared close guard only.
 grt-app = { path = "../../../core/grt-app" }
+
+# Already in the tree through GTK; used for desktop notifications over the session bus.
+[target.'cfg(target_os = "linux")'.dependencies]
+gio = "0.18"
+glib = "0.18"
 
 [profile.release]
 opt-level = "z"

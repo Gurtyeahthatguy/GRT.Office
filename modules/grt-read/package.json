@@ -1,13 +1,13 @@
 {
   "name": "grt-read",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "author": "GRT Project",
   "license": "MIT",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build",
+    "build": "node ../../scripts/tauri-build.mjs",
     "tauri": "tauri",
     "test": "vitest run",
     "vendor": "node scripts/vendor.mjs",
@@ -18,9 +18,10 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
-    "jsdom": "^25",
+    "esbuild": "^0.28.2",
+    "jsdom": "^31.0.0",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^4.10.38",
-    "vitest": "^2"
+    "pdfjs-dist": "^6.5.438",
+    "vitest": "^5.1.0"
   }
 }

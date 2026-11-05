@@ -28,3 +28,9 @@ http://purl.org
 https://purl.org
 http://ns.adobe.com
 https://ns.adobe.com
+
+# The namespaces of the encryption description inside a .docx, .xlsx or .pptx
+# with a password, written as Office writes them.
+http://schemas.microsoft.com/office/2006/encryption
+http://schemas.microsoft.com/office/2006/keyEncryptor/certificate
+http://schemas.microsoft.com/office/2006/keyEncryptor/password

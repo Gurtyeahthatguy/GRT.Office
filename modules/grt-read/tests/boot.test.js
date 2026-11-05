@@ -87,7 +87,7 @@ describe('the program starts', () => {
   it('opens the file the launcher named, without being asked to', () => {
     // The "Open With" path: a file on the command line opens straight away,
     // and the program that ignored it would look broken rather than empty.
-    expect(commands()).toContain('read_file');
+    expect(commands()).toContain('read_pdf');
     expect(el('empty-state').classList.contains('hidden')).toBe(true);
   });
 
@@ -102,6 +102,7 @@ describe('the program starts', () => {
 
   it('CANARY: nothing is written to disk on startup', () => {
     expect(commands()).not.toContain('write_file_atomic');
+    expect(commands()).not.toContain('write_pdf');
   });
 });
 
@@ -233,10 +234,12 @@ describe('saving', () => {
     await until(() => !el('overlay').classList.contains('hidden'));
 
     expect(commands()).not.toContain('write_file_atomic');
+    expect(commands()).not.toContain('write_pdf');
 
     el('panel-cancel').click();
     for (let i = 0; i < 20; i += 1) await settle();
     expect(commands()).not.toContain('write_file_atomic');
+    expect(commands()).not.toContain('write_pdf');
   });
 
   it('writes the file once the fingerprint is approved', async () => {
@@ -246,12 +249,12 @@ describe('saving', () => {
     el('btn-save').click();
     await until(() => !el('overlay').classList.contains('hidden'));
     el('panel-confirm').click();
-    await until(() => commands().includes('write_file_atomic'));
+    await until(() => commands().includes('write_pdf'));
 
-    expect(commands()).toContain('write_file_atomic');
+    expect(commands()).toContain('write_pdf');
 
     // Saved over the file it was opened from.
-    const write = window.__TAURI_CALLS__.find((c) => c.command === 'write_file_atomic');
+    const write = window.__TAURI_CALLS__.find((c) => c.command === 'write_pdf');
     const path = decodeURIComponent(write.options.headers['x-grt-path']);
     expect(path).toBe('/preview/sample.pdf');
     expect(String.fromCharCode(...write.payload.slice(0, 5))).toBe('%PDF-');
@@ -261,11 +264,15 @@ describe('saving', () => {
 
   it('"save as" asks where the file should go', async () => {
     el('btn-save-as').click();
+    await until(() => !el('overlay').classList.contains('hidden'));
+    expect(el('panel-title').textContent).toBe('Save as');
+    expect(el('panel-body').querySelector('[data-field=protect]').checked).toBe(false);
+    el('panel-confirm').click();
     await until(() => commands().includes('plugin:dialog|save'));
 
     // The stub cancels the dialog, so nothing is written.
     expect(commands()).toContain('plugin:dialog|save');
-    expect(commands()).not.toContain('write_file_atomic');
+    expect(commands()).not.toContain('write_pdf');
   });
 });
 
@@ -274,7 +281,7 @@ describe('keeping unsaved work', () => {
   const dialogOpen = () => !el('overlay').classList.contains('hidden');
   const choose = (id) => document.querySelector(`[data-choice="${id}"]`).click();
   const called = (command) => window.__TAURI_CALLS__.filter((call) => call.command === command);
-  const writtenTo = (prefix) => called('write_file_atomic').filter((call) =>
+  const writtenTo = (prefix) => [...called('write_file_atomic'), ...called('write_pdf')].filter((call) =>
     decodeURIComponent(call.options.headers['x-grt-path']).startsWith(prefix));
 
   afterEach(() => {

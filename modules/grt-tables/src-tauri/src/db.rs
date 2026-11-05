@@ -2,9 +2,30 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use rusqlite::config::DbConfig;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{Connection, OpenFlags};
+
+/// The longest a statement typed by the user may run.
+pub const MAX_QUERY: Duration = Duration::from_secs(20);
+
+/// Pragmas the user may run, because they only read; those with a table name are allowed one.
+const READING_PRAGMAS: &[&str] = &[
+    "table_info", "table_xinfo", "index_list", "index_info", "index_xinfo", "foreign_key_list",
+    "foreign_key_check", "integrity_check", "quick_check", "user_version", "application_id",
+    "page_count", "page_size", "freelist_count", "encoding", "schema_version", "data_version",
+    "collation_list", "database_list", "function_list", "pragma_list", "foreign_keys",
+    "table_list",
+];
+const NAMED_PRAGMAS: &[&str] = &[
+    "table_info", "table_xinfo", "index_list", "index_info", "index_xinfo", "foreign_key_list",
+    "foreign_key_check", "integrity_check", "quick_check", "table_list",
+];
 
 pub struct Database {
     pub connection: Connection,
@@ -14,6 +35,8 @@ pub struct Database {
     pub undo: Vec<crate::undo::Step>,
     /// How many table copies undo has made, to name the next one.
     pub copies: u64,
+    /// Set while a statement the user wrote is prepared and run.
+    pub from_user: Arc<AtomicBool>,
 }
 
 impl Database {
@@ -27,7 +50,7 @@ impl Database {
                 .map_err(|e| format!("Cannot create a database in memory: {e}"))?,
         };
 
-        prepare(&connection)?;
+        let from_user = prepare(&connection)?;
 
         Ok(Database {
             connection,
@@ -35,6 +58,7 @@ impl Database {
             read_only: false,
             undo: Vec::new(),
             copies: 0,
+            from_user,
         })
     }
 
@@ -46,7 +70,7 @@ impl Database {
         )
         .map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
 
-        prepare(&connection)?;
+        let from_user = prepare(&connection)?;
 
         Ok(Database {
             connection,
@@ -54,6 +78,7 @@ impl Database {
             read_only: true,
             undo: Vec::new(),
             copies: 0,
+            from_user,
         })
     }
 
@@ -65,8 +90,8 @@ impl Database {
     }
 }
 
-/// Settings applied to every connection.
-fn prepare(connection: &Connection) -> Result<(), String> {
+/// Settings applied to every connection, and the guard on what a database from elsewhere may do.
+fn prepare(connection: &Connection) -> Result<Arc<AtomicBool>, String> {
     // Foreign keys are off by default in SQLite, which makes every foreign
     // key in the schema decorative until this runs.
     connection
@@ -74,10 +99,92 @@ fn prepare(connection: &Connection) -> Result<(), String> {
             "PRAGMA foreign_keys = ON;
              PRAGMA journal_mode = DELETE;
              PRAGMA secure_delete = ON;
-             PRAGMA temp_store = MEMORY;",
+             PRAGMA temp_store = MEMORY;
+             PRAGMA trusted_schema = OFF;
+             PRAGMA cell_size_check = ON;
+             PRAGMA mmap_size = 0;",
         )
         .map_err(|e| format!("Cannot prepare the database: {e}"))?;
-    Ok(())
+    connection
+        .set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)
+        .map_err(|e| format!("Cannot prepare the database: {e}"))?;
+
+    let from_user = Arc::new(AtomicBool::new(false));
+    let user = Arc::clone(&from_user);
+    connection.authorizer(Some(move |context: AuthContext<'_>| match context.action {
+        // VACUUM attaches a nameless scratch database; any file with a name is refused.
+        AuthAction::Attach { filename } if !filename.is_empty() => Authorization::Deny,
+        AuthAction::Function { function_name } if function_name.eq_ignore_ascii_case("load_extension")
+            || function_name.eq_ignore_ascii_case("fts3_tokenizer") => Authorization::Deny,
+        AuthAction::Pragma { pragma_name, pragma_value } if user.load(Ordering::SeqCst) => {
+            let name = pragma_name.to_ascii_lowercase();
+            let reads = READING_PRAGMAS.contains(&name.as_str());
+            if reads && (pragma_value.is_none() || NAMED_PRAGMAS.contains(&name.as_str())) {
+                Authorization::Allow
+            } else {
+                Authorization::Deny
+            }
+        }
+        _ => Authorization::Allow,
+    }))
+    // Without the guard the file is not opened at all.
+    .map_err(|e| format!("Cannot guard the database: {e}"))?;
+    Ok(from_user)
+}
+
+/// Whether a statement would write the database to another file.
+pub fn writes_elsewhere(sql: &str) -> bool {
+    let mut plain = String::new();
+    let mut rest = sql;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("--") {
+            rest = after.split_once('\n').map_or("", |(_, tail)| tail);
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.split_once("*/").map_or("", |(_, tail)| tail);
+        } else {
+            let c = rest.chars().next().expect("not empty");
+            plain.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    plain.split(';').any(|statement| {
+        let words: Vec<String> = statement
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|word| !word.is_empty())
+            .map(str::to_ascii_uppercase)
+            .collect();
+        // VACUUM INTO, or VACUUM with a schema name before INTO.
+        words.iter().enumerate().any(|(at, word)| {
+            word == "VACUUM" && (words.get(at + 1).map(String::as_str) == Some("INTO") || words.get(at + 2).map(String::as_str) == Some("INTO"))
+        })
+    })
+}
+
+/// Runs what the user wrote under the guard: refused pragmas and attachments, and a time limit.
+pub fn as_user<T>(
+    database: &mut Database,
+    sql: &str,
+    work: impl FnOnce(&mut Database) -> Result<T, String>,
+) -> Result<T, String> {
+    if writes_elsewhere(sql) {
+        return Err("VACUUM INTO writes the database to another file, which GRT Tables does not do".to_string());
+    }
+    let deadline = Instant::now() + MAX_QUERY;
+    database.connection.progress_handler(1000, Some(move || Instant::now() > deadline))
+        .map_err(|e| format!("Cannot set the time limit: {e}"))?;
+    database.from_user.store(true, Ordering::SeqCst);
+    let out = work(database);
+    let _ = database.connection.progress_handler(0, None::<fn() -> bool>);
+    database.from_user.store(false, Ordering::SeqCst);
+    out.map_err(|e| {
+        if e.contains("interrupted") {
+            format!("The query ran past {} seconds and was stopped", MAX_QUERY.as_secs())
+        } else if e.contains("not authorized") {
+            "GRT Tables does not run this: it attaches other files, loads code, or changes how the database works".to_string()
+        } else {
+            e
+        }
+    })
 }
 
 // Identifiers.
@@ -186,12 +293,25 @@ pub fn describe_table(connection: &Connection, table: &str) -> Result<serde_json
                 Ok(serde_json::json!({
                     "name": row.get::<_, String>(1)?,
                     "unique": row.get::<_, i64>(2)? != 0,
+                    "origin": row.get::<_, String>(3)?,
                 }))
             })
             .map_err(|e| format!("Cannot read {table}: {e}"))?;
         for row in rows {
             indexes.push(row.map_err(|e| format!("Cannot read {table}: {e}"))?);
         }
+    }
+    for index in indexes.iter_mut() {
+        let name = index["name"].as_str().unwrap_or_default().to_string();
+        let mut statement = connection
+            .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+            .map_err(|e| format!("Cannot read {table}: {e}"))?;
+        let names = statement
+            .query_map([name.as_str()], |row| row.get::<_, Option<String>>(0))
+            .map_err(|e| format!("Cannot read {table}: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Cannot read {table}: {e}"))?;
+        index["columns"] = serde_json::json!(names);
     }
 
     let sql: Option<String> = connection
@@ -334,6 +454,30 @@ fn json_of(value: ValueRef<'_>) -> serde_json::Value {
     }
 }
 
+/// Every row of a table in rowid order, files as their bytes in hex, for writing it into another format.
+pub fn all_rows(connection: &Connection, table: &str) -> Result<serde_json::Value, String> {
+    check_ident(table)?;
+    let columns = column_names(connection, table)?;
+    let names: Vec<String> = columns.iter().map(|c| quote_ident(c)).collect();
+    let sql = format!("SELECT {} FROM {} ORDER BY rowid", names.join(", "), quote_ident(table));
+    let mut statement = connection.prepare(&sql).map_err(|e| format!("Cannot read {table}: {e}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            let mut values = Vec::new();
+            for i in 0..columns.len() {
+                values.push(match row.get_ref(i)? {
+                    ValueRef::Blob(bytes) => serde_json::json!({ "hex": bytes.iter().map(|b| format!("{b:02x}")).collect::<String>() }),
+                    other => json_of(other),
+                });
+            }
+            Ok(serde_json::Value::Array(values))
+        })
+        .map_err(|e| format!("Cannot read {table}: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Cannot read {table}: {e}"))?;
+    Ok(serde_json::json!({ "columns": columns, "rows": rows }))
+}
+
 /// Turns a JSON value from the interface into something SQLite can bind.
 pub fn value_of(value: &serde_json::Value) -> Value {
     match value {
@@ -447,7 +591,8 @@ pub fn is_write(sql: &str) -> bool {
         .next()
         .unwrap_or("")
         .to_uppercase();
-    !matches!(head.as_str(), "SELECT" | "WITH" | "EXPLAIN" | "PRAGMA")
+    let reading_pragma = head == "PRAGMA" && !sql.contains('=');
+    !(matches!(head.as_str(), "SELECT" | "WITH" | "EXPLAIN") || reading_pragma)
 }
 
 /// Whether a statement would change every row, which deserves a warning.

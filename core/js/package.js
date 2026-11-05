@@ -10,9 +10,11 @@ export class Package {
    * @param {Map<string, Uint8Array>} entries
    * @param {?string} damage why the archive could only be read in part
    */
-  constructor(entries, damage = null) {
+  constructor(entries, damage = null, protection = null) {
     this.entries = entries;
     this.damage = damage;
+    // How the file was protected when it was opened: 'office', 'odf' or null.
+    this.protection = protection;
     // OOXML part names are case-insensitive.
     this.folded = new Map([...entries.keys()].map((name) => [name.toLowerCase(), name]));
   }
@@ -58,7 +60,7 @@ export function decodeBlock(block) {
     entries.set(name, bytes.subarray(at, at + size));
     at += size;
   }
-  return new Package(entries, header.damage ?? null);
+  return new Package(entries, header.damage ?? null, header.protection ?? null);
 }
 
 /**
@@ -91,13 +93,19 @@ export function encodeBlock(entries) {
 const invoke = (...args) => window.__TAURI__.core.invoke(...args);
 
 /** @returns {Promise<Package>} */
-export async function readPackage(path) {
-  return decodeBlock(await invoke('read_package', { path }));
+export async function readPackage(path, { password = null } = {}) {
+  return decodeBlock(await invoke('read_package', { path, password }));
 }
 
-/** Writes a package atomically, entries in the order given. */
-export async function writePackage(path, entries) {
-  await invoke('write_package', encodeBlock(entries), {
-    headers: { 'x-grt-path': encodeURIComponent(path) },
-  });
+/**
+ * Writes a package atomically, entries in the order given, sealed when a password is given.
+ * @param {{protection?: 'office'|'odf', password?: string}} seal
+ */
+export async function writePackage(path, entries, { protection = null, password = null } = {}) {
+  const headers = { 'x-grt-path': encodeURIComponent(path) };
+  if (protection && password) {
+    headers['x-grt-protection'] = protection;
+    headers['x-grt-password'] = encodeURIComponent(password);
+  }
+  await invoke('write_package', encodeBlock(entries), { headers });
 }

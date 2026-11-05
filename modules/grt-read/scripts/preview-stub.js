@@ -80,8 +80,10 @@ window.__TAURI__ = {
         case 'write_settings': return true;
         case 'forget_settings': return undefined;
 
-        case 'read_file': return files.get(payload.path) ?? window.__TAURI_SEED__?.[payload.path] ?? sample;
+        case 'read_file':
+        case 'read_pdf': return files.get(payload.path) ?? window.__TAURI_SEED__?.[payload.path] ?? sample;
         case 'write_file_atomic':
+        case 'write_pdf':
           files.set(decodeURIComponent(options.headers['x-grt-path']), payload);
           return undefined;
         case 'file_exists': return payload?.path === '/preview/sample.pdf';

@@ -30,8 +30,50 @@ export const NS = {
   mc: 'http://schemas.openxmlformats.org/markup-compatibility/2006',
 };
 
+/** Deeper than this an XML part is refused, as WebKit's own parser does. */
+const MAX_DEPTH = 256;
+/** Longer than this, in characters, an XML part is refused. */
+const MAX_LENGTH = 256 * 1024 * 1024;
+
+/** How deep the elements of a text go, counting no further than the limit. */
+function depthOf(text) {
+  let depth = 0;
+  let at = text.indexOf('<');
+  while (at !== -1 && depth <= MAX_DEPTH) {
+    const next = text.charCodeAt(at + 1);
+    if (next === 47) {
+      depth -= 1;
+      at = text.indexOf('>', at);
+    } else if (text.startsWith('<!--', at)) {
+      at = text.indexOf('-->', at);
+    } else if (text.startsWith('<![CDATA[', at)) {
+      at = text.indexOf(']]>', at);
+    } else if (next === 33 || next === 63) {
+      at = text.indexOf('>', at);
+    } else {
+      let quote = 0;
+      let i = at + 1;
+      for (; i < text.length; i += 1) {
+        const c = text.charCodeAt(i);
+        if (quote !== 0) {
+          if (c === quote) quote = 0;
+        } else if (c === 34 || c === 39) quote = c;
+        else if (c === 62) break;
+      }
+      if (text.charCodeAt(i - 1) !== 47) depth += 1;
+      at = i;
+    }
+    if (at === -1) break;
+    at = text.indexOf('<', at + 1);
+  }
+  return depth;
+}
+
 /** Parses XML, or throws saying which part was not XML. */
 export function parseXml(text, what = 'the file') {
+  if (text.length > MAX_LENGTH) throw new Error(`${what} is too large to open`);
+  if (text.includes('<!ENTITY')) throw new Error(`${what} declares XML entities, which GRT never expands`);
+  if (depthOf(text) > MAX_DEPTH) throw new Error(`${what} is nested more than ${MAX_DEPTH} levels deep`);
   const doc = new DOMParser().parseFromString(text, 'application/xml');
   const error = doc.getElementsByTagName('parsererror')[0];
   if (error || !doc.documentElement) {
@@ -101,6 +143,8 @@ export function escapeAttr(value) {
 export function serialize(node) {
   if (node === null || node === undefined || node === false) return '';
   if (typeof node === 'string' || typeof node === 'number') return escapeText(node);
+  // Markup already made safe and well formed by its maker, such as a formula's MathML.
+  if (typeof node.raw === 'string') return node.raw;
   let out = `<${node.name}`;
   for (const [key, value] of Object.entries(node.attrs)) {
     if (value === null || value === undefined) continue;

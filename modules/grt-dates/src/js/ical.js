@@ -1,7 +1,8 @@
 /** Reading and writing iCalendar (RFC 5545). */
 
 import { newUid } from './ids.js';
-import { parseDate, formatDate, addDays, toLocalWallClock } from './time.js';
+import { parseDate, formatDate, addDays, addMinutes } from './time.js';
+import { readTimezone, zoneResolver, toLocal } from './zones.js';
 
 /** Identifies the software. */
 export const PRODID = '-//GRT//Calendar//EN';
@@ -134,34 +135,48 @@ export function formatDateValue({ date, time }) {
 
 /**
  * Parses a calendar file.
- * @returns {{name: string|null, entries: Object[], unsupported: string[]}}
- *   `unsupported` names the components that were seen and skipped, so the
+ * @returns {{name: string|null, entries: Object[], unsupported: string[], timezones: Object[], kept: string[]}}
+ *   `unsupported` names the components that were seen and kept as they are, in `kept`, so they go back into the file;
+ *   `timezones` are the file's VTIMEZONE rules with their lines.
  */
 export function parse(text) {
   const lines = unfold(text).split('\n').map((line) => line.trimEnd()).filter(Boolean);
 
   const entries = [];
   const unsupported = new Set();
+  const timezones = [];
+  const kept = [];
   let name = null;
 
   let current = null;
-  let kind = null;
   let depth = [];
+  // A component inside an entry, or a calendar-level one GRT does not show, is gathered whole.
+  let block = null;
 
   for (const line of lines) {
     const parsed = parseLine(line);
     if (!parsed) continue;
 
+    if (block) {
+      block.lines.push(line);
+      block.properties.push(parsed);
+      if (parsed.name === 'BEGIN') block.depth += 1;
+      if (parsed.name === 'END') block.depth -= 1;
+      if (block.depth > 0) continue;
+      closeBlock(block, current, { timezones, kept, unsupported });
+      block = null;
+      depth.pop();
+      continue;
+    }
+
     if (parsed.name === 'BEGIN') {
       const component = parsed.value.toUpperCase();
       depth.push(component);
 
-      if (component === 'VEVENT' || component === 'VTODO') {
-        kind = component === 'VEVENT' ? 'event' : 'task';
-        current = blankEntry(kind);
-      } else if (component !== 'VCALENDAR' && depth.length <= 2) {
-        // VTIMEZONE, VALARM, VJOURNAL, VFREEBUSY: recorded, not interpreted.
-        unsupported.add(component);
+      if ((component === 'VEVENT' || component === 'VTODO') && !current) {
+        current = blankEntry(component === 'VEVENT' ? 'event' : 'task');
+      } else if (component !== 'VCALENDAR') {
+        block = { component, depth: 1, lines: [line], properties: [parsed] };
       }
       continue;
     }
@@ -170,9 +185,8 @@ export function parse(text) {
       const component = parsed.value.toUpperCase();
       depth.pop();
       if ((component === 'VEVENT' || component === 'VTODO') && current) {
-        entries.push(finishEntry(current));
+        entries.push(current);
         current = null;
-        kind = null;
       }
       continue;
     }
@@ -186,7 +200,49 @@ export function parse(text) {
     absorb(current, parsed);
   }
 
-  return { name, entries, unsupported: [...unsupported] };
+  // Zones are known once the whole file is read, wherever its VTIMEZONEs sit.
+  const resolver = zoneResolver(timezones);
+  return { name, entries: entries.map((entry) => finishEntry(entry, resolver)), unsupported: [...unsupported], timezones, kept };
+}
+
+/** A component gathered whole: a time zone, a reminder, or something kept as it arrived. */
+function closeBlock(block, entry, { timezones, kept, unsupported }) {
+  if (block.component === 'VTIMEZONE' && !entry) {
+    const zone = readTimezone(block.properties);
+    if (zone && timezones.length < 100) timezones.push({ ...zone, lines: block.lines });
+    return;
+  }
+  if (block.component === 'VALARM' && entry) {
+    const alarm = readAlarm(block.properties);
+    if (alarm && entry.alarms.length < 20) entry.alarms.push(alarm);
+    else entry.extra.push(...block.lines);
+    return;
+  }
+  if (entry) {
+    entry.extra.push(...block.lines);
+    return;
+  }
+  unsupported.add(block.component);
+  kept.push(...block.lines);
+}
+
+/** A reminder: how long before the start, when it is that simple; null otherwise, and it is kept as written. */
+function readAlarm(properties) {
+  const trigger = properties.find((p) => p.name === 'TRIGGER');
+  const action = properties.find((p) => p.name === 'ACTION')?.value.trim().toUpperCase();
+  if (!trigger || (action && action !== 'DISPLAY' && action !== 'AUDIO')) return null;
+  if (trigger.params.RELATED === 'END' || trigger.params.VALUE === 'DATE-TIME') return null;
+  const minutes = durationMinutes(trigger.value);
+  return minutes === null ? null : { before: -minutes };
+}
+
+/** An iCalendar duration, such as -PT15M or P1DT2H, in minutes. */
+export function durationMinutes(text) {
+  const match = /^([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(String(text ?? '').trim());
+  if (!match || text.trim() === 'P' || text.trim().endsWith('T')) return null;
+  const [, sign, w = 0, d = 0, h = 0, m = 0, sec = 0] = match;
+  const total = Number(w) * 10080 + Number(d) * 1440 + Number(h) * 60 + Number(m) + Math.floor(Number(sec) / 60);
+  return sign === '-' ? -total : total;
 }
 
 function blankEntry(kind) {
@@ -207,6 +263,9 @@ function blankEntry(kind) {
     completed: false,
     note: null,
     extra: [],
+    alarms: [],
+    duration: null,
+    zone: null,
   };
 }
 
@@ -221,6 +280,7 @@ function absorb(entry, { name, params, value, raw }) {
     case 'DTSTART': entry.start = parseDateValue(value, params); break;
     case 'DTEND': entry.end = parseDateValue(value, params); break;
     case 'DUE': entry.due = parseDateValue(value, params); break;
+    case 'DURATION': entry.duration = durationMinutes(value); break;
 
     // The rule is kept as written.
     case 'RRULE': entry.rrule = value.trim(); break;
@@ -249,20 +309,28 @@ function absorb(entry, { name, params, value, raw }) {
   }
 }
 
-function finishEntry(entry) {
+function finishEntry(entry, resolver) {
   if (entry.start) {
     entry.allDay = entry.start.time === null;
-    const local = toLocalWallClock(entry.start);
-    entry.start = { date: local.date, time: local.time, zone: null };
+    if (!entry.end && entry.duration !== null) {
+      entry.end = entry.start.time
+        ? { ...addMinutes(entry.start, entry.duration), zone: entry.start.zone }
+        : { date: addDays(entry.start.date, Math.max(1, Math.round(entry.duration / 1440))), time: null, zone: null };
+    }
+    const zone = entry.start.zone;
+    if (zone && entry.start.time && !resolver.knows(zone)) entry.unknownZone = zone;
+    if (zone && entry.start.time && entry.rrule && resolver.knows(zone)) {
+      // A repeating event keeps its zone, so each occurrence lands at the right hour across changes to summer time.
+      entry.zone = zone;
+      entry.start = { date: entry.start.date, time: entry.start.time, zone: null };
+      if (entry.end) entry.end = { ...(entry.end.zone && entry.end.zone !== zone ? toLocal(entry.end, entry.end.zone, resolver) : entry.end), zone: null };
+    } else {
+      entry.start = { ...toLocal(entry.start, zone, resolver), zone: null };
+      if (entry.end) entry.end = { ...toLocal(entry.end, entry.end.zone, resolver), zone: null };
+    }
   }
-  if (entry.end) {
-    const local = toLocalWallClock(entry.end);
-    entry.end = { date: local.date, time: local.time, zone: null };
-  }
-  if (entry.due) {
-    const local = toLocalWallClock(entry.due);
-    entry.due = { date: local.date, time: local.time, zone: null };
-  }
+  if (entry.due) entry.due = { ...toLocal(entry.due, entry.due.zone, resolver), zone: null };
+  delete entry.duration;
   if (entry.status === 'COMPLETED') entry.completed = true;
   if (!entry.uid) entry.uid = newUid();
   return entry;
@@ -270,8 +338,8 @@ function finishEntry(entry) {
 
 // Writing
 
-/** Serialises a calendar. */
-export function serialise({ name = null, entries = [] } = {}) {
+/** Serialises a calendar, with the VTIMEZONEs its repeating events use and the components kept as they came. */
+export function serialise({ name = null, entries = [], timezones = [], kept = [] } = {}) {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -281,8 +349,11 @@ export function serialise({ name = null, entries = [] } = {}) {
 
   if (name) lines.push(`X-WR-CALNAME:${escapeText(name)}`);
 
+  const used = new Set(entries.map((e) => e.zone).filter(Boolean));
+  for (const zone of timezones) if (used.has(zone.tzid)) lines.push(...zone.lines);
   const sorted = [...entries].sort((a, b) => a.uid.localeCompare(b.uid));
   for (const entry of sorted) lines.push(...entryLines(entry));
+  lines.push(...kept);
 
   lines.push('END:VCALENDAR');
 
@@ -298,16 +369,20 @@ function entryLines(entry) {
 
   if (entry.summary) lines.push(`SUMMARY:${escapeText(entry.summary)}`);
 
+  // A repeating event that came with a zone keeps it; everything else is written as the local wall clock.
+  const zoned = (property, at) => (entry.zone === 'UTC'
+    ? `${property}:${formatDateValue(at)}Z`
+    : `${property};TZID=${entry.zone}:${formatDateValue(at)}`);
   if (entry.start) {
     lines.push(entry.allDay
       ? `DTSTART;VALUE=DATE:${formatDateValue(entry.start)}`
-      : `DTSTART:${formatDateValue(entry.start)}`);
+      : entry.zone ? zoned('DTSTART', entry.start) : `DTSTART:${formatDateValue(entry.start)}`);
   }
 
   if (entry.end) {
     lines.push(entry.allDay
       ? `DTEND;VALUE=DATE:${formatDateValue(entry.end)}`
-      : `DTEND:${formatDateValue(entry.end)}`);
+      : entry.zone ? zoned('DTEND', entry.end) : `DTEND:${formatDateValue(entry.end)}`);
   }
 
   if (entry.due) {
@@ -322,7 +397,9 @@ function entryLines(entry) {
     const values = [...new Set(entry.exdate)].sort();
     lines.push(entry.allDay
       ? `EXDATE;VALUE=DATE:${values.map((d) => formatDateValue({ date: d, time: null })).join(',')}`
-      : `EXDATE:${values.map((d) => formatDateValue({ date: d, time: entry.start?.time ?? '00:00' })).join(',')}`);
+      : entry.zone && entry.zone !== 'UTC'
+        ? `EXDATE;TZID=${entry.zone}:${values.map((d) => formatDateValue({ date: d, time: entry.start?.time ?? '00:00' })).join(',')}`
+        : `EXDATE:${values.map((d) => `${formatDateValue({ date: d, time: entry.start?.time ?? '00:00' })}${entry.zone === 'UTC' ? 'Z' : ''}`).join(',')}`);
   }
 
   if (entry.location) lines.push(`LOCATION:${escapeText(entry.location)}`);
@@ -333,6 +410,11 @@ function entryLines(entry) {
     lines.push(`STATUS:${entry.completed ? 'COMPLETED' : 'NEEDS-ACTION'}`);
     if (entry.completed) lines.push('PERCENT-COMPLETE:100');
     if (entry.priority) lines.push(`PRIORITY:${entry.priority}`);
+  }
+
+  for (const alarm of entry.alarms ?? []) {
+    const before = Math.max(0, Math.round(alarm.before));
+    lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${escapeText(entry.summary || 'Reminder')}`, before ? `TRIGGER:-PT${before}M` : 'TRIGGER:PT0S', 'END:VALARM');
   }
 
   // Everything the parser did not recognise, exactly as it arrived.

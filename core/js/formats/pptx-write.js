@@ -6,6 +6,8 @@ import { REL, relsXml, contentTypesXml } from './ooxml.js';
 import { naturalSize } from '../images.js';
 import { EMU_PER_PX } from './drawingml.js';
 import { parsePath } from '../paths.js';
+import { footerBoxes } from './slide-footer.js';
+import { ooxmlChartPart, OOXML_CHART_TYPE, REL_CHART, C as CHART_NS } from './chart-object.js';
 
 const PML = 'application/vnd.openxmlformats-officedocument.presentationml';
 const REL_BASE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -98,10 +100,12 @@ class PptxWriter {
       const rels = [{ id: 'rId1', type: REL.slideLayout, target: `../slideLayouts/slideLayout${layoutOf.get(slide.master) ?? 1}.xml` }];
       const notes = (slide.notes ?? '').trim() !== '';
       if (notes) rels.push({ id: 'rId2', type: REL.notesSlide, target: `../notesSlides/notesSlide${n}.xml` });
-      const tree = this.tree(slide.elements ?? [], rels, '../media/');
+      // The footer goes as PowerPoint's footer, number and date placeholders.
+      const footer = footerBoxes(slide.footer ?? null, this.canvas, n).map((box) => ({ ...box, kind: 'footer', z: 100000 }));
+      const tree = this.tree([...(slide.elements ?? []), ...footer], rels, '../media/');
       entries.push({
         name: `ppt/slides/slide${n}.xml`,
-        data: xmlDocument(tag('p:sld', this.namespaces(),
+        data: xmlDocument(tag('p:sld', { ...this.namespaces(), ...(slide.hidden ? { show: '0' } : {}), ...(slide.hideMaster ? { showMasterSp: '0' } : {}) },
           tag('p:cSld', {}, slide.background ? background(slide.background) : null, tree),
           tag('p:clrMapOvr', {}, tag('a:masterClrMapping')),
           transition(slide.transition))),
@@ -120,6 +124,11 @@ class PptxWriter {
         overrides.push([`ppt/notesSlides/notesSlide${n}.xml`, `${PML}.notesSlide+xml`]);
       }
     });
+
+    for (const chart of this.charts ?? []) {
+      entries.push({ name: `ppt/charts/${chart.name}`, data: chart.xml });
+      overrides.push([`ppt/charts/${chart.name}`, OOXML_CHART_TYPE]);
+    }
 
     if (withNotes) {
       entries.push({ name: 'ppt/notesMasters/notesMaster1.xml', data: this.notesMasterXml() });
@@ -206,18 +215,42 @@ class PptxWriter {
   }
 
   element(element, nextId, rels, mediaPath) {
+    if (element.kind === 'footer') return this.footerShape(element, nextId());
     if (element.kind === 'text') return this.textShape(element, nextId());
     if (element.kind === 'shape') return this.shape(element, nextId());
     if (element.kind === 'line') return this.line(element, nextId());
     if (element.kind === 'image') return this.picture(element, nextId(), rels, mediaPath);
     if (element.kind === 'table') return this.table(element, nextId());
+    if (element.kind === 'chart') return this.chart(element, nextId(), rels);
+    if (element.kind === 'formula') {
+      // PowerPoint keeps formulas in an extension LibreOffice does not read, so the TeX goes as text.
+      this.losses.add('Formulas, kept as their TeX in PowerPoint files');
+      return this.textShape({ ...element, kind: 'text', content: [{ text: element.tex ?? '' }] }, nextId());
+    }
     return null;
+  }
+
+  /** A chart: its part with the values cached, framed on the slide. */
+  chart(element, id, rels) {
+    this.charts ??= [];
+    const name = `chart${this.charts.length + 1}.xml`;
+    this.charts.push({ name, xml: ooxmlChartPart(element) });
+    const relId = `rId${rels.length + 1}`;
+    rels.push({ id: relId, type: REL_CHART, target: `../charts/${name}` });
+    return tag('p:graphicFrame', {},
+      tag('p:nvGraphicFramePr', {}, tag('p:cNvPr', { id, name: element.title || `Chart ${id}` }), tag('p:cNvGraphicFramePr'), tag('p:nvPr')),
+      tag('p:xfrm', {}, tag('a:off', { x: emu(element.x), y: emu(element.y) }), tag('a:ext', { cx: emu(Math.max(0, element.w)), cy: emu(Math.max(0, element.h)) })),
+      tag('a:graphic', {}, tag('a:graphicData', { uri: CHART_NS }, tag('c:chart', { 'xmlns:c': CHART_NS, 'r:id': relId }))));
   }
 
   textShape(element, id) {
     const look = this.look(element);
     return tag('p:sp', {},
-      tag('p:nvSpPr', {}, tag('p:cNvPr', { id, name: `Text ${id}` }), tag('p:cNvSpPr', { txBox: '1' }), tag('p:nvPr')),
+      tag('p:nvSpPr', {}, tag('p:cNvPr', { id, name: `Text ${id}` }), tag('p:cNvSpPr', element.placeholder ? {} : { txBox: '1' }),
+        tag('p:nvPr', {}, element.placeholder ? tag('p:ph', {
+          type: /^body\d*$/.test(element.placeholder) ? 'body' : { title: 'title', subtitle: 'subTitle' }[element.placeholder],
+          idx: element.placeholder === 'subtitle' ? '1' : /^body(\d*)$/.test(element.placeholder) ? String(Number(/^body(\d*)$/.exec(element.placeholder)[1] || 1)) : null,
+        }) : null)),
       tag('p:spPr', {}, xfrm(element), geometry('rect'), tag('a:noFill')),
       tag('p:txBody', {},
         tag('a:bodyPr', {
@@ -226,6 +259,23 @@ class PptxWriter {
         }, tag('a:noAutofit')),
         tag('a:lstStyle'),
         paragraphs(element.content ?? [], look)));
+  }
+
+  /** A footer, slide number or date placeholder; the number and a date that follows the day are fields. */
+  footerShape(box, id) {
+    const look = this.look({ style: 'caption', align: box.align });
+    const [type, idx, field] = { footer: ['ftr', '11', null], number: ['sldNum', '12', 'slidenum'], date: ['dt', '10', 'datetime1'] }[box.part];
+    const size = String(Math.round(look.size * 75));
+    const props = tag('a:rPr', { lang: 'en-US', sz: size, dirty: '0' }, solid(look.color), tag('a:latin', { typeface: look.typeface }));
+    const content = field && box.auto
+      ? tag('a:fld', { id: `{B6F15528-21DE-4FAA-801E-634DDDAF4B2${idx.slice(-1)}}`, type: field }, props, tag('a:t', {}, box.text))
+      : tag('a:r', {}, props, tag('a:t', {}, box.text));
+    return tag('p:sp', {},
+      tag('p:nvSpPr', {}, tag('p:cNvPr', { id, name: `${{ ftr: 'Footer', sldNum: 'Slide Number', dt: 'Date' }[type]} Placeholder ${id}` }),
+        tag('p:cNvSpPr', {}, tag('a:spLocks', { noGrp: '1' })), tag('p:nvPr', {}, tag('p:ph', { type, sz: 'quarter', idx }))),
+      tag('p:spPr', {}, xfrm(box), geometry('rect'), tag('a:noFill')),
+      tag('p:txBody', {}, tag('a:bodyPr', { lIns: '0', tIns: '0', rIns: '0', bIns: '0', anchor: 'ctr' }), tag('a:lstStyle'),
+        tag('a:p', {}, tag('a:pPr', { algn: { center: 'ctr', right: 'r' }[box.align] ?? 'l' }), content)));
   }
 
   /** What an element's text looks like, its own settings over its named style. */

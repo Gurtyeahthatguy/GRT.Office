@@ -15,6 +15,8 @@ export async function refresh(archiveNotes, deps) {
   const present = new Set();
 
   for (const page of archiveNotes) {
+    // A note in a protected notebook is never put in the index.
+    if (deps.skip?.(page)) continue;
     present.add(page.path);
     if (known.get(page.path) === page.modified) continue;
 

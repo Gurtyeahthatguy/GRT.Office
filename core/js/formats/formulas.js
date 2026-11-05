@@ -16,6 +16,8 @@ const FUTURE = new Set([
   'QUARTILE.INC', 'RANDARRAY', 'RANK.AVG', 'RANK.EQ', 'SEC', 'SEQUENCE', 'SHEET', 'SHEETS', 'SINGLE',
   'SORT', 'SORTBY', 'STDEV.P', 'STDEV.S', 'SWITCH', 'T.DIST', 'T.INV', 'TEXTJOIN', 'UNICHAR',
   'UNICODE', 'UNIQUE', 'VAR.P', 'VAR.S', 'WEIBULL.DIST', 'XLOOKUP', 'XMATCH', 'XOR', 'Z.TEST',
+  'CHOOSECOLS', 'CHOOSEROWS', 'DROP', 'EXPAND', 'HSTACK', 'VSTACK', 'TAKE', 'TEXTSPLIT', 'TOCOL', 'TOROW',
+  'WRAPCOLS', 'WRAPROWS', 'TEXTBEFORE', 'TEXTAFTER',
 ]);
 
 /** Of those, the ones Excel also marks as worksheet functions. */
@@ -23,7 +25,19 @@ const WORKSHEET = new Set(['FILTER', 'SORT']);
 
 /** Functions LibreOffice names under Microsoft's namespace in OpenFormula. */
 const MICROSOFT = new Set(['CONCAT', 'IFS', 'MAXIFS', 'MINIFS', 'SWITCH', 'TEXTJOIN', 'XLOOKUP',
-  'XMATCH', 'FILTER', 'SORT', 'SORTBY', 'UNIQUE', 'SEQUENCE', 'RANDARRAY', 'LET', 'FORECAST.LINEAR']);
+  'XMATCH', 'FILTER', 'SORT', 'SORTBY', 'UNIQUE', 'SEQUENCE', 'RANDARRAY', 'LET', 'FORECAST.LINEAR',
+  'NETWORKDAYS.INTL', 'WORKDAY.INTL', 'CHOOSECOLS', 'CHOOSEROWS', 'DROP', 'EXPAND', 'HSTACK', 'VSTACK',
+  'TAKE', 'TEXTSPLIT', 'TOCOL', 'TOROW', 'WRAPCOLS', 'WRAPROWS', 'MODE.SNGL', 'PERCENTILE.INC',
+  'QUARTILE.INC', 'RANK.EQ', 'STDEV.P', 'STDEV.S', 'VAR.P', 'VAR.S']);
+
+/** Functions LibreOffice writes under a name of its own, as its oracle showed on 1 November 2026. */
+const LIBREOFFICE = {
+  DAYSINMONTH: 'ORG.OPENOFFICE.DAYSINMONTH', DAYSINYEAR: 'ORG.OPENOFFICE.DAYSINYEAR',
+  ISLEAPYEAR: 'ORG.OPENOFFICE.ISLEAPYEAR', MONTHS: 'ORG.OPENOFFICE.MONTHS', WEEKS: 'ORG.OPENOFFICE.WEEKS',
+  WEEKSINYEAR: 'ORG.OPENOFFICE.WEEKSINYEAR', YEARS: 'ORG.OPENOFFICE.YEARS', ERRORTYPE: 'ORG.OPENOFFICE.ERRORTYPE',
+  STYLE: 'ORG.OPENOFFICE.STYLE', WEEKNUM_OOO: 'ORG.LIBREOFFICE.WEEKNUM_OOO', FOURIER: 'ORG.LIBREOFFICE.FOURIER',
+  NETWORKDAYS_EXCEL2003: 'NETWORKDAYS', WEEKNUM_EXCEL2003: 'WEEKNUM',
+};
 
 /** A sheet name as a reference writes it: quoted when it has to be. */
 export function quoteSheet(name) {
@@ -159,7 +173,7 @@ export function fromOpenFormula(text) {
     } else out += c;
   }
   // Microsoft's own functions, by their plain names.
-  out = out.replace(/\bCOM\.MICROSOFT\.([A-Z][A-Z0-9.]*)\s*\(/gi, '$1(');
+  out = out.replace(/\b(?:COM\.MICROSOFT|ORG\.OPENOFFICE|ORG\.LIBREOFFICE)\.([A-Z][A-Z0-9._]*)\s*\(/gi, '$1(');
   return { formula: `=${out}`, problems };
 }
 
@@ -219,6 +233,9 @@ export function toOpenFormula(formula) {
         const name = /^[A-Za-z_][\w.]*/.exec(piece.text)?.[0];
         if (name && piece.text[name.length] === '(' && MICROSOFT.has(name.toUpperCase())) {
           return { out: `COM.MICROSOFT.${name.toUpperCase()}`, length: name.length };
+        }
+        if (name && piece.text[name.length] === '(' && LIBREOFFICE[name.toUpperCase()]) {
+          return { out: LIBREOFFICE[name.toUpperCase()], length: name.length };
         }
         if (name) return { out: name, length: name.length };
       }

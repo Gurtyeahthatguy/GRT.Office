@@ -113,6 +113,7 @@ function pageRow(page) {
     file: page.file,
     order,
     modified: page.modified,
+    ...(page.base ? { base: true } : {}),
   };
 }
 
@@ -132,7 +133,7 @@ export function countNotes(notebook) {
 }
 
 /** Every note in the archive, as a flat list. */
-export function allNotes(archive) {
+export function allNotes(archive, { bases = false } = {}) {
   const out = [];
   for (const notebook of archive.notebooks ?? []) {
     for (const page of notebook.pages ?? []) {
@@ -144,8 +145,12 @@ export function allNotes(archive) {
       }
     }
   }
-  return out;
+  // Views are files of the vault but not notes.
+  return out.filter((page) => !!page.base === bases);
 }
+
+/** The views of a vault, Obsidian's .base files. */
+export const allBases = (archive) => allNotes(archive, { bases: true });
 
 /** Folder names have to be usable as directory names, but keep their case. */
 export function folderName(name) {

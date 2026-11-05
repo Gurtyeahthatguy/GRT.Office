@@ -1,7 +1,7 @@
 /** Obsidian's Markdown to the editor's blocks and back, unchanged blocks written as they were read. */
 
 import { markdownParser } from '../markdown.js';
-import { normaliseRuns, makeBlock } from '../editor/model.js';
+import { normaliseRuns, makeBlock, normaliseTable, OBJECT } from '../editor/model.js';
 
 const HIGHLIGHT = '#fff3a8';
 
@@ -33,8 +33,32 @@ function highlightRule(state, silent) {
   return true;
 }
 
+/** `$x^2$` and `$$\\sum x$$`, Obsidian's formulas, as a token of their own. */
+function mathRule(state, silent) {
+  const { src, pos, posMax } = state;
+  if (src.charCodeAt(pos) !== 0x24) return false;
+  const display = src.charCodeAt(pos + 1) === 0x24;
+  const start = pos + (display ? 2 : 1);
+  if (!display && (start >= posMax || /\s/.test(src[start]))) return false;
+  let end = start;
+  for (; end < posMax; end += 1) {
+    if (src[end] === '\\') { end += 1; continue; }
+    if (src[end] !== '$') continue;
+    if (display ? src[end + 1] === '$' : !/\s/.test(src[end - 1]) && !/\d/.test(src[end + 1] ?? '')) break;
+  }
+  if (end >= posMax || end === start || end - start > 5000) return false;
+  if (!silent) {
+    const token = state.push('math_inline', 'math', 0);
+    token.content = src.slice(start, end);
+    token.markup = display ? '$$' : '$';
+  }
+  state.pos = end + (display ? 2 : 1);
+  return true;
+}
+
 function parser() {
   const md = markdownParser({ html: true }).enable(['table', 'strikethrough']);
+  md.inline.ruler.before('escape', 'grt_math', mathRule);
   md.block.ruler.disable('reference');
   // Escapes and entities keep the characters they were written with.
   md.core.ruler.disable('text_join');
@@ -66,6 +90,9 @@ function inlineRuns(children) {
       case 'mark_open': marks.highlight = HIGHLIGHT; break;
       case 'mark_close': delete marks.highlight; break;
       case 'code_inline': add(`${token.markup}${token.content}${token.markup}`); break;
+      case 'math_inline':
+        runs.push({ text: OBJECT, object: { type: 'math', tex: token.content.trim(), ...(token.markup === '$$' ? { display: true } : {}) } });
+        break;
       case 'html_inline': add(token.content); break;
       case 'link_open':
         links.push(token);
@@ -174,6 +201,9 @@ function blocksOf(piece, lines) {
     return [block];
   }
   if (first.type === 'paragraph_open') {
+    // A line that is only `![[Note]]` or `![[Note#Section]]` shows that note, or that part of it, here.
+    const embed = /^!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]$/.exec(source.join('\n').trim());
+    if (embed) return [makeBlock('embed', { extra: { target: embed[1].trim(), wiki: true } })];
     const block = makeBlock('paragraph');
     block.runs = inlineRuns(piece.tokens[1].children);
     return [block];
@@ -235,6 +265,27 @@ function blocksOf(piece, lines) {
     const block = makeBlock('quote');
     block.runs = joined(paragraphs);
     return [block];
+  }
+  if (first.type === 'table_open') {
+    // A table's rows, the heading row first; each cell its own line of text.
+    const rows = [];
+    let header = false;
+    for (let i = 0; i < piece.tokens.length; i += 1) {
+      const token = piece.tokens[i];
+      if (token.type === 'thead_open') header = true;
+      if (token.type === 'tbody_open') header = false;
+      if (token.type === 'tr_open') rows.push({ ...(header ? { header: true } : {}), cells: [] });
+      if (token.type === 'th_open' || token.type === 'td_open') {
+        const align = /text-align:(left|center|right)/.exec(token.attrGet('style') ?? '')?.[1];
+        const runs = inlineRuns(piece.tokens[i + 1]?.children).map((run) => ({ ...run, text: run.text.replace(/<br\s*\/?>/gi, '\n') }));
+        rows[rows.length - 1].cells.push({ runs: normaliseRuns(runs), ...(align ? { align } : {}) });
+      }
+    }
+    if (rows.length === 0) return raw();
+    const block = makeBlock('table');
+    block.rows = rows;
+    block.widths = [];
+    return [normaliseTable(block)];
   }
   if (first.type === 'code_block') {
     const block = makeBlock('code');
@@ -419,6 +470,8 @@ export function readObsidianNote(text) {
 
 function runsToMarkdown(runs) {
   return (runs ?? []).map((run) => {
+    if (run.object?.type === 'math') return run.object.display ? `$$${run.object.tex ?? ''}$$` : `$${run.object.tex ?? ''}$`;
+    if (run.object) return '';
     let text = run.text;
     if (text === '') return '';
     const lead = /^\s*/.exec(text)[0];
@@ -475,6 +528,14 @@ function blockMarkdown(block) {
       return prefixLines(runsToMarkdown(block.runs), `${marker} [${block.done ? 'x' : ' '}] `, '      ');
     }
     case 'embed': return `![[${block.target ?? ''}]]`;
+    case 'table': {
+      // Markdown tables have one heading row and no merged cells: the first row heads it, a merged cell's text stays in its first cell.
+      const cell = (c) => runsToMarkdown(c.runs).replace(/\|/g, '\\|').replace(/\n/g, '<br>');
+      const [head, ...rest] = block.rows;
+      const line = (row) => `| ${row.cells.map(cell).join(' | ')} |`;
+      const rule = `| ${head.cells.map((c) => ({ left: ':---', center: ':---:', right: '---:' }[c.align] ?? '---')).join(' | ')} |`;
+      return [line(head), rule, ...rest.map(line)].join('\n');
+    }
     case 'raw': return (block.runs ?? []).map((r) => r.text).join('');
     case 'image': return `![](${block.resource ?? ''})`;
     default: return runsToMarkdown(block.runs);

@@ -1,8 +1,13 @@
 /** The library. */
 
 import {
-  ERROR, isError, isBlank, toNumber, toText, toBoolean, compare, collectNumbers,
+  ERROR, isError, isBlank, toNumber, toText, toBoolean, compare, collectNumbers, Matrix,
 } from '../engine/values.js';
+import { criterion } from './criteria.js';
+import { DATETIME } from './datetime.js';
+import { LOOKUP } from './lookup.js';
+import { ARRAYS } from './arrays.js';
+import { STATISTICS } from './statistics.js';
 
 /** Functions that must be recomputed on every pass, whatever changed. */
 export const VOLATILE = new Set(['RAND', 'RANDBETWEEN', 'TODAY', 'NOW']);
@@ -213,13 +218,21 @@ export const FUNCTIONS = {
   INDEX: (args) => {
     const grid = args[0]?.grid;
     if (!grid) return ERROR.ref;
-    const row = Math.trunc(numberOf(args[1]));
-    const col = args[2] ? Math.trunc(numberOf(args[2])) : 1;
+    const given = (arg) => arg && !arg.missing;
+    let row = given(args[1]) ? Math.trunc(numberOf(args[1])) : 0;
+    let col = given(args[2]) ? Math.trunc(numberOf(args[2])) : 0;
     if (isError(row) || isError(col)) return ERROR.value;
-    const line = grid[row - 1];
-    if (!line) return ERROR.ref;
-    const found = line[col - 1];
-    return found === undefined ? ERROR.ref : found;
+    const rows = grid.length;
+    const cols = grid[0]?.length ?? 0;
+    // A single row is indexed by its columns, as a single column is by its rows.
+    if (!given(args[2])) {
+      if (rows === 1 && cols > 1) { col = row; row = 1; } else if (cols === 1) col = 1;
+    }
+    if (row < 0 || col < 0 || row > rows || col > cols) return ERROR.ref;
+    if (row === 0 && col === 0) return args[0].matrix ?? args[0].value;
+    if (row === 0) return Matrix.column(grid.map((line) => line[col - 1] ?? null));
+    if (col === 0) return new Matrix([grid[row - 1].map((v) => v ?? null)]);
+    return grid[row - 1][col - 1] ?? null;
   },
   MATCH: (args) => {
     const needle = args[0]?.value ?? null;
@@ -316,32 +329,6 @@ function conditional(args, finish) {
   return finish(matched, matchedSums);
 }
 
-function criterion(raw) {
-  if (isError(raw)) return raw;
-
-  if (typeof raw === 'string') {
-    const match = /^(<=|>=|<>|=|<|>)\s*(.*)$/.exec(raw.trim());
-    if (match) {
-      const [, operator, text] = match;
-      const wanted = text === '' ? null : (Number.isFinite(Number(text)) ? Number(text) : text);
-      return (value) => {
-        const result = compare(value, wanted);
-        if (isError(result)) return false;
-        switch (operator) {
-          case '<': return result < 0;
-          case '<=': return result <= 0;
-          case '>': return result > 0;
-          case '>=': return result >= 0;
-          case '<>': return result !== 0;
-          default: return result === 0;
-        }
-      };
-    }
-  }
-
-  return (value) => compare(value, raw) === 0;
-}
-
 function lookup(args, direction) {
   const needle = args[0]?.value ?? null;
   const grid = args[1]?.grid;
@@ -391,3 +378,10 @@ function datePart(args, apply) {
 }
 
 export { dateSerial, fromSerial };
+
+// The families kept in their own files join the library; a name defined here is not replaced.
+for (const family of [DATETIME, LOOKUP, ARRAYS, STATISTICS]) {
+  for (const [name, implementation] of Object.entries(family)) {
+    if (!(name in FUNCTIONS)) FUNCTIONS[name] = implementation;
+  }
+}

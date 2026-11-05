@@ -6,6 +6,7 @@ import { Losses } from '../losses.js';
 import {
   odfDocuments, OdfStyles, MIMETYPES, ODF_VERSION, ROOT_NAMESPACES, odfPackage, odfText,
 } from './odf.js';
+import { declareExternal } from './external.js';
 
 const PX_PER_MM = 96 / 25.4;
 const MARGIN = 20;
@@ -50,6 +51,7 @@ export function readOdg(source) {
   const styles = new OdfStyles([docs.styles, docs.content].filter(Boolean), docs.content);
   const losses = new Losses();
   if (typeof source !== 'string' && source.damage) losses.add('The file was damaged, and only what could still be read was opened');
+  declareExternal(source, losses);
 
   const pages = kids(body, NS.draw, 'page');
   if (pages.length > 1) losses.add('Pages after the first');

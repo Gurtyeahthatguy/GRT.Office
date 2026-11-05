@@ -42,6 +42,9 @@ export async function confirm(message, title = 'GRT Dates') {
   }
 }
 
+/** A reminder shown by the desktop. */
+export const notifyDesktop = (summary, body) => invoke('notify_desktop', { summary, body });
+
 export async function notify(message, title = 'GRT Dates') {
   try {
     await invoke('plugin:dialog|message', { message, title });
@@ -56,19 +59,23 @@ export async function listCalendars(directory = null) {
   return invoke('list_calendars', { directory });
 }
 
+/** Larger than this a calendar file is refused. */
+const MAX_CALENDAR = 64 * 1024 * 1024;
+
 /** Reads and parses one calendar file. */
 export async function readCalendar(path) {
   const bytes = new Uint8Array(await invoke('read_file', { path }));
+  if (bytes.length > MAX_CALENDAR) throw new Error('That calendar is too large to open');
   const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
   return parse(text);
 }
 
-/** Writes a calendar back, whole. */
 /** The file a calendar is written as. */
 export function calendarText(calendar) {
-  return serialise({ name: calendar.name, entries: calendar.entries });
+  return serialise({ name: calendar.name, entries: calendar.entries, timezones: calendar.timezones ?? [], kept: calendar.kept ?? [] });
 }
 
+/** Writes a calendar back, whole. */
 export async function writeCalendar(path, calendar) {
   const text = calendarText(calendar);
   await invoke('write_file_atomic', new TextEncoder().encode(text), {

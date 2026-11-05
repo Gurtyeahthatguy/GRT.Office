@@ -45,6 +45,18 @@ export async function readFileBytes(path) {
   return new Uint8Array(buffer);
 }
 
+/** Reads a PDF in the clear, opened with the password when it has one. */
+export async function readPdf(path, password = null) {
+  return new Uint8Array(await invoke('read_pdf', { path, password }));
+}
+
+/** Writes a PDF atomically, sealed with AES-256 when a password is given. */
+export async function writePdf(bytes, path, password = null) {
+  const headers = { 'x-grt-path': encodeURIComponent(path) };
+  if (password) headers['x-grt-password'] = encodeURIComponent(password);
+  await invoke('write_pdf', bytes, { headers });
+}
+
 /** Writes a whole file atomically, as raw bytes. */
 export async function writeFileBytes(bytes, path) {
   await invoke('write_file_atomic', bytes, {

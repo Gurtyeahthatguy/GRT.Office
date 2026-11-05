@@ -89,8 +89,9 @@ export function fuzzyScore(query, text) {
 export function rankCommands(commands, query) {
   return commands
     .map((command) => {
-      const score = fuzzyScore(query, command.label);
-      return score === null ? null : { command, score };
+      // The names other programs give a command find it too, LibreOffice's above all.
+      const scores = [command.label, ...(command.aliases ?? [])].map((text) => fuzzyScore(query, text)).filter((v) => v !== null);
+      return scores.length === 0 ? null : { command, score: Math.min(...scores) };
     })
     .filter(Boolean)
     .sort((a, b) => a.score - b.score)
@@ -166,7 +167,7 @@ export function openPalette(commands) {
       return item;
     }));
 
-    list.children[active]?.scrollIntoView({ block: 'nearest' });
+    list.children[active]?.scrollIntoView?.({ block: 'nearest' });
   };
 
   const close = () => {

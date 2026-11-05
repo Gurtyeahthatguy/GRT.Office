@@ -13,10 +13,13 @@ export class NotesRenderer extends Renderer {
   constructor(surface, options = {}) {
     super(surface);
     this.resolveLink = options.resolveLink ?? (() => null);
+    // A note shown inside another: its blocks, null while it loads, or 'missing'.
+    this.embedContent = options.embedContent ?? (() => 'missing');
+    this.depth = 0;
   }
 
   blockElement(block, model, images) {
-    if (block.kind === 'embed') return this.embedElement(block);
+    if (block.kind === 'embed') return this.embedElement(block, model, images);
     if (block.kind === 'raw') {
       const element = super.blockElement({ ...block, kind: 'code', style: 'code' }, model, images);
       element.classList.add('raw');
@@ -103,15 +106,39 @@ export class NotesRenderer extends Renderer {
   }
 
   /** A reference to another document in the suite. */
-  embedElement(block) {
+  embedElement(block, model, images) {
     const box = document.createElement('div');
     box.className = 'block embed';
     box.dataset.block = block.id;
     box.setAttribute('contenteditable', 'false');
 
+    // A note shown inside this one, read only; a note shown inside that is only named, so nothing can go round in circles.
+    const content = block.wiki && this.depth === 0 ? this.embedContent(block.target) : null;
+    if (Array.isArray(content)) {
+      box.classList.add('transclusion');
+      const head = document.createElement('div');
+      head.className = 'embed-head';
+      head.textContent = block.target;
+      head.dataset.action = 'open-embed';
+      head.dataset.block = block.id;
+      box.append(head);
+      this.depth += 1;
+      try {
+        for (const inner of content.slice(0, 400)) {
+          const element = this.blockElement(inner, model, images);
+          element.removeAttribute('data-block');
+          for (const node of element.querySelectorAll('[data-block]')) node.removeAttribute('data-block');
+          box.append(element);
+        }
+      } finally {
+        this.depth -= 1;
+      }
+      return box;
+    }
+
     const label = document.createElement('span');
     label.className = 'embed-target';
-    label.textContent = block.target || 'Nothing linked yet';
+    label.textContent = block.target ? (content === null && block.wiki ? `${block.target} (loading)` : content === 'missing' && block.wiki ? `${block.target} (no such note)` : block.target) : 'Nothing linked yet';
 
     const open = document.createElement('button');
     open.className = 'embed-open';

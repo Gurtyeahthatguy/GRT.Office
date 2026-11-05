@@ -1,6 +1,6 @@
 /** Turning whatever the clipboard holds into the model. */
 
-import { normaliseRuns, makeBlock, MARKS } from './model.js';
+import { normaliseRuns, makeBlock, MARKS, normaliseTable, TABLE_LIMITS } from './model.js';
 
 /** Elements that turn into blocks of their own. */
 const BLOCK_TAGS = {
@@ -95,12 +95,38 @@ export function blocksFromHtml(html, document) {
     }
 
     if (tag === 'table') {
-      // Recognised and flattened.
-      dropped.add('tables');
-      for (const cell of node.querySelectorAll('td,th')) {
-        open('paragraph');
-        walk(cell, marks, null);
-      }
+      // Each cell's content is walked like a small document of its own, then becomes the cell's lines.
+      const rows = [];
+      [...node.rows].slice(0, TABLE_LIMITS.rows).forEach((tr, r) => {
+        rows[r] ??= { cells: [] };
+        let c = 0;
+        const allHeads = [...tr.cells].every((td) => td.nodeName.toLowerCase() === 'th');
+        if (allHeads && rows.slice(0, r).every((row) => row.header)) rows[r].header = true;
+        for (const td of tr.cells) {
+          while (rows[r].cells[c]) c += 1;
+          const from = blocks.length;
+          current = null;
+          open('paragraph');
+          for (const child of td.childNodes) walk(child, marks, null);
+          const inner = blocks.splice(from);
+          const lines = inner.flatMap((b) => (b.kind === 'list' ? b.items.map((item) => item.runs) : b.runs ? [b.runs] : []));
+          const cell = { runs: normaliseRuns(lines.flatMap((runs, i) => (i ? [{ text: '\n' }, ...runs] : runs))) };
+          const colspan = Math.max(1, Math.min(td.colSpan || 1, TABLE_LIMITS.cols));
+          const rowspan = Math.max(1, Math.min(td.rowSpan || 1, 100));
+          if (colspan > 1) cell.colspan = colspan;
+          if (rowspan > 1) cell.rowspan = rowspan;
+          for (let dr = 0; dr < rowspan; dr += 1) {
+            rows[r + dr] ??= { cells: [] };
+            for (let dc = 0; dc < colspan; dc += 1) rows[r + dr].cells[c + dc] = dr || dc ? { runs: [{ text: '' }] } : cell;
+          }
+          c += colspan;
+        }
+      });
+      for (const row of rows) for (let i = 0; i < row.cells.length; i += 1) row.cells[i] ??= { runs: [{ text: '' }] };
+      const table = makeBlock('table');
+      table.rows = rows.filter(Boolean);
+      table.widths = [];
+      blocks.push(normaliseTable(table));
       current = null;
       return;
     }
@@ -155,6 +181,7 @@ export function blocksFromHtml(html, document) {
 
   const cleaned = blocks
     .map((block) => {
+      if (block.kind === 'table') return block;
       if (block.kind === 'list') {
         block.items = block.items
           .map((item) => ({ level: item.level, runs: normaliseRuns(item.runs) }))

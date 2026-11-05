@@ -108,11 +108,11 @@ describe('What is worth keeping is kept', () => {
     expect(paste('<ol><li>x</li></ol>').blocks[0].listType).toBe('number');
   });
 
-  it('a table is flattened to its text and reported', () => {
+  it('a table stays a table', () => {
     const { blocks, dropped } = paste('<table><tr><td>left</td><td>right</td></tr></table>');
 
-    expect(dropped).toContain('tables');
-    expect(blocks.map((b) => runsText(b.runs))).toEqual(['left', 'right']);
+    expect([...dropped]).toEqual([]);
+    expect(blocks[0].rows[0].cells.map((cell) => runsText(cell.runs))).toEqual(['left', 'right']);
   });
 
   it('whitespace from the source markup is collapsed', () => {

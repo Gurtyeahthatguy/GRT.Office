@@ -189,10 +189,12 @@ fn delete_row(state: State<'_, Open>, table: String, rowid: i64) -> Result<usize
 // Schema.
 
 /// Runs a schema statement written by the designer.
-#[tauri::command]
+#[tauri::command(async)]
 fn run_schema(state: State<'_, Open>, sql: String) -> Result<serde_json::Value, String> {
     with_db(&state, |database| {
-        undo::step(database, Some(&sql), |connection| connection.execute_batch(&sql).map_err(|e| format!("{e}")))?;
+        db::as_user(database, &sql, |database| {
+            undo::step(database, Some(&sql), |connection| connection.execute_batch(&sql).map_err(|e| format!("{e}")))
+        })?;
         Ok(serde_json::json!({ "ok": true }))
     })
 }
@@ -208,7 +210,7 @@ fn inspect_sql(sql: String) -> serde_json::Value {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn run_query(
     state: State<'_, Open>,
     sql: String,
@@ -216,12 +218,12 @@ fn run_query(
 ) -> Result<serde_json::Value, String> {
     with_db(&state, |database| {
         let bound = params.unwrap_or_default();
-
-        if !db::is_write(&sql) {
-            return db::run(&database.connection, &sql, &bound);
-        }
-
-        undo::step(database, Some(&sql), |connection| db::run(connection, &sql, &bound))
+        db::as_user(database, &sql, |database| {
+            if !db::is_write(&sql) {
+                return db::run(&database.connection, &sql, &bound);
+            }
+            undo::step(database, Some(&sql), |connection| db::run(connection, &sql, &bound))
+        })
     })
 }
 
@@ -260,8 +262,8 @@ fn prepare_for_sharing(state: State<'_, Open>) -> Result<serde_json::Value, Stri
 
 // The readable archive.
 
-#[tauri::command]
-fn export_grt(state: State<'_, Open>, path: String) -> Result<(), String> {
+#[tauri::command(async)]
+fn export_grt(state: State<'_, Open>, path: String, password: Option<String>) -> Result<(), String> {
     let parts = with_db(&state, |database| export::parts_of(&database.connection))?;
 
     let mut entries = vec![grt_container::Entry::new(
@@ -273,21 +275,19 @@ fn export_grt(state: State<'_, Open>, path: String) -> Result<(), String> {
         entries.push(grt_container::Entry::new(name, text.into_bytes()));
     }
 
-    let bytes = grt_container::write_archive(entries)
-        .map_err(|e| format!("Cannot build the archive: {e}"))?;
+    let bytes = grt_app::package::seal_document(entries, password.as_deref())?;
 
     atomic_write(Path::new(&path), &bytes)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn import_grt(
     state: State<'_, Open>,
     archive: String,
     into: Option<String>,
+    password: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let bytes = fs::read(&archive).map_err(|e| format!("Cannot read {archive}: {e}"))?;
-    let parts = grt_container::read_archive(&bytes)
-        .map_err(|e| format!("{archive} is not a readable GRT archive: {e}"))?;
+    let parts = grt_app::package::read_document(Path::new(&archive), password.as_deref())?;
 
     let text_of = |wanted: &str| -> Option<String> {
         parts
@@ -313,15 +313,40 @@ fn import_grt(
     Ok(described)
 }
 
+// Other formats: rows read whole, and a database built from SQL that GRT wrote itself.
+
+#[tauri::command(async)]
+fn all_rows(state: State<'_, Open>, table: String) -> Result<serde_json::Value, String> {
+    with_db(&state, |database| db::all_rows(&database.connection, &table))
+}
+
+#[tauri::command(async)]
+fn import_sql(
+    state: State<'_, Open>,
+    schema: String,
+    data: String,
+    into: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let target = if is_ephemeral() { None } else { into };
+    let database = Database::create(target.as_deref().map(Path::new))?;
+    export::restore(&database.connection, &schema, &data)?;
+    let described = describe(&database)?;
+    *state
+        .0
+        .lock()
+        .map_err(|_| "The database is unavailable".to_string())? = Some(database);
+    Ok(described)
+}
+
 // Files.
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_file(path: String) -> Result<Response, String> {
     let bytes = fs::read(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
     Ok(Response::new(bytes))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn write_file_atomic(request: Request<'_>) -> Result<(), String> {
     let encoded = request
         .headers()
@@ -486,6 +511,8 @@ pub fn run() {
             prepare_for_sharing,
             export_grt,
             import_grt,
+            all_rows,
+            import_sql,
             read_file,
             write_file_atomic,
             file_exists,

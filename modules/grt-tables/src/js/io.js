@@ -4,6 +4,12 @@ const { invoke } = window.__TAURI__.core;
 
 export const FILTERS = {
   sqlite: [{ name: 'Database', extensions: ['sqlite', 'db', 'sqlite3'] }],
+  openable: [
+    { name: 'Databases', extensions: ['sqlite', 'db', 'sqlite3', 'odb'] },
+    { name: 'LibreOffice Base database', extensions: ['odb'] },
+  ],
+  odb: [{ name: 'LibreOffice Base database', extensions: ['odb'] }],
+  odt: [{ name: 'OpenDocument text', extensions: ['odt'] }],
   grt: [{ name: 'GRT archive', extensions: ['grt'] }],
   csv: [{ name: 'Comma-separated values', extensions: ['csv', 'tsv', 'txt'] }],
   ods: [{ name: 'OpenDocument spreadsheet', extensions: ['ods'] }],
@@ -75,8 +81,10 @@ export const undo = () => invoke('undo');
 export const undoDepth = () => invoke('undo_depth');
 export const prepareForSharing = () => invoke('prepare_for_sharing');
 
-export const exportGrt = (path) => invoke('export_grt', { path });
-export const importGrt = (archive, into = null) => invoke('import_grt', { archive, into });
+export const allRowsOf = (table) => invoke('all_rows', { table });
+export const importSql = (schema, data, into = null) => invoke('import_sql', { schema, data, into });
+export const exportGrt = (path, password = null) => invoke('export_grt', { path, password });
+export const importGrt = (archive, into = null, password = null) => invoke('import_grt', { archive, into, password });
 
 // Files
 

@@ -28,6 +28,24 @@ export function naturalSize(bytes) {
   return null;
 }
 
+/** More pixels than this and a picture is not drawn: decoding it would take gigabytes. */
+export const MAX_PIXELS = 120_000_000;
+
+/** Whether a picture may be drawn; one whose size is unknown is, an SVG that declares entities is not. */
+export function drawable(bytes) {
+  const size = naturalSize(bytes);
+  if (size) return size.w * size.h <= MAX_PIXELS;
+  const head = new TextDecoder().decode(bytes.subarray(0, 4096));
+  return !(head.includes('<svg') || head.includes('<?xml')) || !new TextDecoder().decode(bytes).includes('<!ENTITY');
+}
+
+/** What is drawn instead of a picture that may not be; the picture itself stays in the document. */
+export const NOT_DRAWN = `data:image/svg+xml,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="120" viewBox="0 0 400 120">'
+  + '<rect width="400" height="120" fill="#e8e8e8" stroke="#999"/>'
+  + '<text x="200" y="66" font-family="sans-serif" font-size="16" text-anchor="middle" fill="#555">A picture too large to show</text></svg>',
+)}`;
+
 /** A picture's size on the page: its own, made to fit a width. */
 export function fittedSize(bytes, maxWidth = 600) {
   const size = naturalSize(bytes);

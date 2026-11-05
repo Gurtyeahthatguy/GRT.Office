@@ -1,0 +1,2 @@
+MathJax 3.2.2 (Apache-2.0), es5/tex-mml-svg.js only: TeX and MathML in, SVG paths out.
+Copied by scripts/sync-core.mjs into the modules that show formulas: Paper, Slides and Notes.

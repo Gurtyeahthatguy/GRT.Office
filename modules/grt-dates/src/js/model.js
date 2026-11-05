@@ -2,6 +2,7 @@
 
 import { newUid } from './ids.js';
 import { expand } from './recurrence.js';
+import { zoneResolver, toLocal } from './zones.js';
 import {
   dayNumber, addDays, today, minutesOfDay, addMinutes, minutesBetween,
 } from './time.js';
@@ -25,7 +26,7 @@ export function createModel() {
 
 // Calendars
 
-export function addCalendar(model, { name, path = null, entries = [], colour = null }) {
+export function addCalendar(model, { name, path = null, entries = [], colour = null, timezones = [], kept = [] }) {
   const calendar = {
     id: newUid(),
     name,
@@ -34,6 +35,8 @@ export function addCalendar(model, { name, path = null, entries = [], colour = n
     visible: true,
     dirty: path === null,
     entries,
+    timezones,
+    kept,
   };
   model.calendars.push(calendar);
   return calendar;
@@ -136,10 +139,26 @@ export function addEntry(model, calendarId, entry) {
   return entry;
 }
 
+/** A repeating event from another zone, put on the local clock once it is changed here. */
+function localise(entry, calendar) {
+  if (!entry.zone) return;
+  const resolver = resolverFor(calendar);
+  entry.start = { ...toLocal(entry.start, entry.zone, resolver), zone: null };
+  if (entry.end) entry.end = { ...toLocal(entry.end, entry.zone, resolver), zone: null };
+  entry.zone = null;
+}
+
+const resolvers = new WeakMap();
+function resolverFor(calendar) {
+  if (!resolvers.has(calendar)) resolvers.set(calendar, zoneResolver(calendar.timezones ?? []));
+  return resolvers.get(calendar);
+}
+
 export function updateEntry(model, uid, changes) {
   for (const calendar of model.calendars) {
     const entry = calendar.entries.find((item) => item.uid === uid);
     if (!entry) continue;
+    if ('start' in changes || 'end' in changes || 'rrule' in changes) localise(entry, calendar);
     Object.assign(entry, changes);
     calendar.dirty = true;
     return entry;
@@ -170,6 +189,12 @@ export function findEntry(model, uid) {
 export function excludeOccurrence(model, uid, date) {
   const found = findEntry(model, uid);
   if (!found) return null;
+  // The day shown is on the local clock; a zoned series counts its days in its own zone.
+  if (found.entry.zone && !found.entry.allDay) {
+    const resolver = resolverFor(found.calendar);
+    date = expand(found.entry, addDays(date, -1), addDays(date, 1))
+      .find((day) => toLocal({ date: day, time: found.entry.start.time }, found.entry.zone, resolver).date === date) ?? date;
+  }
   if (!found.entry.exdate.includes(date)) found.entry.exdate.push(date);
   found.calendar.dirty = true;
   return found.entry;
@@ -187,11 +212,22 @@ export function occurrencesBetween(model, from, to) {
       if (entry.kind !== 'event') continue;
       if (needle && !matches(entry, needle)) continue;
 
+      if (entry.zone && !entry.allDay) {
+        // Each occurrence is placed in its own zone and then on the local clock, a day either side to catch those that move across midnight.
+        const resolver = resolverFor(calendar);
+        for (const date of expand(entry, addDays(from, -1), addDays(to, 1))) {
+          const local = toLocal({ date, time: entry.start.time }, entry.zone, resolver);
+          if (local.date < from || local.date > to) continue;
+          rows.push({ entry, calendar, date: local.date, occurrence: date, time: local.time, minutes: minutesOfDay(local.time), lengthMinutes: durationOf(entry) });
+        }
+        continue;
+      }
       for (const date of expand(entry, from, to)) {
         rows.push({
           entry,
           calendar,
           date,
+          occurrence: date,
           time: entry.allDay ? null : entry.start.time,
           minutes: entry.allDay ? 0 : minutesOfDay(entry.start.time),
           lengthMinutes: durationOf(entry),
@@ -272,6 +308,7 @@ export function moveTo(model, uid, date, time = null) {
   if (!found || !found.entry.start) return null;
 
   const entry = found.entry;
+  localise(entry, found.calendar);
   const length = durationOf(entry);
 
   if (entry.allDay) {

@@ -1,5 +1,6 @@
 //! The `.grt` container.
 
+pub mod encryption;
 pub mod manifest;
 pub mod zip;
 

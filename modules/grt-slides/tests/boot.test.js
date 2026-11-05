@@ -484,13 +484,14 @@ describe('other programs’ presentations', () => {
     const pkg = decodeBlock(window.__TAURI_PACKAGES__['/tmp/lossy.pptx']);
     const entries = [...pkg.entries].map(([name, data]) => ({
       name,
-      data: name === 'ppt/slides/slide1.xml' ? new TextDecoder().decode(data).replace('<p:sld ', '<p:sld show="0" ') : data,
+      // An animation is something Slides does not keep, so opening the file loses it.
+      data: name === 'ppt/slides/slide1.xml' ? new TextDecoder().decode(data).replace('</p:sld>', '<p:timing><p:tnLst><p:par><p:cTn id="1"><p:childTnLst><p:set><p:cBhvr><p:tgtEl><p:spTgt spid="2"/></p:tgtEl></p:cBhvr></p:set></p:childTnLst></p:cTn></p:par></p:tnLst></p:timing></p:sld>') : data,
     }));
     window.__TAURI_PACKAGES__['/tmp/lossy.pptx'] = encodeBlock(entries);
     window.__TAURI_PICK__ = { open: '/tmp/lossy.pptx' };
     el('btn-open').click();
     await until(dialogOpen);
-    expect(el('panel-body').textContent).toContain('Hidden slides, shown');
+    expect(el('panel-body').textContent).toContain('Animations');
     el('panel-cancel').click();
     await until(() => !dialogOpen());
 

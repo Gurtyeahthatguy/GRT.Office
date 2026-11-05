@@ -3,6 +3,10 @@
 /** The value a reference becomes when it stops existing. */
 export const REF_ERROR = '#REF!';
 
+/** The size of a sheet, as LibreOffice and Excel have it. */
+export const ROW_COUNT = 1048576;
+export const COL_COUNT = 16384;
+
 // Column names
 
 /** 0 → A, 25 → Z, 26 → AA. */
@@ -84,7 +88,36 @@ export function parseRange(text) {
 }
 
 export function formatRange(range) {
+  if (range.whole === 'col') {
+    const side = (ref) => `${ref.colAbs ? '$' : ''}${columnName(ref.col)}`;
+    return `${side(range.from)}:${side(range.to)}`;
+  }
+  if (range.whole === 'row') {
+    const side = (ref) => `${ref.rowAbs ? '$' : ''}${ref.row + 1}`;
+    return `${side(range.from)}:${side(range.to)}`;
+  }
   return `${formatRef(range.from)}:${formatRef(range.to)}`;
+}
+
+/** `A:C` or `2:5`, a range of whole columns or rows; null when it is neither. */
+export function wholeRange(first, second) {
+  const column = /^(\$?)([A-Za-z]{1,3})$/;
+  const row = /^(\$?)(\d{1,7})$/;
+  const a = column.exec(first);
+  const b = column.exec(second);
+  if (a && b) {
+    const from = { row: 0, col: columnIndex(a[2]), rowAbs: true, colAbs: a[1] === '$' };
+    const to = { row: ROW_COUNT - 1, col: columnIndex(b[2]), rowAbs: true, colAbs: b[1] === '$' };
+    return from.col < COL_COUNT && to.col < COL_COUNT ? { from, to, whole: 'col' } : null;
+  }
+  const c = row.exec(first);
+  const d = row.exec(second);
+  if (c && d) {
+    const from = { row: Number(c[2]) - 1, col: 0, rowAbs: c[1] === '$', colAbs: true };
+    const to = { row: Number(d[2]) - 1, col: COL_COUNT - 1, rowAbs: d[1] === '$', colAbs: true };
+    return from.row >= 0 && to.row >= 0 && from.row < ROW_COUNT && to.row < ROW_COUNT ? { from, to, whole: 'row' } : null;
+  }
+  return null;
 }
 
 /** Every cell in a range, row by row. */
@@ -154,6 +187,8 @@ export function shiftForStructuralChange(ref, { axis, at, count }) {
 /** The same, for a range. */
 export function shiftRangeForStructuralChange(range, change) {
   const { axis, at, count } = change;
+  // A range of whole columns does not move when rows come and go, nor whole rows with columns.
+  if ((range.whole === 'col' && axis === 'row') || (range.whole === 'row' && axis === 'col')) return range;
   const pick = (ref) => (axis === 'row' ? ref.row : ref.col);
 
   const from = { ...range.from };
@@ -172,9 +207,9 @@ export function shiftRangeForStructuralChange(range, change) {
     const grown = { from: adjust(from), to: adjust(to) };
     if (at > low && at <= high) {
       // Straddled: the near edge stays, the far edge has already moved.
-      return grown;
+      return range.whole ? { ...grown, whole: range.whole } : grown;
     }
-    return grown;
+    return range.whole ? { ...grown, whole: range.whole } : grown;
   }
 
   const removed = -count;
@@ -190,5 +225,21 @@ export function shiftRangeForStructuralChange(range, change) {
   };
   const fromIsFar = pick(from) > pick(to);
 
-  return { from: move(from, fromIsFar), to: move(to, !fromIsFar) };
+  return { from: move(from, fromIsFar), to: move(to, !fromIsFar), ...(range.whole ? { whole: range.whole } : {}) };
+}
+
+/** F4 in a formula: the reference at the cursor goes A1, $A$1, A$1, $A1 and back. */
+export function cycleReference(text, caret) {
+  const re = /(\$?)([A-Z]{1,3})(\$?)(\d{1,7})(?![\w(])/g;
+  let match;
+  while ((match = re.exec(text))) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (caret < start || caret > end) continue;
+    const [, c, letters, r, digits] = match;
+    const next = !c && !r ? ['$', '$'] : c && r ? ['', '$'] : !c && r ? ['$', ''] : ['', ''];
+    const made = `${next[0]}${letters}${next[1]}${digits}`;
+    return { text: text.slice(0, start) + made + text.slice(end), caret: start + made.length };
+  }
+  return null;
 }

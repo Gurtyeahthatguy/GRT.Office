@@ -1,6 +1,6 @@
 /** A table, or a query's result, on paper: rows cut into pages, the column names on each. */
 
-import { makePage, paperSize, measuringColumn } from './core/print.js';
+import { makePage, paperSize, measuringColumn, flowBreaks, flowPage } from './core/print.js';
 
 const MM = 96 / 25.4;
 const TITLE = 9;
@@ -109,4 +109,28 @@ export function printablePages(data, setup) {
     return page;
   });
   return { width: paper.width, height: paper.height, pages };
+}
+
+/** A report on paper: its parts flowed onto pages, a table cut between rows with its heading again on the next page. */
+export function reportPages(html, setup) {
+  const paper = paperSize(setup);
+  const margin = Math.max(0, setup.margin ?? 12);
+  const column = measuringColumn(paper.width - 2 * margin, 'report-print');
+  try {
+    column.innerHTML = html;
+    const report = column.firstElementChild;
+    column.replaceChildren(...(report?.children ?? []));
+    const windows = flowBreaks(column, (paper.height - 2 * margin) * MM, { keepWithNext: (element) => element.matches('h2, h3') });
+    const pages = windows.map((window) => {
+      const page = makePage(paper.width, paper.height);
+      const body = flowPage(column, window);
+      body.classList.add('report-print');
+      Object.assign(body.style, { position: 'absolute', top: `${margin}mm`, left: `${margin}mm`, width: `${paper.width - 2 * margin}mm` });
+      page.append(body);
+      return page;
+    });
+    return { width: paper.width, height: paper.height, pages };
+  } finally {
+    column.remove();
+  }
 }

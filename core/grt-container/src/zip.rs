@@ -32,9 +32,11 @@ const FLAG_UTF8: u16 = 1 << 11;
 const EXTRA_ZIP64: u16 = 0x0001;
 
 /// Largest entry read into memory.
-pub const MAX_ENTRY: u64 = 1 << 30;
+pub const MAX_ENTRY: u64 = 512 << 20;
 /// Largest total read from one archive.
-pub const MAX_TOTAL: u64 = 2 << 30;
+pub const MAX_TOTAL: u64 = 1 << 30;
+/// Most entries read from one archive.
+pub const MAX_ENTRIES: u64 = 100_000;
 
 /// One file inside the archive.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +106,10 @@ pub fn write_zip(items: &[Item]) -> io::Result<Vec<u8>> {
     let mut central: Vec<u8> = Vec::new();
 
     for item in items {
-        if item.name.is_empty() || item.name.len() > usize::from(u16::MAX) {
+        let unsafe_name = item.name.starts_with('/')
+            || item.name.contains(['\\', '\0'])
+            || item.name.split('/').any(|part| part == ".." || part == ".");
+        if item.name.is_empty() || item.name.len() > usize::from(u16::MAX) || unsafe_name {
             return Err(invalid(format!("unusable entry name {:?}", item.name)));
         }
         if !seen.insert(item.name) {
@@ -327,6 +332,9 @@ pub fn read_archive(bytes: &[u8]) -> io::Result<Vec<Entry>> {
     if directory.count.saturating_mul(46) > directory.size {
         return Err(invalid("the central directory is shorter than its entries"));
     }
+    if directory.count > MAX_ENTRIES {
+        return Err(invalid("the archive has too many entries to open"));
+    }
     bytes.slice(directory.offset, directory.size)?;
 
     let mut entries = Vec::new();
@@ -424,7 +432,7 @@ pub fn recover_archive(bytes: &[u8], damage: &io::Error) -> Option<Recovered> {
     while let Ok(SIGNATURE_LOCAL) = data.u32(at) {
         let Some((entry, next)) = recover_entry(&data, at) else { break };
         total = total.saturating_add(entry.data.len() as u64);
-        if total > MAX_TOTAL || !names.insert(entry.name.clone()) {
+        if total > MAX_TOTAL || entries.len() as u64 >= MAX_ENTRIES || !names.insert(entry.name.clone()) {
             break;
         }
         entries.push(entry);

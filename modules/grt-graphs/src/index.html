@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GRT Graphs</title>
+    <link rel="stylesheet" href="css/design.css" />
     <link rel="stylesheet" href="css/app.css" />
   </head>
   <body>
@@ -48,6 +49,10 @@
       </div>
 
       <div class="group">
+        <button id="btn-align-left" title="Align left edges">&#8676;</button>
+        <button id="btn-align-centre" title="Align centres">&#8596;</button>
+        <button id="btn-align-top" title="Align top edges">&#8613;</button>
+        <button id="btn-distribute" title="Space evenly across">&#8660;</button>
         <button id="btn-layout" title="Arrange as a tree">Tree layout</button>
         <button id="btn-validate" title="Check for problems">Check</button>
       </div>
@@ -74,6 +79,7 @@
       </div>
     </header>
 
+    <div class="body-row">
     <main class="workspace">
       <svg id="canvas" xmlns="http://www.w3.org/2000/svg"></svg>
       <div id="empty-state" class="empty-state">
@@ -88,6 +94,8 @@
       </div>
       <input id="text-editor" class="text-editor hidden" type="text" />
     </main>
+    <aside id="properties"></aside>
+    </div>
 
     <div id="overlay" class="overlay hidden">
       <div class="panel" role="dialog" aria-modal="true">

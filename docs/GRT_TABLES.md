@@ -172,6 +172,10 @@ version in git.
 order, records in primary-key order, ZIP timestamps at the epoch. Two exports
 of the same database produce identical bytes.
 
+An archive can carry a password. It is then sealed whole, with AES-256-GCM and
+a key from Argon2id, so two such exports differ. The `.sqlite` stays as it is,
+and the export panel says so.
+
 ### No-trace requirements specific to this module
 
 | Element | The problem |

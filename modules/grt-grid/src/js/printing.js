@@ -1,8 +1,10 @@
 /** Sheets on paper: which cells land on which page, drawn for the printer or as PDF. */
 
+import { svgToPrimitives } from './core/svg-primitives.js';
 import { formatValue, alignmentFor } from './format.js';
 import { parseRef, parseRange, formatRange, a1 } from './references.js';
 import { makePage, paperSize } from './core/print.js';
+import { runningLine } from './core/formats/sheet-print.js';
 
 const MM = 96 / 25.4;
 const PX_TO_PT = 0.75;
@@ -142,8 +144,30 @@ function pageCells(sheet, styles, page) {
   return { xs, ys, cells };
 }
 
+/** Where a line of the sheet starts, in pixels from its corner. */
+function lineStart(sheet, axis, index) {
+  let at = 0;
+  for (let i = 0; i < index; i += 1) at += axis === 'rows' ? sheet.rowHeight(i) : sheet.columnWidth(i);
+  return at;
+}
+
+/**
+ * The charts a page prints: those whose corner falls on it, placed in the page's pixels.
+ * @param {{sheetId: string, x: number, y: number, width: number, height: number, svg: string}[]} charts
+ */
+function pageCharts(sheet, page, charts) {
+  if (!charts?.length || page.cols.length === 0 || page.rows.length === 0) return [];
+  const x0 = lineStart(sheet, 'cols', page.cols[0]);
+  const x1 = lineStart(sheet, 'cols', page.cols[page.cols.length - 1] + 1);
+  const y0 = lineStart(sheet, 'rows', page.rows[0]);
+  const y1 = lineStart(sheet, 'rows', page.rows[page.rows.length - 1] + 1);
+  const repeat = page.repeat.reduce((sum, row) => sum + sheet.rowHeight(row), 0);
+  return charts.filter((c) => c.sheetId === sheet.id && c.x >= x0 && c.x < x1 && c.y >= y0 && c.y < y1)
+    .map((c) => ({ ...c, x: c.x - x0, y: c.y - y0 + repeat }));
+}
+
 /** One printed page, drawn in the page's own DOM. */
-function pageElement(sheet, styles, page, layout, setup, running) {
+function pageElement(sheet, styles, page, layout, setup, running, charts = []) {
   const { paper, scale } = layout;
   const element = makePage(paper.width, paper.height);
   const body = document.createElement('div');
@@ -179,6 +203,14 @@ function pageElement(sheet, styles, page, layout, setup, running) {
   if (setup.gridlines) {
     for (const x of xs) canvas.append(rule({ left: `${x}px`, top: '0', width: '1px', height: `${height}px` }));
     for (const y of ys) canvas.append(rule({ left: '0', top: `${y}px`, width: `${width + 1}px`, height: '1px' }));
+  }
+
+  for (const chart of pageCharts(sheet, page, charts)) {
+    const frame = document.createElement('div');
+    frame.className = 'print-chart';
+    Object.assign(frame.style, { position: 'absolute', left: `${chart.x}px`, top: `${chart.y}px`, width: `${chart.width}px`, height: `${chart.height}px` });
+    frame.innerHTML = chart.svg;
+    canvas.append(frame);
   }
 
   body.append(canvas);
@@ -222,17 +254,18 @@ export function planPages(jobs) {
 
 function runningText(plan, index, total) {
   if (!plan.setup.labels) return {};
-  return { header: plan.sheet.name, footer: `Page ${index + 1} of ${total}` };
+  const values = { sheet: plan.sheet.name, page: index + 1, pages: total, file: plan.file ?? '', date: new Date().toISOString().slice(0, 10) };
+  return { header: runningLine(plan.setup.header ?? '&A', values), footer: runningLine(plan.setup.footer ?? 'Page &P of &N', values) };
 }
 
 /** The planned pages as elements for the print preview. */
-export function pageElements(planned, styles) {
+export function pageElements(planned, styles, charts = []) {
   return planned.map((plan, index) =>
-    pageElement(plan.sheet, styles, plan.page, plan.layout, plan.setup, runningText(plan, index, planned.length)));
+    pageElement(plan.sheet, styles, plan.page, plan.layout, plan.setup, runningText(plan, index, planned.length), charts));
 }
 
 /** The planned pages as primitives for the PDF engine, each on its own sheet's paper. */
-export function pdfPages(planned, styles) {
+export function pdfPages(planned, styles, charts = []) {
   return planned.map((plan, index) => {
     const { paper, scale } = plan.layout;
     const width = paper.width * MM * PX_TO_PT;
@@ -276,6 +309,12 @@ export function pdfPages(planned, styles) {
         const [, py] = at(0, y);
         if (py <= bottom) primitives.push({ type: 'polyline', points: [[x0, py], [x1, py]], stroke: GRID, strokeWidth: 0.5 });
       }
+    }
+
+    for (const chart of pageCharts(plan.sheet, plan.page, charts)) {
+      const [cx, cy] = at(chart.x, chart.y);
+      if (cx >= right || cy >= bottom) continue;
+      primitives.push(...svgToPrimitives(chart.svg, { x: cx, y: cy, scale: k }));
     }
 
     const running = runningText(plan, index, planned.length);

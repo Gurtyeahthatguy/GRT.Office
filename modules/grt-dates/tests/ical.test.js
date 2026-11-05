@@ -166,16 +166,20 @@ describe('preserving what is not understood', () => {
   it('reports components it kept but does not display', () => {
     const withAlarm = [
       'BEGIN:VCALENDAR',
-      'BEGIN:VTIMEZONE',
-      'TZID:Europe/Rome',
-      'END:VTIMEZONE',
+      'BEGIN:VJOURNAL',
+      'UID:j',
+      'SUMMARY:A diary page',
+      'END:VJOURNAL',
       'BEGIN:VEVENT',
       'UID:a',
       'DTSTART:20260910T100000',
       'END:VEVENT',
       'END:VCALENDAR',
     ].join('\r\n');
-    expect(parse(withAlarm).unsupported).toContain('VTIMEZONE');
+    const parsed = parse(withAlarm);
+    expect(parsed.unsupported).toContain('VJOURNAL');
+    // Kept means written back, not only mentioned.
+    expect(serialise(parsed)).toContain('BEGIN:VJOURNAL\r\nUID:j\r\nSUMMARY:A diary page\r\nEND:VJOURNAL');
   });
 });
 

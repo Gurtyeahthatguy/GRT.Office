@@ -12,9 +12,10 @@ export const FILTERS = {
   grt: GRT_FILTER, svg: SVG_FILTER, png: PNG_FILTER, json: JSON_FILTER, pdf: PDF_FILTER,
   odg: [{ name: 'OpenDocument drawing', extensions: ['odg'] }],
   fodg: [{ name: 'Flat OpenDocument drawing', extensions: ['fodg'] }],
+  otg: [{ name: 'OpenDocument drawing template', extensions: ['otg'] }],
   canvas: [{ name: 'JSON Canvas', extensions: ['canvas'] }],
   diagrams: [
-    { name: 'Diagrams', extensions: ['grt', 'odg', 'fodg', 'canvas', 'json'] },
+    { name: 'Diagrams', extensions: ['grt', 'odg', 'fodg', 'otg', 'canvas', 'json'] },
     { name: 'GRT document', extensions: ['grt'] },
     { name: 'OpenDocument drawing', extensions: ['odg', 'fodg'] },
     { name: 'JSON Canvas', extensions: ['canvas'] },
@@ -43,13 +44,13 @@ export async function pickToSave(defaultPath, filters = GRT_FILTER, title = 'Sav
 }
 
 /** Reads a `.grt` document: a map of archive path to text. */
-export async function readDocument(path) {
-  return invoke('read_grt', { path });
+export async function readDocument(path, password = null) {
+  return invoke('read_grt', { path, password });
 }
 
 /** Writes a `.grt` document. */
-export async function writeDocument(path, parts) {
-  return invoke('write_grt', { path, parts });
+export async function writeDocument(path, parts, password = null) {
+  return invoke('write_grt', { path, parts, password });
 }
 
 /** Writes any text file, for the SVG and JSON exports. */
@@ -65,6 +66,11 @@ export async function writeBytes(path, bytes) {
   await invoke('write_file_atomic', bytes, {
     headers: { 'x-grt-path': encodeURIComponent(path) },
   });
+}
+
+/** Reads a file's bytes. */
+export async function readBytes(path) {
+  return new Uint8Array(await invoke('read_file', { path }));
 }
 
 /** Reads a plain text file. */

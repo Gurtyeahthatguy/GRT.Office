@@ -12,23 +12,29 @@ const here = dirname(fileURLToPath(import.meta.url));
 globalThis.window ??= globalThis;
 window.__TAURI__ ??= { core: { invoke: async () => ({}) } };
 const { DEFAULTS } = await import('../src/js/settings.js');
-const css = readFileSync(join(here, '..', 'src', 'css', 'app.css'), 'utf8');
+// The shared design sheet first, as the page loads it, then the program's own.
+const css = ['design.css', 'app.css'].map((name) => readFileSync(join(here, '..', 'src', 'css', name), 'utf8')).join('\n');
 
-/** The custom properties declared inside one selector's block. */
+/** The custom properties declared inside every block of one selector, in either sheet. */
 function variablesIn(selector) {
-  const start = css.indexOf(selector);
+  const found = new Set();
+  let start = css.indexOf(selector);
   if (start === -1) return null;
-  const open = css.indexOf('{', start);
-  const close = css.indexOf('}', open);
-  const body = css.slice(open + 1, close);
-  return new Set([...body.matchAll(/(--[a-z-]+)\s*:/g)].map((m) => m[1]));
+  while (start !== -1) {
+    const open = css.indexOf('{', start);
+    const close = css.indexOf('}', open);
+    for (const m of css.slice(open + 1, close).matchAll(/(--[a-z-]+)\s*:/g)) found.add(m[1]);
+    start = css.indexOf(selector, close);
+  }
+  return found;
 }
 
-const baseline = variablesIn(':root {');
+// Sizes are the same in every theme; a theme answers for colours.
+const SIZES = /^--(space-|radius|text-(small|normal|large)$|control-|font-|shadow-)/;
+const baseline = new Set([...(variablesIn(':root {') ?? [])].filter((name) => !SIZES.test(name)));
 
 describe('Theme definitions', () => {
   it('the baseline palette is found and is not empty', () => {
-    expect(baseline).not.toBeNull();
     expect(baseline.size).toBeGreaterThan(5);
   });
 

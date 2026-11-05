@@ -135,15 +135,22 @@ export function coerce(text, { decimal = '.' } = {}) {
   return trimmed;
 }
 
-/** Writes rows out as CSV. */
-export function toCsv(rows, { separator = ',' } = {}) {
-  return `${rows.map((row) => row.map((field) => escapeField(field, separator)).join(separator))
+/** Text that a spreadsheet program would take for a formula when it opens the file. */
+const FORMULA_START = /^[=+\-@\t\r]/;
+
+/**
+ * Writes rows out as CSV; with `neutralise`, text that starts like a formula gets a leading
+ * apostrophe, so Excel and LibreOffice show it instead of running it.
+ */
+export function toCsv(rows, { separator = ',', neutralise = false } = {}) {
+  return `${rows.map((row) => row.map((field) => escapeField(field, separator, neutralise)).join(separator))
     .join('\r\n')}\r\n`;
 }
 
-function escapeField(value, separator) {
+function escapeField(value, separator, neutralise) {
   if (value === null || value === undefined) return '';
-  const text = typeof value === 'boolean' ? (value ? 'TRUE' : 'FALSE') : String(value);
+  let text = typeof value === 'boolean' ? (value ? 'TRUE' : 'FALSE') : String(value);
+  if (neutralise && typeof value === 'string' && FORMULA_START.test(text)) text = `'${text}`;
   if (text.includes('"') || text.includes(separator) || /[\r\n]/.test(text)) {
     return `"${text.replace(/"/g, '""')}"`;
   }

@@ -18,14 +18,14 @@ fn is_ephemeral() -> bool {
 }
 
 /// Reads a file and hands the bytes back as a raw ArrayBuffer.
-#[tauri::command]
+#[tauri::command(async)]
 fn read_file(path: String) -> Result<Response, String> {
     let bytes = fs::read(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
     Ok(Response::new(bytes))
 }
 
 /// Writes a file atomically.
-#[tauri::command]
+#[tauri::command(async)]
 fn write_file_atomic(request: Request<'_>) -> Result<(), String> {
     let encoded = request
         .headers()
@@ -228,11 +228,9 @@ fn clear_staged(staged: tauri::State<'_, Staged>) -> Result<(), String> {
 }
 
 /// Reads the text parts of a `.grt` document.
-#[tauri::command]
-fn read_grt(path: String) -> Result<serde_json::Value, String> {
-    let bytes = fs::read(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
-    let entries = grt_container::read_archive(&bytes)
-        .map_err(|e| format!("{path} is not a readable GRT document: {e}"))?;
+#[tauri::command(async)]
+fn read_grt(path: String, password: Option<String>) -> Result<serde_json::Value, String> {
+    let entries = grt_app::package::read_document(Path::new(&path), password.as_deref())?;
 
     let mut parts = serde_json::Map::new();
     let mut resources = Vec::new();
@@ -250,11 +248,9 @@ fn read_grt(path: String) -> Result<serde_json::Value, String> {
 }
 
 /// Reads one binary part as raw bytes.
-#[tauri::command]
-fn read_resource(path: String, name: String) -> Result<Response, String> {
-    let bytes = fs::read(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
-    let entries = grt_container::read_archive(&bytes)
-        .map_err(|e| format!("{path} is not a readable GRT document: {e}"))?;
+#[tauri::command(async)]
+fn read_resource(path: String, name: String, password: Option<String>) -> Result<Response, String> {
+    let entries = grt_app::package::read_document(Path::new(&path), password.as_deref())?;
 
     entries
         .into_iter()
@@ -264,10 +260,11 @@ fn read_resource(path: String, name: String) -> Result<Response, String> {
 }
 
 /// Writes a `.grt` document, atomically and deterministically.
-#[tauri::command]
+#[tauri::command(async)]
 fn write_grt(
     path: String,
     parts: serde_json::Value,
+    password: Option<String>,
     staged: tauri::State<'_, Staged>,
 ) -> Result<(), String> {
     let map = parts
@@ -296,8 +293,7 @@ fn write_grt(
         }
     }
 
-    let bytes = grt_container::write_archive(entries)
-        .map_err(|e| format!("Cannot build the document: {e}"))?;
+    let bytes = grt_app::package::seal_document(entries, password.as_deref())?;
 
     atomic_write(Path::new(&path), &bytes)
 }
@@ -351,6 +347,8 @@ pub fn run() {
             grt_app::commands::recovery_list,
             grt_app::commands::recovery_remove,
             grt_app::commands::read_package,
+            grt_app::commands::list_templates,
+            grt_app::commands::templates_folder,
             grt_app::commands::write_package,
             read_file,
             write_file_atomic,

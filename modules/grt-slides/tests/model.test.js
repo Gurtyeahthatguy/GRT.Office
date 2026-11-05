@@ -218,3 +218,17 @@ describe('One drag is one undo entry', () => {
     expect(model.element(slide.id, element.id).x).toBe(0);
   });
 });
+
+describe('hidden slides and the box layouts', async () => {
+  const { writePptx } = await import('../src/js/core/formats/pptx-write.js');
+  it('keep a slide hidden in the file, and give each box its own placeholder', () => {
+    const deck = new SlidesModel();
+    const second = deck.addSlide(1, 'four');
+    deck.setHidden(second.id, true);
+    expect(deck.slide(second.id).elements.filter((e) => /^body\d*$/.test(e.placeholder ?? '')).map((e) => e.placeholder)).toEqual(['body', 'body2', 'body3', 'body4']);
+    const { entries } = writePptx(deck.toJSON(), new Map());
+    const slide2 = new TextDecoder().decode(entries.find((e) => e.name === 'ppt/slides/slide2.xml').data instanceof Uint8Array ? entries.find((e) => e.name === 'ppt/slides/slide2.xml').data : new TextEncoder().encode(entries.find((e) => e.name === 'ppt/slides/slide2.xml').data));
+    expect(slide2).toContain('show="0"');
+    expect(slide2).toContain('idx="4"');
+  });
+});

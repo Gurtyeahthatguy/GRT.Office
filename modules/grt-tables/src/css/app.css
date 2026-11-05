@@ -1,100 +1,38 @@
 /* Interface styles. */
 
-/* Palette. Light is defined on bare :root so every colour has a value even
-   before any media query or theme attribute applies. */
+/* The colours this program adds to those of design.css, theme by theme. */
 
 :root {
-  --bg: #f4f4f5;
-  --bg-raised: #ffffff;
-  --bg-sunken: #e4e4e7;
-  --border: #d4d4d8;
-  --text: #18181b;
-  --text-dim: #6b7280;
-  --accent: #1f6feb;
-  --danger: #c53030;
-  --ok: #1a7f37;
   --mark: #fde68a;
   --rule: #e8e8ec;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #1e1f22;
-    --bg-raised: #2b2d31;
-    --bg-sunken: #141517;
-    --border: #3a3d42;
-    --text: #e6e6e6;
-    --text-dim: #9aa0a6;
-    --accent: #4a9eff;
-    --danger: #e5534b;
-    --ok: #3fb950;
     --mark: #5a4a12;
     --rule: #303338;
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #1e1f22;
-  --bg-raised: #2b2d31;
-  --bg-sunken: #141517;
-  --border: #3a3d42;
-  --text: #e6e6e6;
-  --text-dim: #9aa0a6;
-  --accent: #4a9eff;
-  --danger: #e5534b;
-  --ok: #3fb950;
   --mark: #5a4a12;
   --rule: #303338;
 }
 
 /* Sepia: the reading palette of GRT Bible. */
 :root[data-theme="sepia"] {
-  --bg: #ece2cc;
-  --bg-raised: #f6eedb;
-  --bg-sunken: #e0d3b6;
-  --border: #d3c29d;
-  --text: #3b2f20;
-  --text-dim: #68583e;
-  --accent: #8a3a1f;
-  --danger: #9e2a1c;
-  --ok: #4f5e1e;
   --mark: #efd78f;
   --rule: #dccfae;
 }
 
 :root[data-theme="gold"] {
-  --bg: #f5efe1;
-  --bg-raised: #fdfaf3;
-  --bg-sunken: #e8dec8;
-  --border: #d6c8a8;
-  --text: #2e2519;
-  --text-dim: #7a6a4f;
-  --accent: #a67c00;
-  --danger: #a33a2a;
-  --ok: #5c7a1e;
   --mark: #f0d79a;
   --rule: #e3d7bd;
 }
 
 :root[data-theme="purple"] {
-  --bg: #191324;
-  --bg-raised: #241c33;
-  --bg-sunken: #110d1a;
-  --border: #3d3154;
-  --text: #ece7f5;
-  --text-dim: #a094b8;
-  --accent: #b388ff;
-  --danger: #ff6b6b;
-  --ok: #7ee787;
   --mark: #4a3570;
   --rule: #332948;
-}
-
-* { box-sizing: border-box; }
-
-html, body {
-  height: 100%;
-  margin: 0;
 }
 
 body {
@@ -107,8 +45,6 @@ body {
      interface. */
   user-select: none;
 }
-
-input, textarea, select { user-select: text; }
 
 /* Toolbar */
 
@@ -146,7 +82,6 @@ button {
 button:hover { background: var(--bg-sunken); }
 button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
 
 input[type="search"], input[type="text"], input[type="date"], input[type="time"],
 textarea, select, input:not([type]) {
@@ -164,9 +99,8 @@ textarea, select, input:not([type]) {
 main { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minmax(0, 1fr); }
 
 .spacer { flex: 1; }
-.dim { color: var(--text-dim); }
+
 .hint { color: var(--text-dim); font-size: 12px; margin: 8px 0 0; }
-.hidden { display: none !important; }
 
 .sidebar {
   background: var(--bg-raised);
@@ -174,6 +108,8 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minma
   padding: 12px;
   overflow-y: auto;
 }
+
+.sidebar h2:not(:first-child) { margin-top: 16px; }
 
 .sidebar h2 {
   font-size: 11px;
@@ -352,8 +288,6 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minma
 }
 
 .statusbar .spacer { flex: 1; }
-.badge { color: var(--ok); }
-.dim { color: var(--text-dim); }
 
 /* Saving is automatic, so the status bar says so. */
 .save-state { color: var(--text-dim); }
@@ -392,17 +326,6 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minma
   color: var(--text-dim);
 }
 
-#panel-body label.inline {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text);
-  font-size: 13px;
-}
-
-#panel-body label.inline input { width: auto; }
-#panel-body .row { display: flex; gap: 10px; }
-#panel-body .row label { flex: 1; }
 #panel-body code { font-family: ui-monospace, monospace; font-size: 11px; }
 
 .panel-actions {
@@ -418,3 +341,21 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minma
 .print-table th, .print-table td { border: 0.5pt solid #999; padding: 1.5pt 3pt; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
 .print-table th { background: #eee; font-weight: 600; }
 .print-table td.number { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Forms and reports */
+.form-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px 18px; padding: 16px; overflow: auto; }
+.form-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
+.form-field input, .form-field select, .form-field textarea { font-size: 14px; color: var(--text); }
+.form-field input[type="checkbox"] { align-self: flex-start; width: auto; }
+.report-setup { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.report-setup label { display: flex; flex-direction: column; font-size: 12px; color: var(--text-dim); gap: 3px; }
+.report-setup label.inline { flex-direction: row; align-items: center; }
+.report-output { overflow: auto; padding: 16px 24px; }
+.report h2 { margin: 0 0 12px; }
+.report-group { margin: 16px 0 6px; font-size: 14px; }
+.report-table, .report-print table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.report-table th, .report-table td, .report-print th, .report-print td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--border, #ccc); }
+.report-total td { font-weight: 600; border-top: 1px solid currentColor; }
+.report-chart { margin: 8px 0 16px; }
+.report-print { color: #111; background: #fff; font: 11px system-ui, sans-serif; }
+.report-print .dim { color: #666; }

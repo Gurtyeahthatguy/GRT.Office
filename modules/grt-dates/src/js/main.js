@@ -19,6 +19,7 @@ import { THEMES, applyTheme } from './core/theme.js';
 import { SaveBeforeClose } from './core/closing.js';
 import { printPreview, pageControls, isPrintPreviewOpen } from './core/print.js';
 import { printablePages } from './printing.js';
+import { REMINDERS, dueReminders, reminderText } from './reminders.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -72,6 +73,35 @@ async function start() {
   await closing.start();
   refresh();
   showSaveState(runtime.ephemeral ? 'unsaved' : 'idle');
+  startReminders();
+}
+
+// Reminders
+
+const fired = new Set();
+let lastReminderCheck = Date.now();
+
+/** Looks for reminders now due every twenty seconds while the program is open; nothing runs when it is closed. */
+function startReminders() {
+  lastReminderCheck = Date.now();
+  setInterval(checkReminders, 20000);
+}
+
+async function checkReminders(now = Date.now()) {
+  // After the machine sleeps, only the last quarter of an hour is caught up, not a flood.
+  const from = Math.max(lastReminderCheck, now - 15 * 60000);
+  lastReminderCheck = now;
+  for (const due of dueReminders(model, from, now)) {
+    if (fired.has(due.key)) continue;
+    fired.add(due.key);
+    const { summary, body } = reminderText(due);
+    try {
+      await io.notifyDesktop(summary, body);
+    } catch {
+      // Without a notification service, the reminder shows in the window.
+      toast(`${summary}${body ? `: ${body}` : ''}`);
+    }
+  }
 }
 
 /** Loads whatever calendars are in the folder. */
@@ -312,6 +342,7 @@ function eventForm(entry, calendarId) {
       <label>at<input type="time" data-field="endTime" value="${end.time ?? '10:00'}"></label>
     </div>
     <label>Repeat<select data-field="rrule">${repeats}${custom}</select></label>
+    <label>Reminder<select data-field="reminder">${REMINDERS.map(([value, label]) => `<option value="${value}"${value === String(entry.alarms?.[0]?.before ?? '') ? ' selected' : ''}>${label}</option>`).join('')}</select></label>
     <label>Calendar<select data-field="calendar">${calendars}</select></label>
     <label>Location<input data-field="location" value="${escapeHtml(entry.location)}"></label>
     <label>Notes<textarea data-field="description" rows="3">${escapeHtml(entry.description)}</textarea></label>
@@ -342,6 +373,7 @@ function readEventForm(fields) {
     start,
     end,
     rrule: fields.rrule || null,
+    alarms: fields.reminder === '' || fields.reminder === undefined ? [] : [{ before: Number(fields.reminder) }],
   };
 }
 
@@ -383,7 +415,10 @@ async function editEvent(uid, occurrenceDate) {
   if (!confirmed) return;
 
   const fields = readFields();
-  updateEntry(model, uid, readEventForm(fields));
+  const changes = readEventForm(fields);
+  // Only the first reminder is in the dialog; any others the file had stay.
+  changes.alarms = [...changes.alarms, ...(entry.alarms ?? []).slice(1)];
+  updateEntry(model, uid, changes);
 
   // Moving an entry to another calendar is a remove and an add.
   if (fields.calendar && fields.calendar !== calendar.id) {

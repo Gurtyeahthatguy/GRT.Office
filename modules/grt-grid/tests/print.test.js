@@ -157,6 +157,23 @@ describe('PDF', () => {
     expect(doc.getPage(0).getSize().width).toBeCloseTo(595.3, 0);
   });
 
+  it('draws a chart on the page where its corner falls, as shapes and text', async () => {
+    const { chartSvg } = await import('../src/js/core/charts.js');
+    const model = new GridModel();
+    const sheet = model.sheet;
+    sheet.set(0, 0, { v: 1 });
+    sheet.set(30, 4, { v: 2 });
+    const planned = planPages([{ sheet, setup: setup({ labels: false }), area: sheet.usedBounds() }]);
+    const svg = chartSvg({ type: 'column', title: 'Totals', legend: 'none', categories: ['a', 'b'], series: [{ values: [3, 5] }] }, { width: 200, height: 120 });
+    const [page] = pdfPages(planned, model.styles, [{ sheetId: sheet.id, x: 10, y: 30, width: 200, height: 120, svg }]);
+    const texts = page.primitives.filter((p) => p.type === 'text').map((p) => p.text);
+    expect(texts).toContain('Totals');
+    expect(page.primitives.filter((p) => p.type === 'rect' && p.fill === '#2f6fdf')).toHaveLength(2);
+    await expect(renderToPdf(page, { audit: false })).resolves.toBeInstanceOf(Uint8Array);
+    const [element] = pageElements(planned, model.styles, [{ sheetId: sheet.id, x: 10, y: 30, width: 200, height: 120, svg }]);
+    expect(element.querySelector('.print-chart svg')).not.toBeNull();
+  });
+
   it('keeps text inside its cell', async () => {
     const model = new GridModel();
     model.sheet.set(0, 0, { v: 'A long sentence that does not fit in one narrow column at all' });

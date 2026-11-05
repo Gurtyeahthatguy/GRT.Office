@@ -75,16 +75,20 @@ jobs:
       - name: Build (Linux)
         if: runner.os == 'Linux'
         working-directory: modules/${{ matrix.module }}
-        run: npx tauri build --bundles deb,rpm,appimage
+        run: npm run build -- --bundles deb,rpm,appimage
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
         working-directory: modules/${{ matrix.module }}
-        run: npx tauri build --bundles nsis
+        run: npm run build -- --bundles nsis
 
       - name: No-trace check
         if: runner.os == 'Linux'
         run: ./scripts/check-build.sh modules/${{ matrix.module }}/src-tauri/target/release/${{ matrix.module }}
+
+      - name: Weight check
+        shell: bash
+        run: ./scripts/check-weight.sh ${{ matrix.module }}
 
       # Tauri names its output after the product, spaces included. Rename to
       # one shape.

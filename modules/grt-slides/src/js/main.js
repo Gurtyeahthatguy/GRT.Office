@@ -1,6 +1,7 @@
 /** Application wiring. */
 
-import { SlidesModel, FONTS, PRESETS, TRANSITIONS, ALIGNMENTS } from './model.js';
+import { SlidesModel, FONTS, PRESETS, TRANSITIONS, ALIGNMENTS, LAYOUTS as SLIDE_LAYOUTS } from './model.js';
+import { createProperties } from './core/properties.js';
 import { Renderer } from './render.js';
 import { Interaction } from './interaction.js';
 import { Thumbnails } from './thumbnails.js';
@@ -12,21 +13,31 @@ import { describeFont, fontMediaType } from './fonts.js';
 import { UndoStack } from './core/undo.js';
 import { showPanel, showChoice, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
 import { readPackage, writePackage } from './core/package.js';
+import { withPassword, passwordFields, wirePasswordFields, passwordFrom, canProtect, PROTECTION } from './core/protection.js';
 import { readOdp, writeOdp } from './core/formats/odp.js';
 import { readPptx } from './core/formats/pptx-read.js';
 import { writePptx } from './core/formats/pptx-write.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
+import { createMenubar, paletteEntries } from './core/menubar.js';
+import { aboutDialog, licencesDialog } from './core/about.js';
+import { templateManager } from './core/template-manager.js';
+import { slidesMenus } from './menus.js';
 import { THEMES } from './core/theme.js';
 import { Keeper, MODES } from './core/keeper.js';
 import { renderToPdf, mergePdfPages } from './core/pdf.js';
 import { printPreview, pageControls, isPrintPreviewOpen } from './core/print.js';
 import { printablePages, LAYOUTS } from './printing.js';
 import { loadSettings, updateSettings, settings, canPersist } from './settings.js';
+import { stripMetadata, neutralName } from './core/image-metadata.js';
 import {
   pickToOpen, pickToSave, readDocument, readResource, writeDocument, writeText,
   writeBytes, readFileBytes, readText, stagePart, clearStaged, fileExists,
   runtimeInfo, onFilesDropped, baseName, withExtension, toDataUrl, FILTERS,
 } from './io.js';
+import { isTemplate, baseFormat, asTemplate } from './core/formats/templates.js';
+import { chartDialog, slideFormulaDialog, layoutDialog, mastersDialog } from './extras.js';
+import { normaliseChartData } from './core/formats/chart-object.js';
+import { whenMathReady } from './core/math.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -48,8 +59,8 @@ let images = new Map();
 let imageBytes = new Map();
 
 /** Formats a presentation can be saved back into. */
-const WRITABLE = new Set(['grt', 'odp', 'fodp', 'pptx']);
-const OPENABLE = /\.(grt|odp|fodp|pptx)$/i;
+const WRITABLE = new Set(['grt', 'odp', 'fodp', 'pptx', 'otp', 'potx']);
+const OPENABLE = /\.(grt|odp|fodp|pptx|otp|potx|potm)$/i;
 
 function formatOf(path) {
   return (/\.([^.\\/]+)$/.exec(path ?? '')?.[1] ?? '').toLowerCase() || null;
@@ -59,7 +70,7 @@ function formatOf(path) {
  * What the open file is: its format, what did not come across when it was
  * read, and whether saving over it anyway was agreed to.
  */
-let file = { format: 'grt', losses: [], confirmed: false };
+let file = { format: 'grt', losses: [], confirmed: false, password: null };
 
 // Notifications
 
@@ -78,7 +89,7 @@ const keeper = new Keeper({
   name: () => baseName(model.path) ?? 'Untitled',
   path: () => model.path ?? null,
   canSaveInPlace: () => !!model.path && WRITABLE.has(file.format) && (file.losses.length === 0 || file.confirmed),
-  writeCopy: (path) => writeDocument(path, documentParts()),
+  writeCopy: (path) => writeDocument(path, documentParts(), file.password),
   save: (options) => save(false, options),
   openRecovered: (file, meta) => openRecovered(file, meta),
   // Leaving a text box or the notes commits what was typed in it.
@@ -123,9 +134,48 @@ function refresh() {
   if (selected > 0) parts.push(`${selected} selected`);
   if (model.dirty) parts.push('unsaved changes');
   el('status').textContent = parts.join(' • ');
+  properties?.refresh();
+}
+
+// The properties sidebar
+
+let properties = null;
+
+/** What the sidebar shows: the slide when nothing is selected, otherwise the elements chosen. */
+function describeSelection() {
+  const slide = model.slide(currentSlideId);
+  if (!slide) return [];
+  const set = (mutate) => (value) => change(() => mutate(value));
+  const elements = [...interaction.selection].map((id) => model.element(currentSlideId, id)).filter(Boolean);
+  const ids = elements.map((e) => e.id);
+  if (!elements.length) {
+    return [{ title: editingMaster ? 'Master' : 'Slide', fields: [
+      ...(editingMaster ? [] : [{ label: 'Layout', kind: 'buttons', value: slide.layout ?? '', options: [...Object.entries(SLIDE_LAYOUTS).map(([id, l]) => [id, l.label])], apply: set((v) => v && model.setLayout(currentSlideId, v)) }]),
+      { label: 'Background', kind: 'color', value: model.slideBackground(currentSlideId) ?? '#ffffff', apply: set((v) => model.setSlideBackground(currentSlideId, v)) },
+      ...(editingMaster ? [] : [{ label: 'Transition', kind: 'select', value: slide.transition ?? 'none', options: TRANSITIONS.map((t) => [t, t]), apply: set((v) => model.setTransition(currentSlideId, v)) }]),
+    ] }];
+  }
+  const first = elements[0];
+  const texty = elements.some((e) => ['text', 'table'].includes(e.kind));
+  const fields = [];
+  if (elements.length === 1) {
+    const number = (label, key, row) => ({ label, kind: 'number', value: Math.round(first[key]), row, apply: set((v) => { if (Number.isFinite(v)) model.setBounds(currentSlideId, first.id, { ...first, [key]: v }); }) });
+    fields.push(number('X', 'x', 'xy'), number('Y', 'y', 'xy'), number('Width', 'w', 'wh'), number('Height', 'h', 'wh'));
+    fields.push({ label: 'Rotation', kind: 'number', value: Math.round(first.rotation ?? 0), step: 1, apply: set((v) => model.setRotation(currentSlideId, ids, v ?? 0)) });
+  }
+  fields.push({ label: 'Fill', kind: 'color', value: first.fill ?? '#ffffff', row: 'colours', apply: set((v) => model.setElementColour(currentSlideId, ids, { fill: v })) });
+  fields.push({ label: 'Colour', kind: 'color', value: first.color ?? '#000000', row: 'colours', apply: set((v) => model.setElementColour(currentSlideId, ids, { colour: v })) });
+  if (texty) {
+    fields.push({ label: 'Text size', kind: 'number', value: first.size ?? '', min: 6, max: 400, row: 'text', apply: set((v) => model.setElementText(currentSlideId, ids, { size: v ?? 0 })) });
+    fields.push({ label: 'Align', kind: 'select', value: first.align ?? 'left', options: ALIGNMENTS.map((a) => [a, a]), row: 'text', apply: set((v) => model.setElementText(currentSlideId, ids, { align: v })) });
+  }
+  return [{ title: elements.length === 1 ? first.kind : `${elements.length} elements`, fields }];
 }
 
 interaction.onChange = () => draw();
+// Formulas shown as their TeX before the engine loaded are drawn again once it has.
+whenMathReady(() => draw());
+el('btn-master-done').onclick = () => doneEditingMaster();
 interaction.onSelectionChange = () => refresh();
 interaction.onCommit = (before) => {
   undo.past.push(before);
@@ -135,6 +185,10 @@ interaction.onCommit = (before) => {
 };
 interaction.onEditText = (id, cell) => {
   const element = model.element(currentSlideId, id);
+  if (element?.kind === 'chart' || element?.kind === 'formula') {
+    editObject(element);
+    return;
+  }
   if (element?.kind === 'table' && cell) editCell(id, cell.row, cell.col);
   else editText(id);
 };
@@ -208,7 +262,7 @@ function editText(id) {
 function addSlide() {
   change(() => {
     const index = model.slides.findIndex((s) => s.id === currentSlideId);
-    const slide = model.addSlide(index + 1);
+    const slide = model.addSlide(index + 1, model.slides.length > 0 ? 'titleContent' : 'title');
     currentSlideId = slide.id;
     interaction.attach(model, slide.id);
   });
@@ -257,8 +311,8 @@ function addImage() {
     const path = await pickToOpen(FILTERS.image, 'Choose an image');
     if (!path) return;
 
-    const bytes = await readFileBytes(path);
-    const name = `resources/${baseName(path)}`;
+    const bytes = stripMetadata(await readFileBytes(path));
+    const name = await neutralName(bytes, path);
 
     // Staged on the Rust side now, written into the container at save time.
     await stagePart(name, bytes);
@@ -273,6 +327,82 @@ function addImage() {
     });
     toast(`Inserted ${baseName(path)}`);
   });
+}
+
+// Charts, formulas, layouts, masters
+
+async function addChart() {
+  const chart = await chartDialog();
+  if (!chart) return;
+  change(() => {
+    const created = model.addElement(currentSlideId, { kind: 'chart', x: 360, y: 240, w: 1200, h: 680, ...chart });
+    interaction.selection = new Set([created.id]);
+  });
+}
+
+async function addFormula() {
+  const formula = await slideFormulaDialog();
+  if (!formula) return;
+  change(() => {
+    const created = model.addElement(currentSlideId, { kind: 'formula', x: 460, y: 390, w: 1000, h: 300, ...formula });
+    interaction.selection = new Set([created.id]);
+  });
+}
+
+/** Opens the dialog of a chart or formula, asked for by a double click. */
+async function editObject(element) {
+  const next = element.kind === 'chart' ? await chartDialog(element) : await slideFormulaDialog(element);
+  if (!next) return;
+  change(() => {
+    const target = model.element(currentSlideId, element.id);
+    if (!target) return;
+    if (element.kind === 'formula') delete target.mathml;
+    Object.assign(target, element.kind === 'chart' ? { ...next, data: normaliseChartData(next.data) } : next);
+  });
+}
+
+async function chooseLayout() {
+  const layout = await layoutDialog(model.slide(currentSlideId)?.layout ?? 'titleContent');
+  if (layout) change(() => model.setLayout(currentSlideId, layout));
+}
+
+/** The slide in view, or the master being edited in its place. */
+let editingMaster = null;
+
+async function masters() {
+  const { choice, master, name } = await mastersDialog(model, editingMaster ? editingMaster.returnTo : currentSlideId);
+  const slideId = editingMaster ? editingMaster.returnTo : currentSlideId;
+  if (choice === 'new') {
+    let made = null;
+    change(() => { made = model.addMaster(name || `Master ${model.masters.length + 1}`); model.assignMaster(slideId, made.id); });
+    editMaster(made.id);
+  } else if (choice === 'edit' && master) editMaster(master);
+  else if (choice === 'rename' && master && name) change(() => model.renameMaster(master, name));
+  else if (choice === 'delete' && master) {
+    if (editingMaster?.id === master) doneEditingMaster();
+    change(() => model.deleteMaster(master));
+  } else if (choice === 'assign' && master) change(() => model.assignMaster(slideId, master));
+  else if (choice === 'all' && master) change(() => { for (const s of model.slides) model.assignMaster(s.id, master); });
+}
+
+/** Shows a master in the slide's place, to edit what every slide using it shows underneath. */
+function editMaster(id) {
+  const returnTo = editingMaster?.returnTo ?? currentSlideId;
+  editingMaster = { id, returnTo };
+  currentSlideId = id;
+  interaction.attach(model, id);
+  el('master-banner').classList.remove('hidden');
+  el('master-banner-name').textContent = model.master(id)?.name ?? 'Master';
+  draw();
+}
+
+function doneEditingMaster() {
+  if (!editingMaster) return;
+  currentSlideId = model.slide(editingMaster.returnTo) ? editingMaster.returnTo : model.slides[0].id;
+  editingMaster = null;
+  interaction.attach(model, currentSlideId);
+  el('master-banner').classList.add('hidden');
+  draw();
 }
 
 function addTable() {
@@ -471,7 +601,7 @@ function step(direction) {
 
 function newDocument() {
   model = new SlidesModel();
-  file = { format: 'grt', losses: [], confirmed: false };
+  file = { format: 'grt', losses: [], confirmed: false, password: null };
   undo = new UndoStack(model);
   keeper.watch(model);
   images = new Map();
@@ -495,8 +625,8 @@ async function openConfirmed(path) {
 }
 
 /** Reads a document into the program, without naming it. */
-async function loadDocument(path) {
-  const { parts, resources } = await readDocument(path);
+async function loadDocument(path, password = null) {
+  const { parts, resources } = await readDocument(path, password);
   const raw = parts['content/main.json'];
   if (!raw) throw new Error('This document has no presentation content');
 
@@ -510,7 +640,7 @@ async function loadDocument(path) {
   imageBytes = new Map();
   await clearStaged();
   for (const name of resources ?? []) {
-    const bytes = await readResource(path, name);
+    const bytes = await readResource(path, name, password);
     images.set(name, toDataUrl(bytes, name));
     imageBytes.set(name, bytes);
     await stagePart(name, bytes);
@@ -528,39 +658,51 @@ async function openPath(path) {
     await importDocument(path, format);
     return;
   }
-  await loadDocument(path);
+  const opened = await withPassword(baseName(path), (password) => loadDocument(path, password));
+  if (!opened) return;
   model.path = path;
-  file = { format: 'grt', losses: [], confirmed: false };
+  file = { format: 'grt', losses: [], confirmed: false, password: opened.password };
   document.title = `${baseName(path)} - GRT Slides`;
   toast(`Opened ${baseName(path)}: ${model.slides.length} slide(s)`);
 }
 
 /** Reads a presentation in another program's format, and says what did not come across. */
-async function importDocument(path, format) {
-  let result;
-  if (format === 'odp') result = readOdp(await readPackage(path));
-  else if (format === 'fodp') result = readOdp(await readText(path));
-  else if (format === 'pptx') result = readPptx(await readPackage(path));
-  else throw new Error(`GRT Slides does not open .${format} files`);
+async function importDocument(path, given) {
+  const template = isTemplate(given);
+  const format = baseFormat(given);
+  if (!['odp', 'fodp', 'pptx'].includes(format)) throw new Error(`GRT Slides does not open .${format} files`);
+  const opened = await withPassword(baseName(path), async (password) => {
+    if (format === 'fodp') return readOdp(await readText(path));
+    const pkg = await readPackage(path, { password });
+    return format === 'odp' ? readOdp(pkg) : readPptx(pkg);
+  });
+  if (!opened) return;
+  const result = opened.value;
 
   await clearStaged();
   images = new Map();
   imageBytes = new Map();
-  for (const [name, bytes] of result.images) {
+  for (const [name, original] of result.images) {
+    // A picture that arrived inside a document loses its metadata too, unless it cannot be read well enough.
+    let bytes = original;
+    try {
+      bytes = stripMetadata(original);
+    } catch { /* kept as it came */ }
     images.set(name, toDataUrl(bytes, name));
     imageBytes.set(name, bytes);
     await stagePart(name, bytes);
   }
   model = new SlidesModel(result.document);
-  model.path = path;
-  file = { format, losses: result.losses.lines(), confirmed: false };
+  // A template starts a new presentation: nothing is saved back into it unless asked.
+  model.path = template ? null : path;
+  file = template ? { format: 'grt', losses: [], confirmed: false, password: null } : { format, losses: result.losses.lines(), confirmed: false, password: opened.password };
   undo = new UndoStack(model);
   keeper.watch(model);
   currentSlideId = model.slides[0].id;
   interaction.attach(model, currentSlideId);
   renderer.fit(model);
   draw();
-  document.title = `${baseName(path)} - GRT Slides`;
+  document.title = template ? `Untitled, from ${baseName(path)} - GRT Slides` : `${baseName(path)} - GRT Slides`;
 
   if (result.losses.empty) {
     toast(`Opened ${baseName(path)}: ${model.slides.length} slide(s)`);
@@ -576,13 +718,16 @@ async function importDocument(path, format) {
 
 /** Opens a recovery copy as the document it was, with its changes unsaved. */
 async function openRecovered(copy, meta) {
-  await loadDocument(copy);
+  const opened = await withPassword(meta.name || 'Untitled', (password) => loadDocument(copy, password));
+  // Without its password the copy stays where it is, offered again next time.
+  if (!opened) throw new Error('the copy is kept for next time');
   model.path = meta.path ?? null;
   const format = formatOf(meta.path) ?? 'grt';
   file = {
     format,
     losses: format === 'grt' ? [] : ['Anything the program could not read when the file was first opened'],
     confirmed: false,
+    password: opened.password,
   };
   model.dirty = true;
   const name = meta.name || 'Untitled';
@@ -610,32 +755,54 @@ const FORMAT_NAMES = {
   odp: 'OpenDocument presentation (.odp)',
   pptx: 'PowerPoint presentation (.pptx)',
   fodp: 'Flat OpenDocument presentation (.fodp)',
+  otp: 'OpenDocument template (.otp)',
+  potx: 'PowerPoint template (.potx)',
 };
 
-/** Asks which format to save in, then where. */
-async function chooseSaveTarget() {
-  const current = WRITABLE.has(file.format) ? file.format : 'grt';
-  const confirmed = await showPanel('Save as', `
-    <div class="form-grid">
-      <label for="s-format">Format</label>
-      <select id="s-format" data-field="format">
-        ${Object.entries(FORMAT_NAMES).map(([id, label]) =>
+/** Asks which format to save in, with or without a password, then where. */
+async function chooseSaveTarget(preferred = null) {
+  let current = preferred ?? (WRITABLE.has(file.format) ? file.format : 'grt');
+  let problem = '';
+  for (;;) {
+    const answer = showPanel('Save as', `
+      <div class="form-grid">
+        <label for="s-format">Format</label>
+        <select id="s-format" data-field="format">
+          ${Object.entries(FORMAT_NAMES).map(([id, label]) =>
     `<option value="${id}"${id === current ? ' selected' : ''}>${label}</option>`).join('')}
-      </select>
-    </div>
-    <p class="fp-note">A GRT document keeps everything this program can do.
-    The others open in LibreOffice and PowerPoint; what they cannot hold is said
-    before anything is written.</p>`, 'Choose file');
-  if (!confirmed) return null;
-  const { format } = readFields();
-  const chosen = await pickToSave(withExtension(model.path ?? 'presentation', format), FILTERS[format], 'Save presentation');
-  return chosen ? { path: withExtension(chosen, format), format } : null;
+        </select>
+      </div>
+      ${passwordFields(file.password, problem)}
+      <p class="fp-note">A GRT document keeps everything this program can do.
+      The others open in LibreOffice and PowerPoint; what they cannot hold is said
+      before anything is written. A flat .fodp cannot carry a password.</p>`, 'Choose file');
+    wirePasswordFields();
+    if (!await answer) return null;
+    const fields = readFields();
+    const protection = passwordFrom(fields, fields.format);
+    if (protection.error) {
+      problem = protection.error;
+      current = fields.format;
+      continue;
+    }
+    const { format } = fields;
+    const chosen = await pickToSave(withExtension(model.path ?? 'presentation', format), FILTERS[format], 'Save presentation');
+    return chosen ? { path: withExtension(chosen, format), format, password: protection.password } : null;
+  }
+}
+
+/** A copy written elsewhere, the presentation open staying as it is; a template is one such copy. */
+async function saveCopy(preferred = null) {
+  const chosen = await chooseSaveTarget(preferred);
+  if (!chosen) return;
+  const lost = await writeAs(chosen.path, chosen.format, canProtect(chosen.format) ? chosen.password : null);
+  toast(lost.length > 0 ? `Saved a copy as ${baseName(chosen.path)}, without: ${lost.join('; ')}` : `Saved a copy as ${baseName(chosen.path)}`);
 }
 
 /** Writes the presentation in a format, and says what that format could not hold. */
-async function writeAs(path, format) {
+async function writeAs(path, format, password = null) {
   if (format === 'grt') {
-    await writeDocument(path, documentParts());
+    await writeDocument(path, documentParts(), password);
     return [];
   }
   const json = model.toJSON();
@@ -644,8 +811,8 @@ async function writeAs(path, format) {
     await writeText(path, text);
     return losses.lines();
   }
-  const { entries, losses } = format === 'odp' ? writeOdp(json, imageBytes) : writePptx(json, imageBytes);
-  await writePackage(path, entries);
+  const { entries, losses } = baseFormat(format) === 'odp' ? writeOdp(json, imageBytes) : writePptx(json, imageBytes);
+  await writePackage(path, isTemplate(format) ? asTemplate(entries, format) : entries, { protection: PROTECTION[format], password });
   return losses.lines();
 }
 
@@ -657,11 +824,12 @@ async function writeAs(path, format) {
 async function save(forceDialog, { silent = false } = {}) {
   let path = forceDialog ? null : model.path;
   let format = file.format;
+  let password = file.password;
   if (!path) {
     if (silent) return false;
     const chosen = await chooseSaveTarget();
     if (!chosen) return false;
-    ({ path, format } = chosen);
+    ({ path, format, password } = chosen);
   } else if (file.losses.length > 0 && !file.confirmed) {
     if (silent) return false;
     const choice = await showChoice(`Save over “${baseName(path)}”?`, `
@@ -678,11 +846,12 @@ async function save(forceDialog, { silent = false } = {}) {
   }
 
   const revision = keeper.revision;
-  const lost = await writeAs(path, format);
+  if (!canProtect(format)) password = null;
+  const lost = await writeAs(path, format, password);
 
   const sameFile = path === model.path && format === file.format;
   model.path = path;
-  file = sameFile ? file : { format, losses: [], confirmed: false };
+  file = sameFile ? { ...file, password } : { format, losses: [], confirmed: false, password };
   model.dirty = keeper.revision !== revision;
   undo.markSaved();
   document.title = `${baseName(path)} - GRT Slides`;
@@ -1073,58 +1242,101 @@ async function openElementLook() {
   toast(`Updated ${ids.length} element(s)`);
 }
 
+/** The footer, number and date of this slide or of all, as Impress's Header and Footer. */
+async function footerDialog() {
+  const now = model.slide(currentSlideId)?.footer ?? { text: '', number: false, date: null, dateText: '' };
+  const confirmed = await showPanel('Header and footer', `
+    <label class="inline"><input type="checkbox" data-field="showDate"${now.date ? ' checked' : ''}> Date</label>
+    <label class="inline"><input type="radio" name="footer-date" data-field="date" value="auto"${now.date !== 'fixed' ? ' checked' : ''}> Today's, changing each day</label>
+    <label class="inline"><input type="radio" name="footer-date" data-field="date" value="fixed"${now.date === 'fixed' ? ' checked' : ''}> Fixed</label>
+    <input data-field="dateText" maxlength="60" value="${escapeHtml(now.dateText || new Date().toLocaleDateString())}" aria-label="Fixed date">
+    <label class="inline"><input type="checkbox" data-field="showText"${now.text ? ' checked' : ''}> Footer</label>
+    <input data-field="text" maxlength="200" value="${escapeHtml(now.text)}" aria-label="Footer text">
+    <label class="inline"><input type="checkbox" data-field="number"${now.number ? ' checked' : ''}> Slide number</label>
+    <label class="inline"><input type="checkbox" data-field="notFirst"> Not on the first slide</label>
+    <fieldset><legend>Apply to</legend>
+      <label class="inline"><input type="radio" name="footer-scope" data-field="scope" value="all" checked> Every slide</label>
+      <label class="inline"><input type="radio" name="footer-scope" data-field="scope" value="this"> This slide</label>
+    </fieldset>`, 'Apply');
+  if (!confirmed) return;
+  const f = readFields();
+  const footer = { text: f.showText ? f.text : '', number: f.number, date: f.showDate ? f.date : null, dateText: f.dateText };
+  const ids = f.scope === 'this' ? [currentSlideId] : model.slides.map((s) => s.id);
+  change(() => {
+    model.setFooter(ids, footer);
+    if (f.notFirst && f.scope !== 'this') model.setFooter([model.slides[0].id], null);
+  });
+}
+
 // Command palette
+
+// The menu bar, the same in every program, with Impress's names as aliases.
+
+const menus = slidesMenus({
+  has: {
+    sorter: () => el('workspace').classList.contains('sorter'),
+    hidden: () => Boolean(model.slide(currentSlideId)?.hidden),
+    masterObjects: () => !model.slide(currentSlideId)?.hideMaster,
+  },
+  a: {
+    newFile: () => guard('New', newDocumentConfirmed),
+    open: () => el('btn-open').click(),
+    save: () => guard('Save', () => save(false)),
+    saveAs: () => guard('Save', () => save(true)),
+    saveCopy: () => guard('Save', () => saveCopy()),
+    saveTemplate: () => guard('Save', () => saveCopy('otp')),
+    templates: () => templateManager({ extensions: ['otp', 'potx', 'potm'], open: openConfirmed, toast }),
+    reload: () => { if (model.path) guard('Reload', () => openConfirmed(model.path)); else toast('This presentation has not been saved yet'); },
+    exportDocument: () => guard('Export', exportDocument),
+    print: () => guard('Print', printDeck),
+    settings: () => guard('Settings', openSettings),
+    undo: () => step(-1),
+    redo: () => step(1),
+    deleteSelection: () => deleteSelection(),
+    front: () => reorder('front'),
+    back: () => reorder('back'),
+    normalView: () => { el('workspace').classList.remove('sorter'); draw(); },
+    sorterView: () => { el('workspace').classList.add('sorter'); draw(); },
+    masters: () => masters(),
+    toggleSidebar: () => { el('notes-panel').classList.toggle('hidden'); },
+    addText: () => addText(),
+    addImage: () => addImage(),
+    addShape: () => addShape(),
+    addTable: () => addTable(),
+    addChart: () => addChart(),
+    addFormula: () => addFormula(),
+    design: () => guard('Design', openDesign),
+    elementLook: () => guard('Look', openElementLook),
+    editTable: () => guard('Table', editTable),
+    addFont: () => guard('Font', addFont),
+    addSlide: () => addSlide(),
+    duplicateSlide: () => duplicateSlide(),
+    deleteSlide: () => deleteSlide(),
+    chooseLayout: () => chooseLayout(),
+    slideSetup: () => guard('Slide', openSlideSetup),
+    slideSize: () => guard('Slide size', openCanvasSetup),
+    section: () => guard('Section', editSection),
+    hideSlide: (hidden) => change(() => model.setHidden(currentSlideId, hidden)),
+    footer: () => footerDialog(),
+    masterObjects: () => change(() => model.setMasterObjects(currentSlideId, Boolean(model.slide(currentSlideId)?.hideMaster))),
+    stepSlide: (by) => stepSlide(by),
+    present: (from) => present(from),
+    presenter: () => guard('Presenter', openPresenter),
+    about: async () => aboutDialog({ name: 'GRT Slides', version: (await runtimeInfo()).version }),
+    licences: () => licencesDialog({ name: 'GRT Slides' }),
+  },
+});
+createMenubar(el('menubar'), menus);
 
 function commands() {
   const entry = (label, hint, run) => ({ id: label, label, hint, run });
 
+  // Everything in the menus, then the looks and transitions that are quicker to type than to find.
   return [
-    entry('New presentation', 'Ctrl+N', () => guard('New', newDocumentConfirmed)),
-    entry('Open…', 'Ctrl+O', () => el('btn-open').click()),
-    entry('Save', 'Ctrl+S', () => guard('Save', () => save(false))),
-    entry('Save as…', 'Ctrl+Shift+S', () => guard('Save', () => save(true))),
-    entry('Export…', '', () => guard('Export', exportDocument)),
-    entry('Slide size…', '', () => guard('Slide size', openCanvasSetup)),
-    entry('Print…', 'Ctrl+P', () => guard('Print', printDeck)),
-
-    entry('Present from the first slide', 'F5', () => present(0)),
-    entry('Present from this slide', 'Shift+F5', () => present()),
-    entry('Open the presenter view', '', () => guard('Presenter', openPresenter)),
-
-    entry('Add slide', 'Ctrl+M', () => addSlide()),
-    entry('Duplicate slide', '', () => duplicateSlide()),
-    entry('Delete slide', '', () => deleteSlide()),
-    entry('Next slide', 'PageDown', () => stepSlide(1)),
-    entry('Previous slide', 'PageUp', () => stepSlide(-1)),
-
-    entry('Insert text box', '', () => addText()),
-    entry('Insert image…', '', () => addImage()),
-    entry('Insert shape', '', () => addShape()),
-    entry('Insert table', '', () => addTable()),
-    entry('Table rows and columns…', '', () => guard('Table', editTable)),
-    entry('Section starting here…', '', () => guard('Section', editSection)),
-    entry('Add a font…', '', () => guard('Font', addFont)),
-    entry('Bring to front', '', () => reorder('front')),
-    entry('Send to back', '', () => reorder('back')),
-    entry('Delete selection', 'Del', () => deleteSelection()),
-
-    ...['title', 'body', 'caption'].map((style) => entry(
-      `Style: ${style}`, '', () => applyStyle(style),
-    )),
-
-    entry('Design: colours and fonts…', '', () => guard('Design', openDesign)),
-    entry('This slide: background and transition…', '', () => guard('Slide', openSlideSetup)),
-    entry('Colour of the selection…', '', () => guard('Look', openElementLook)),
-    ...Object.entries(PRESETS).map(([id, preset]) => entry(
-      `Look: ${preset.label}`, '', () => change(() => model.applyPreset(id)),
-    )),
-    ...TRANSITIONS.map((t) => entry(
-      `Transition: ${t} (all slides)`, '', () => change(() => model.setAllTransitions(t)),
-    )),
-
-    entry('Undo', 'Ctrl+Z', () => step(-1)),
-    entry('Redo', 'Ctrl+Y', () => step(1)),
-    entry('Settings…', 'Ctrl+,', () => guard('Settings', openSettings)),
+    ...paletteEntries(menus).filter((e) => e.enabled()),
+    ...['title', 'body', 'caption'].map((style) => entry(`Style: ${style}`, '', () => applyStyle(style))),
+    ...Object.entries(PRESETS).map(([id, preset]) => entry(`Look: ${preset.label}`, '', () => change(() => model.applyPreset(id)))),
+    ...TRANSITIONS.map((t) => entry(`Transition: ${t} (all slides)`, '', () => change(() => model.setAllTransitions(t)))),
   ];
 }
 
@@ -1182,9 +1394,17 @@ listen('grt://presenter-exit', () => {
 // Presentation
 
 function present(fromIndex = null) {
-  const index = fromIndex ?? model.slides.findIndex((s) => s.id === currentSlideId);
+  // Hidden slides stay in the file and out of the show.
+  const shown = Object.create(model);
+  shown.slides = model.slides.filter((s) => !s.hidden);
+  if (!shown.slides.length) {
+    toast('Every slide is hidden');
+    return;
+  }
+  const from = fromIndex === null ? model.slides.findIndex((s) => s.id === currentSlideId) : fromIndex;
+  const index = Math.max(0, shown.slides.findIndex((s) => model.slides.indexOf(s) >= from));
   presentation.images = images;
-  presentation.start(model, Math.max(0, index));
+  presentation.start(shown, index);
   broadcastDeck();
 }
 
@@ -1207,6 +1427,8 @@ function stepSlide(delta) {
 }
 
 // Events
+
+properties = createProperties(el('properties'), describeSelection);
 
 el('btn-new').onclick = () => guard('New', newDocumentConfirmed);
 el('btn-open').onclick = () => guard('Open', async () => {
@@ -1271,7 +1493,7 @@ document.addEventListener('keydown', (event) => {
   } else if (ctrl && event.key.toLowerCase() === 'm') {
     event.preventDefault();
     addSlide();
-  } else if (ctrl && event.key.toLowerCase() === 'n') {
+  } else if (ctrl && event.key.toLowerCase() === 'n' && !event.shiftKey) {
     event.preventDefault();
     el('btn-new').click();
   } else if (ctrl && event.key.toLowerCase() === 's') {

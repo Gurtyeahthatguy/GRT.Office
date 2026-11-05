@@ -1,6 +1,6 @@
 [package]
 name = "grt-tables"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local database with tables, relations, queries and forms"
 authors = ["GRT Project"]
 license = "MIT"
@@ -27,7 +27,7 @@ grt-container = { path = "../../../core/grt-container" }
 grt-app = { path = "../../../core/grt-app" }
 
 # THE ENGINE. : this is the one module whose hard part is not written here.
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 
 [profile.release]
 opt-level = "z"

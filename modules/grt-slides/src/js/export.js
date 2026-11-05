@@ -1,5 +1,8 @@
 /** HTML, SVG, PNG and PDF. */
 
+import { chartSvg } from './core/charts.js';
+import { ownChartSpec } from './core/formats/chart-object.js';
+import { mathSvg } from './core/math.js';
 import { SlidesModel, fontStack } from './model.js';
 import { fontFaceRules } from './fonts.js';
 import { parsePath, mapPath, formatPath, presetOutline } from './core/paths.js';
@@ -73,12 +76,28 @@ export function runMarkup(run) {
  * @param {Map<string, string>} images resource path to data URL
  */
 export function elementMarkup(element, model, images = new Map()) {
+  if (element.kind === 'chart') {
+    const svg = chartSvg(ownChartSpec(element), { width: element.w, height: element.h, text: model.theme.text ?? '#222222' });
+    return `<div class="el chart" style="${boxStyle(element)}">${svg.replace('<svg ', '<svg preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block" ')}</div>`;
+  }
+
+  if (element.kind === 'formula') {
+    const svg = mathSvg({ tex: element.tex, mathml: element.mathml, display: true });
+    const look = textLook({ ...element, style: element.style ?? 'body' }, model);
+    // The formula fills its box, in the colour of the text it sits among.
+    const body = svg ? svg.replace(/<svg ([^>]*?)width="[^"]*" height="[^"]*"/, '<svg $1width="100%" height="100%" preserveAspectRatio="xMidYMid meet"')
+      : `<code style="font-size:28px">${escape(element.tex ?? '')}</code>`;
+    return `<div class="el formula" style="${escape(`${boxStyle(element)};color:${look.color ?? '#222'};display:flex;align-items:center;justify-content:center`)}">${body}</div>`;
+  }
+
   if (element.kind === 'text') {
     const look = textLook(element, model);
     const runs = (element.content ?? []).map(runMarkup).join('');
     // Anchored text is one block, moved as a whole inside the box.
     const body = look.valign !== 'top' ? `<div>${runs}</div>` : runs;
-    return `<div class="el text" style="${escape(`${boxStyle(element)};${textStyle(look)}`)}">${body}</div>`;
+    // An empty placeholder says what it is for, on screen only.
+    const hint = element.placeholder ? ` data-placeholder="${{ title: 'Click to add a title', subtitle: 'Click to add a subtitle' }[element.placeholder] ?? 'Click to add text'}"` : '';
+    return `<div class="el text"${hint} style="${escape(`${boxStyle(element)};${textStyle(look)}`)}">${body}</div>`;
   }
 
   if (element.kind === 'image') {

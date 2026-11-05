@@ -76,6 +76,11 @@ profile grt-dates /usr/bin/grt-dates {
        interface=org.freedesktop.DBus
        member={Hello,GetNameOwner,NameHasOwner,AddMatch,RemoveMatch}
        peer=(name=org.freedesktop.DBus),
+  # Reminders: one call to the desktop's notification service, nothing else on it.
+  dbus send bus=session path=/org/freedesktop/Notifications
+       interface=org.freedesktop.Notifications
+       member=Notify
+       peer=(name=org.freedesktop.Notifications),
   owner /run/user/@{uid}/doc/{,**} rw,
 
   include <abstractions/cups-client>

@@ -329,3 +329,58 @@ describe('Counting', () => {
     expect(model.counts().words).toBe(3);
   });
 });
+
+describe('a page break after a block kept with the next', () => {
+  it('starts the new page all the same', () => {
+    const blocks = [
+      { id: 'a', height: 20 },
+      { id: 'toc', height: 40, keepWithNext: true },
+      { id: 'h', height: 20, breakBefore: true, keepWithNext: true },
+      { id: 'p', height: 20 },
+    ];
+    expect(paginate(blocks, 500).pages).toEqual([['a', 'toc'], ['h', 'p']]);
+  });
+});
+
+describe('whole tables', async () => {
+  const tables = await import('../src/js/core/editor/tables.js');
+  const { DocumentModel } = await import('../src/js/core/editor/model.js');
+  const { collapsed, point } = await import('../src/js/core/editor/selection.js');
+  const doc = () => {
+    const model = new DocumentModel();
+    model.blocks = [];
+    for (const text of ['Pear\t3', 'Apple\t12', 'Fig\t1']) model.insertBlock({ kind: 'paragraph', runs: [{ text }] });
+    return model;
+  };
+  it('comes from text, sorts, splits, joins and goes back to text', () => {
+    const model = doc();
+    let sel = tables.textToTable(model, [...model.blocks], '\t');
+    const table = model.blocks[0];
+    expect(table.kind).toBe('table');
+    expect(table.rows.map((r) => r.cells[0].runs[0].text)).toEqual(['Pear', 'Apple', 'Fig']);
+    tables.sortRows(model, collapsed(point(table.id, 0, 1)), { column: 1 });
+    expect(table.rows.map((r) => r.cells[1].runs[0].text)).toEqual(['1', '3', '12']);
+    sel = tables.splitTable(model, collapsed(point(table.id, 0, 4)));
+    expect(model.blocks.map((b) => b.kind)).toEqual(['table', 'paragraph', 'table']);
+    tables.mergeTables(model, collapsed(point(table.id, 0, 0)));
+    expect(model.blocks.length).toBe(1);
+    expect(table.rows.length).toBe(3);
+    tables.setColumnWidths(model, collapsed(point(table.id, 0, 0)), 'even');
+    expect(table.widths).toEqual([1, 1]);
+    tables.tableToText(model, collapsed(point(table.id, 0, 0)), '\t');
+    expect(model.blocks.map((b) => b.runs[0].text)).toEqual(['Fig\t1', 'Pear\t3', 'Apple\t12']);
+  });
+});
+
+describe('the formula dialog helpers', async () => {
+  const { findMarker, errorPosition, MARKER } = await import('../src/js/core/formula-dialog.js');
+  it('finds the places to fill and where an error is', () => {
+    const tex = `\\frac{${MARKER}}{${MARKER}}`;
+    expect(findMarker(tex, 0)).toBe(6);
+    expect(findMarker(tex, 9)).toBe(11);
+    expect(findMarker(tex, 14, true)).toBe(11);
+    expect(findMarker('x', 0)).toBe(null);
+    expect(errorPosition('a + \\foo{b}', 'Undefined control sequence \\foo')).toEqual({ start: 4, end: 8 });
+  });
+});
+

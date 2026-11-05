@@ -4,6 +4,10 @@ import { GraphModel } from './model.js';
 import { Renderer } from './render.js';
 import { Interaction } from './interaction.js';
 import { treeLayout } from './layout.js';
+import { createProperties } from './core/properties.js';
+import { aboutDialog, licencesDialog } from './core/about.js';
+import { templateManager } from './core/template-manager.js';
+import { SHAPES, ROUTINGS, PORTS } from './model.js';
 import { toSvg, toJson, toPng, toPrintPage } from './export.js';
 import { renderToPdf } from './core/pdf.js';
 import { printPreview, pageControls, isPrintPreviewOpen } from './core/print.js';
@@ -11,6 +15,7 @@ import { printablePages } from './printing.js';
 import { UndoStack } from './core/undo.js';
 import { showPanel, showChoice, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
 import { readPackage, writePackage } from './core/package.js';
+import { withPassword, passwordFields, wirePasswordFields, passwordFrom, canProtect, PROTECTION } from './core/protection.js';
 import { readOdg, writeOdg } from './core/formats/odg.js';
 import { readCanvas, writeCanvas } from './core/formats/canvas.js';
 import { THEMES } from './core/theme.js';
@@ -20,8 +25,13 @@ import { parseMermaid } from './mermaid.js';
 import { loadSettings, updateSettings, settings, canPersist } from './settings.js';
 import {
   pickToOpen, pickToSave, readDocument, writeDocument, writeText, writeBytes,
-  readText, fileExists, runtimeInfo, onFilesDropped, baseName, withExtension, FILTERS,
+  readText, readBytes, fileExists, runtimeInfo, onFilesDropped, baseName, withExtension, FILTERS,
 } from './io.js';
+import {
+  SOURCE_FILTERS, readSource, liveValue, liveText, liveForm, treeFromTable, planPanel, deadlinesIcs, criticalPath,
+  dataTableHtml, dataFromTable,
+} from './tools.js';
+import { isTemplate, baseFormat, asTemplate } from './core/formats/templates.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -34,8 +44,8 @@ let undo = new UndoStack(model);
 let busy = false;
 
 /** Formats a diagram can be saved back into. */
-const WRITABLE = new Set(['grt', 'odg', 'fodg', 'canvas']);
-const OPENABLE = /\.(grt|odg|fodg|canvas|json)$/i;
+const WRITABLE = new Set(['grt', 'odg', 'fodg', 'canvas', 'otg']);
+const OPENABLE = /\.(grt|odg|fodg|otg|canvas|json)$/i;
 
 function formatOf(path) {
   return (/\.([^.\\/]+)$/.exec(path ?? '')?.[1] ?? '').toLowerCase() || null;
@@ -45,7 +55,7 @@ function formatOf(path) {
  * What the open file is: its format, what did not come across when it was
  * read, and whether saving over it anyway was agreed to.
  */
-let file = { format: 'grt', losses: [], confirmed: false };
+let file = { format: 'grt', losses: [], confirmed: false, password: null };
 
 // Notifications
 
@@ -64,7 +74,7 @@ const keeper = new Keeper({
   name: () => baseName(model.path) ?? 'Untitled',
   path: () => model.path ?? null,
   canSaveInPlace: () => !!model.path && WRITABLE.has(file.format) && (file.losses.length === 0 || file.confirmed),
-  writeCopy: (path) => writeDocument(path, documentParts()),
+  writeCopy: (path) => writeDocument(path, documentParts(), file.password),
   save: (options) => save(false, options),
   openRecovered: (file, meta) => openRecovered(file, meta),
   // Leaving the label being typed commits it.
@@ -107,6 +117,60 @@ function refresh() {
   if (selected > 0) parts.push(`${selected} selected`);
   if (model.dirty) parts.push('unsaved changes');
   el('status').textContent = parts.join(' • ');
+  properties?.refresh();
+}
+
+// The properties sidebar
+
+let properties = null;
+
+/** What the sidebar shows: the node, the nodes, the connector or, with nothing selected, the diagram. */
+function describeSelection() {
+  const nodes = [...interaction.selection].map((id) => model.node(id)).filter(Boolean);
+  const edges = [...interaction.selection].map((id) => model.edge(id)).filter(Boolean);
+  const styles = Object.keys(model.styles).map((k) => [k, k]);
+  const set = (mutate) => (value) => change(() => mutate(value));
+  if (nodes.length === 1) {
+    const node = nodes[0];
+    const number = (label, key, row) => ({ label, kind: 'number', value: Math.round(node[key]), row, apply: set((v) => { if (Number.isFinite(v)) model.setNodeBounds(node.id, { ...node, [key]: v }); }) });
+    return [
+      { title: 'Node', fields: [
+        { label: 'Text', kind: 'textarea', value: node.text, apply: set((v) => model.setText(node.id, v)) },
+        { label: 'Shape', kind: 'select', value: node.shape, options: SHAPES.map((x) => [x, x]), apply: set((v) => model.setShape([node.id], v)) },
+        { label: 'Style', kind: 'select', value: node.style, options: styles, apply: set((v) => model.setStyle([node.id], v)) },
+      ] },
+      { title: 'Place and size', fields: [number('X', 'x', 'xy'), number('Y', 'y', 'xy'), number('Width', 'w', 'wh'), number('Height', 'h', 'wh')] },
+      { title: 'Data', fields: [
+        ...Object.entries(node.data ?? {}).slice(0, 30).map(([key, value]) => ({ label: key, value: String(value), apply: set((v) => { node.data = { ...node.data, [key]: v }; model.dirty = true; }) })),
+        { label: 'Duration in days', kind: 'number', value: node.data?.duration ?? '', min: 0, step: 0.5, apply: set((v) => { node.data = { ...node.data }; if (v === null) delete node.data.duration; else node.data.duration = String(v); model.dirty = true; }) },
+      ] },
+    ];
+  }
+  if (nodes.length > 1) {
+    const ids = nodes.map((n) => n.id);
+    const same = (key) => (nodes.every((n) => n[key] === nodes[0][key]) ? nodes[0][key] : '');
+    return [{ title: `${nodes.length} nodes`, fields: [
+      { label: 'Shape', kind: 'select', value: same('shape'), options: [['', '(mixed)'], ...SHAPES.map((x) => [x, x])], apply: set((v) => v && model.setShape(ids, v)) },
+      { label: 'Style', kind: 'select', value: same('style'), options: [['', '(mixed)'], ...styles], apply: set((v) => v && model.setStyle(ids, v)) },
+    ] }];
+  }
+  if (edges.length) {
+    const edge = edges[0];
+    const ports = PORTS.map((p) => [p, p]);
+    return [{ title: edges.length === 1 ? 'Connector' : `${edges.length} connectors`, fields: [
+      ...(edges.length === 1 ? [{ label: 'Label', value: edge.label, apply: set((v) => model.setEdgeLabel(edge.id, v)) }] : []),
+      { label: 'Routing', kind: 'select', value: edge.routing, options: ROUTINGS.map((r) => [r, r]), apply: set((v) => model.setEdgeRouting(edges.map((e) => e.id), v)) },
+      ...(edges.length === 1 ? [
+        { label: 'Leaves from', kind: 'select', value: edge.fromPort, options: ports, row: 'ports', apply: set((v) => { edge.fromPort = v; model.dirty = true; }) },
+        { label: 'Arrives at', kind: 'select', value: edge.toPort, options: ports, row: 'ports', apply: set((v) => { edge.toPort = v; model.dirty = true; }) },
+      ] : []),
+    ] }];
+  }
+  return [{ title: 'Diagram', fields: [
+    { label: 'Grid size', kind: 'number', value: model.meta.gridSize, min: 2, max: 100, apply: set((v) => { if (v >= 2) model.meta.gridSize = v; }) },
+    { label: 'Snap to the grid', kind: 'checkbox', value: model.meta.snapToGrid, apply: set((v) => { model.meta.snapToGrid = v; }) },
+    { label: 'Project starts', value: model.meta.start ?? '', apply: set((v) => { model.meta.start = /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null; }) },
+  ] }];
 }
 
 interaction.onChange = () => draw();
@@ -257,7 +321,7 @@ function runValidation() {
 
 function newDocument() {
   model = new GraphModel();
-  file = { format: 'grt', losses: [], confirmed: false };
+  file = { format: 'grt', losses: [], confirmed: false, password: null };
   undo = new UndoStack(model);
   keeper.watch(model);
   interaction.attach(model);
@@ -277,8 +341,8 @@ async function openConfirmed(path) {
 }
 
 /** Reads a diagram into the program, without naming it. */
-async function loadGraph(path) {
-  const parts = await readDocument(path);
+async function loadGraph(path, password = null) {
+  const parts = await readDocument(path, password);
   const raw = parts['content/main.json'];
   if (!raw) throw new Error('This document has no graph content');
 
@@ -302,30 +366,37 @@ async function openPath(path) {
     return;
   }
 
-  await loadGraph(path);
+  const opened = await withPassword(baseName(path), (password) => loadGraph(path, password));
+  if (!opened) return;
   model.path = path;
-  file = { format: 'grt', losses: [], confirmed: false };
+  file = { format: 'grt', losses: [], confirmed: false, password: opened.password };
   document.title = `${baseName(path)} - GRT Graphs`;
   toast(`Opened ${baseName(path)}`);
 }
 
 /** Reads a drawing in another program's format, and says what did not come across. */
-async function importDocument(path, format) {
-  let result;
-  if (format === 'odg') result = readOdg(await readPackage(path));
-  else if (format === 'fodg') result = readOdg(await readText(path));
-  else if (format === 'canvas') result = readCanvas(await readText(path));
-  else throw new Error(`GRT Graphs does not open .${format} files`);
+async function importDocument(path, given) {
+  const template = isTemplate(given);
+  const format = baseFormat(given);
+  if (!['odg', 'fodg', 'canvas'].includes(format)) throw new Error(`GRT Graphs does not open .${format} files`);
+  const opened = await withPassword(baseName(path), async (password) => {
+    if (format === 'odg') return readOdg(await readPackage(path, { password }));
+    if (format === 'fodg') return readOdg(await readText(path));
+    return readCanvas(await readText(path));
+  });
+  if (!opened) return;
+  const result = opened.value;
 
   model = new GraphModel(result.document);
-  model.path = path;
-  file = { format, losses: result.losses.lines(), confirmed: false };
+  // A template starts a new drawing: nothing is saved back into it unless asked.
+  model.path = template ? null : path;
+  file = template ? { format: 'grt', losses: [], confirmed: false, password: null } : { format, losses: result.losses.lines(), confirmed: false, password: opened.password };
   undo = new UndoStack(model);
   keeper.watch(model);
   interaction.attach(model);
   renderer.fit(model);
   draw();
-  document.title = `${baseName(path)} - GRT Graphs`;
+  document.title = template ? `Untitled, from ${baseName(path)} - GRT Graphs` : `${baseName(path)} - GRT Graphs`;
 
   if (result.losses.empty) {
     toast(`Opened ${baseName(path)}`);
@@ -341,13 +412,16 @@ async function importDocument(path, format) {
 
 /** Opens a recovery copy as the document it was, with its changes unsaved. */
 async function openRecovered(copy, meta) {
-  await loadGraph(copy);
+  const opened = await withPassword(meta.name || 'Untitled', (password) => loadGraph(copy, password));
+  // Without its password the copy stays where it is, offered again next time.
+  if (!opened) throw new Error('the copy is kept for next time');
   model.path = meta.path ?? null;
   const format = formatOf(meta.path) ?? 'grt';
   file = {
     format,
     losses: format === 'grt' ? [] : ['Anything the program could not read when the file was first opened'],
     confirmed: false,
+    password: opened.password,
   };
   model.dirty = true;
   const name = meta.name || 'Untitled';
@@ -374,38 +448,52 @@ const FORMAT_NAMES = {
   odg: 'OpenDocument drawing (.odg)',
   canvas: 'JSON Canvas (.canvas)',
   fodg: 'Flat OpenDocument drawing (.fodg)',
+  otg: 'OpenDocument drawing template (.otg)',
 };
 
-/** Asks which format to save in, then where. */
-async function chooseSaveTarget() {
-  const current = WRITABLE.has(file.format) ? file.format : 'grt';
-  const confirmed = await showPanel('Save as', `
-    <div class="form-grid">
-      <label for="s-format">Format</label>
-      <select id="s-format" data-field="format">
-        ${Object.entries(FORMAT_NAMES).map(([id, label]) =>
+/** Asks which format to save in, with or without a password, then where. */
+async function chooseSaveTarget(preferred = null) {
+  let current = preferred ?? (WRITABLE.has(file.format) ? file.format : 'grt');
+  let problem = '';
+  for (;;) {
+    const answer = showPanel('Save as', `
+      <div class="form-grid">
+        <label for="s-format">Format</label>
+        <select id="s-format" data-field="format">
+          ${Object.entries(FORMAT_NAMES).map(([id, label]) =>
     `<option value="${id}"${id === current ? ' selected' : ''}>${label}</option>`).join('')}
-      </select>
-    </div>
-    <p class="fp-note">A GRT document keeps everything this program can do.
-    OpenDocument drawings open in LibreOffice Draw, canvases in Obsidian; what
-    they cannot hold is said before anything is written.</p>`, 'Choose file');
-  if (!confirmed) return null;
-  const { format } = readFields();
-  const chosen = await pickToSave(withExtension(model.path ?? 'diagram', format), FILTERS[format], 'Save diagram');
-  return chosen ? { path: withExtension(chosen, format), format } : null;
+        </select>
+      </div>
+      ${passwordFields(file.password, problem)}
+      <p class="fp-note">A GRT document keeps everything this program can do.
+      OpenDocument drawings open in LibreOffice Draw, canvases in Obsidian; what
+      they cannot hold is said before anything is written. Canvases and flat
+      .fodg files cannot carry a password.</p>`, 'Choose file');
+    wirePasswordFields();
+    if (!await answer) return null;
+    const fields = readFields();
+    const protection = passwordFrom(fields, fields.format);
+    if (protection.error) {
+      problem = protection.error;
+      current = fields.format;
+      continue;
+    }
+    const { format } = fields;
+    const chosen = await pickToSave(withExtension(model.path ?? 'diagram', format), FILTERS[format], 'Save diagram');
+    return chosen ? { path: withExtension(chosen, format), format, password: protection.password } : null;
+  }
 }
 
 /** Writes the diagram in a format, and says what that format could not hold. */
-async function writeAs(path, format) {
+async function writeAs(path, format, password = null) {
   if (format === 'grt') {
-    await writeDocument(path, documentParts());
+    await writeDocument(path, documentParts(), password);
     return [];
   }
   const json = model.toJSON();
-  if (format === 'odg') {
+  if (format === 'odg' || format === 'otg') {
     const { entries, losses } = writeOdg(json);
-    await writePackage(path, entries);
+    await writePackage(path, format === 'otg' ? asTemplate(entries, format) : entries, { protection: PROTECTION[format], password });
     return losses.lines();
   }
   const { text, losses } = format === 'fodg' ? writeOdg(json, { flat: true }) : writeCanvas(json);
@@ -414,14 +502,23 @@ async function writeAs(path, format) {
 }
 
 /** Saves the diagram; silent, it asks and reports nothing. Resolves false when nothing was saved. */
+/** A copy written elsewhere, the diagram open staying as it is; a template is one such copy. */
+async function saveCopy(preferred = null) {
+  const chosen = await chooseSaveTarget(preferred);
+  if (!chosen) return;
+  const lost = await writeAs(chosen.path, chosen.format, canProtect(chosen.format) ? chosen.password : null);
+  toast(lost.length > 0 ? `Saved a copy as ${baseName(chosen.path)}, without: ${lost.join('; ')}` : `Saved a copy as ${baseName(chosen.path)}`);
+}
+
 async function save(forceDialog, { silent = false } = {}) {
   let path = forceDialog ? null : model.path;
   let format = file.format;
+  let password = file.password;
   if (!path) {
     if (silent) return false;
     const chosen = await chooseSaveTarget();
     if (!chosen) return false;
-    ({ path, format } = chosen);
+    ({ path, format, password } = chosen);
   } else if (file.losses.length > 0 && !file.confirmed) {
     if (silent) return false;
     const choice = await showChoice(`Save over “${baseName(path)}”?`, `
@@ -438,11 +535,12 @@ async function save(forceDialog, { silent = false } = {}) {
   }
 
   const revision = keeper.revision;
-  const lost = await writeAs(path, format);
+  if (!canProtect(format)) password = null;
+  const lost = await writeAs(path, format, password);
 
   const sameFile = path === model.path && format === file.format;
   model.path = path;
-  file = sameFile ? file : { format, losses: [], confirmed: false };
+  file = sameFile ? { ...file, password } : { format, losses: [], confirmed: false, password };
   model.dirty = keeper.revision !== revision;
   undo.markSaved();
   document.title = `${baseName(path)} - GRT Graphs`;
@@ -452,7 +550,6 @@ async function save(forceDialog, { silent = false } = {}) {
   return true;
 }
 
-/** Loads a graph from JSON. */
 /**
  * Replaces the open document, laying it out when it arrives without
  * positions.
@@ -462,7 +559,7 @@ function loadDocument(imported, path) {
 
   model = new GraphModel(imported);
   model.path = path;
-  file = { format: 'grt', losses: [], confirmed: false };
+  file = { format: 'grt', losses: [], confirmed: false, password: null };
   undo = new UndoStack(model);
   interaction.attach(model);
 
@@ -668,6 +765,12 @@ function commands() {
     withSelection('Open…', 'Ctrl+O', () => el('btn-open').click()),
     withSelection('Save', 'Ctrl+S', () => guard('Save', () => save(false))),
     withSelection('Save as…', 'Ctrl+Shift+S', () => guard('Save', () => save(true))),
+    { ...withSelection('Save a copy…', '', () => guard('Save', () => saveCopy())), aliases: ['Save a Copy'] },
+    { ...withSelection('Templates…', 'Ctrl+Shift+N', () => templateManager({ extensions: ['otg'], open: openConfirmed, toast })), aliases: ['Manage Templates', 'Templates', 'New from template'] },
+    { ...withSelection('Save as template…', '', () => guard('Save', () => saveCopy('otg'))), aliases: ['Save as Template', 'Edit Template'] },
+    { ...withSelection('Reload', '', () => (model.path ? guard('Reload', () => openConfirmed(model.path)) : toast('This diagram has not been saved yet'))), aliases: ['Reload', 'Revert'] },
+    { ...withSelection('About GRT Graphs', '', async () => aboutDialog({ name: 'GRT Graphs', version: (await runtimeInfo()).version })), aliases: ['About', 'About %PRODUCTNAME'] },
+    { ...withSelection('Licences', '', () => licencesDialog({ name: 'GRT Graphs' })), aliases: ['License Information', 'Licenses'] },
     withSelection('Export…', '', () => guard('Export', exportDocument)),
     withSelection('Print…', 'Ctrl+P', () => guard('Print', printDiagram)),
     withSelection('Import JSON…', '', () => el('btn-import').click()),
@@ -690,6 +793,12 @@ function commands() {
     withSelection('Distribute vertically', '', () => distribute('vertical')),
 
     withSelection('Tree layout', '', () => runLayout()),
+    withSelection('Live value from Grid or Tables…', `${selected().length} selected`, () => guard('Live value', liveValueDialog)),
+    withSelection('Refresh values', '', () => guard('Refresh', refreshValues)),
+    withSelection('Diagram from a table…', 'Organisation chart', () => guard('Diagram from a table', diagramFromTable)),
+    withSelection('Data table…', '', () => guard('Data table', dataTable)),
+    withSelection('Plan: critical path and Gantt…', '', () => guard('Plan', showPlan)),
+    withSelection('Plan: send deadlines to Dates…', '', () => guard('Deadlines', sendDeadlines)),
     withSelection('Check for problems', '', () => guard('Check', runValidation)),
     withSelection('Fit to view', 'Ctrl+0', () => { renderer.fit(model); draw(); }),
     withSelection('Undo', 'Ctrl+Z', () => step(-1)),
@@ -705,6 +814,144 @@ function commands() {
       `Routing: ${routing}`, '', () => applyToSelection('routing', routing),
     )),
   ];
+}
+
+// Live values, diagrams from tables, plans, data
+
+const sourceIo = { readBytes, readText };
+
+/** Sets the value the selected node shows, from a spreadsheet's cell or a value out of a table. */
+async function liveValueDialog() {
+  const id = [...interaction.selection].find((s) => model.node(s));
+  if (!id) {
+    toast('Select a node first');
+    return;
+  }
+  const node = model.node(id);
+  const path = node.live?.path ?? await pickToOpen(SOURCE_FILTERS, 'Where the value is');
+  if (!path) return;
+  const source = await readSource(path, sourceIo);
+  if (!source.tables.length) {
+    toast('There is no table in that file', true);
+    return;
+  }
+  if (!await showPanel('Live value', liveForm(source, node.live ?? {}), 'Show it')) return;
+  const fields = readFields();
+  const live = { path, cell: fields.cell?.trim() || null, table: fields.table, column: fields.column, aggregate: fields.aggregate, where: fields.where, equals: fields.equals ?? '', template: fields.template || '{value}' };
+  change(() => {
+    node.live = live;
+    model.setText(id, liveText(live, liveValue(source, live)));
+  });
+}
+
+/** Reads every live node's value again, each source once. */
+async function refreshValues() {
+  const live = model.nodes.filter((n) => n.live?.path);
+  if (!live.length) {
+    toast('No node shows a live value');
+    return;
+  }
+  const sources = new Map();
+  const failed = [];
+  for (const node of live) {
+    if (!sources.has(node.live.path)) {
+      sources.set(node.live.path, await readSource(node.live.path, sourceIo).catch(() => null));
+    }
+  }
+  change(() => {
+    for (const node of live) {
+      const source = sources.get(node.live.path);
+      if (!source) failed.push(baseName(node.live.path));
+      else model.setText(node.id, liveText(node.live, liveValue(source, node.live)));
+    }
+  });
+  toast(failed.length ? `Could not read ${[...new Set(failed)].join(', ')}` : `${live.length} value(s) read again`, failed.length > 0);
+}
+
+/** A tree of nodes from a table whose rows name their parent, laid out on arrival. */
+async function diagramFromTable() {
+  const path = await pickToOpen(SOURCE_FILTERS, 'The table to draw');
+  if (!path) return;
+  const source = await readSource(path, sourceIo);
+  const tables = source.tables.filter((t) => t.columns.length);
+  if (!tables.length) {
+    toast('There is no table in that file', true);
+    return;
+  }
+  if (!await showPanel('Diagram from a table', `<label>Table<select data-field="table">${tables.map((t) => `<option>${escapeHtml(t.name)}</option>`).join('')}</select></label>`, 'Next')) return;
+  const table = tables.find((t) => t.name === readFields().table) ?? tables[0];
+  const options = (chosen) => table.columns.map((c, i) => `<option${i === chosen ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');
+  if (!await showPanel('Diagram from a table', `
+    <p class="fp-note" style="margin-top:0">Each row becomes a node, joined to the row its parent column names.</p>
+    <label>Each row's own key<select data-field="id">${options(0)}</select></label>
+    <label>The key of its parent<select data-field="parent">${options(Math.min(2, table.columns.length - 1))}</select></label>
+    <label>The text shown<select data-field="label">${options(Math.min(1, table.columns.length - 1))}</select></label>`, 'Draw')) return;
+  const tree = treeFromTable(table, readFields());
+  if (!tree.nodes.length) {
+    toast('No rows to draw', true);
+    return;
+  }
+  change(() => {
+    const made = new Map();
+    for (const item of tree.nodes) made.set(item.key, model.addNode({ x: 0, y: 0, text: item.text, data: item.data }));
+    for (const [from, to] of tree.links) model.addEdge({ from: made.get(from).id, to: made.get(to).id, fromPort: 'bottom', toPort: 'top' });
+    for (const [nodeId, point] of treeLayout(model)) {
+      const node = model.node(nodeId);
+      if (node && [...made.values()].includes(node)) { node.x = point.x; node.y = point.y; }
+    }
+  });
+  renderer.fit(model);
+  draw();
+  toast(`${tree.nodes.length} node(s) drawn`);
+}
+
+/** Every node's data in one editable grid. */
+async function dataTable() {
+  if (!model.nodes.length) {
+    toast('There are no nodes yet');
+    return;
+  }
+  const { keys, html } = dataTableHtml(model);
+  if (!await showPanel('Data table', html, 'Apply')) return;
+  const updated = dataFromTable(model, keys, readFields());
+  change(() => {
+    for (const [nodeId, data] of updated) {
+      const node = model.node(nodeId);
+      if (node) node.data = data;
+    }
+  });
+}
+
+/** The critical path, highlighted on the diagram, and the Gantt chart beside the dates. */
+async function showPlan() {
+  const { plan, html } = planPanel(model);
+  if (!plan.cycle) {
+    interaction.selection = new Set([...plan.tasks.filter((t) => t.critical).map((t) => t.id), ...plan.edges]);
+    draw();
+  }
+  const confirmed = await showPanel('Plan', html, plan.tasks.length ? 'Apply' : null);
+  if (!confirmed) return;
+  const start = readFields().start || null;
+  if (start !== (model.meta.start ?? null)) change(() => { model.meta.start = start; });
+}
+
+/** The tasks' deadlines as a calendar file of to-dos, which Dates opens. */
+async function sendDeadlines() {
+  const plan = criticalPath(model, { start: model.meta.start ?? null });
+  if (plan.cycle || !plan.tasks.length) {
+    await showPlan();
+    return;
+  }
+  if (!model.meta.start) {
+    toast('Choose when the project starts, in Plan', true);
+    await showPlan();
+    return;
+  }
+  const name = baseName(model.path)?.replace(/\.[^.]+$/, '') ?? 'Project';
+  const path = await pickToSave(`${name} deadlines.ics`, [{ name: 'Calendar', extensions: ['ics'] }], 'Deadlines for Dates');
+  if (!path) return;
+  await writeText(withExtension(path, 'ics'), deadlinesIcs(plan, { title: name }));
+  toast('Saved. Open it in GRT Dates, or put it in the Dates folder.');
 }
 
 function align(how) {
@@ -726,6 +973,12 @@ function distribute(axis) {
 }
 
 // Events
+
+properties = createProperties(el('properties'), describeSelection);
+el('btn-align-left').onclick = () => align('left');
+el('btn-align-centre').onclick = () => align('centre-x');
+el('btn-align-top').onclick = () => align('top');
+el('btn-distribute').onclick = () => distribute('horizontal');
 
 el('btn-new').onclick = () => guard('New', newDocumentConfirmed);
 el('btn-open').onclick = () => guard('Open', async () => {
@@ -768,6 +1021,9 @@ document.addEventListener('keydown', (event) => {
   if (ctrl && event.key.toLowerCase() === 'k') {
     event.preventDefault();
     openPalette(commands());
+  } else if (ctrl && event.shiftKey && event.key.toLowerCase() === 'n') {
+    event.preventDefault();
+    templateManager({ extensions: ['otg'], open: openConfirmed, toast });
   } else if (ctrl && event.key.toLowerCase() === 'n') {
     event.preventDefault();
     el('btn-new').click();
