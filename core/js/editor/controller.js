@@ -1,17 +1,19 @@
 /** Driving the shared editor. */
 
+import { trackedInsert, trackedDeleteRange, trackedDeleteStep } from './review.js';
 import {
   point, collapsed, isCollapsed, fromDom, toDom, clampSelection,
   containersInRange, normalise,
 } from './selection.js';
 import {
   insertText, splitBlock, deleteBackward, deleteForward, deleteRange,
-  applyFormat, hasFormat, indentList, insertBlockAt, insertBlocks,
+  applyFormat, PARTNER_MARKS, hasFormat, indentList, insertBlockAt, insertBlocks,
 } from './commands.js';
 import { TypingGroup } from './input.js';
-import { runsText, splitRuns, makeBlock, itemsOf, itemIndices } from './model.js';
+import { runsText, splitRuns, makeBlock, itemsOf, itemIndices, normaliseRuns } from './model.js';
 import { blocksFromHtml, blocksFromText } from './paste.js';
 import { UndoStack } from '../undo.js';
+import { correctOnType, editsBetween, applyEdits } from '../autocorrect.js';
 
 const samePoint = (a, b) => !!a && !!b
   && a.blockId === b.blockId && a.offset === b.offset && (a.itemIndex ?? null) === (b.itemIndex ?? null);
@@ -21,6 +23,9 @@ const LINE_KINDS = new Set(['code', 'raw']);
 
 /** Blocks Enter goes on writing in, line after line, until it is pressed on an empty last line. */
 const CONTINUED_KINDS = new Set(['callout']);
+
+/** What typing never takes from the character beside it. */
+const REVIEW_KEYS = new Set(['text', 'object', 'ins', 'del', 'chgnote', 'cmt', 'redact']);
 
 export class EditorController {
   /**
@@ -42,6 +47,9 @@ export class EditorController {
     this.serialiseCopy = options.serialiseCopy ?? defaultSerialiseCopy;
 
     this.lineBreaks = !!options.lineBreaks;
+
+    // AutoCorrect's options and table while typing, or null for none.
+    this.autocorrect = options.autocorrect ?? (() => null);
 
     this.model = null;
     this.undo = null;
@@ -102,9 +110,9 @@ export class EditorController {
     return this.selection;
   }
 
-  /** Applies a change, records undo, redraws. */
-  edit(mutate, { merge = false, typed = false } = {}) {
-    if (!this.ensureSelection()) return false;
+  /** Applies a change, records undo, redraws; `read: false` keeps a selection the caller set, such as cells chosen together. */
+  edit(mutate, { merge = false, typed = false, read = true } = {}) {
+    if (!(read ? this.ensureSelection() : this.selection)) return false;
 
     const before = this.model.snapshot();
     const selectionBefore = this.selection;
@@ -122,6 +130,36 @@ export class EditorController {
     this.draw();
     this.onChange({ typed });
     return true;
+  }
+
+  /** What AutoCorrect makes of the word a typed character ends: a step of its own, so Ctrl+Z gives back what was typed. */
+  autocorrectTyped(text) {
+    const rules = this.autocorrect();
+    if (!rules?.options?.whileTyping || !this.selection || !isCollapsed(this.selection)) return false;
+    const at = this.selection.anchor;
+    const block = this.model.block(at.blockId);
+    if (!block || LINE_KINDS.has(block.kind)) return false;
+    const runs = this.model.runsOf(at.blockId, at.itemIndex);
+    const typedAt = at.offset - text.length;
+    // Code, formulas and what a change marks as taken out are left as they are.
+    const [head] = splitRuns(runs, at.offset);
+    const owner = head[head.length - 1];
+    if (!owner || owner.code || owner.math || owner.del || owner.object) return false;
+    const old = runsText(runs);
+    if (old.slice(typedAt, at.offset) !== text) return false;
+    const fix = correctOnType(old.slice(0, typedAt), text, rules.options, rules.table);
+    if (!fix) return false;
+    const from = typedAt - fix.remove;
+    const range = { anchor: point(at.blockId, from, at.itemIndex), focus: point(at.blockId, at.offset, at.itemIndex) };
+    this.typing.end();
+    this.selection = range;
+    const marks = this.activeMarks();
+    return this.edit(() => {
+      if (this.recording) return trackedInsert(this.model, range, fix.insert, marks);
+      const next = old.slice(0, from) + fix.insert + old.slice(at.offset);
+      this.model.setRuns(at.blockId, normaliseRuns(applyEdits(runs, editsBetween(old, next))), at.itemIndex);
+      return collapsed(point(at.blockId, from + fix.insert.length, at.itemIndex));
+    }, { typed: true, read: false });
   }
 
   /** Undo when direction is negative, redo when positive. */
@@ -151,7 +189,8 @@ export class EditorController {
     const at = range ? range.start : this.selection.anchor;
     const [before, after] = splitRuns(this.model.runsOf(at.blockId, at.itemIndex), at.offset);
     const source = !range && at.offset > 0 ? before[before.length - 1] : after[0];
-    for (const [key, value] of Object.entries(source ?? {})) if (key !== 'text') format[key] = value;
+    // A change or a comment belongs to the text it was made on, not to what is typed beside it.
+    for (const [key, value] of Object.entries(source ?? {})) if (!REVIEW_KEYS.has(key)) format[key] = value;
 
     if (samePoint(this.pendingAt, at)) {
       for (const [mark, on] of Object.entries(this.pending)) {
@@ -170,10 +209,20 @@ export class EditorController {
     return Boolean(this.activeMarks()[mark]);
   }
 
+  /** Whether changes are being recorded, so text is marked rather than taken out. */
+  get recording() {
+    return Boolean(this.model.review?.recording);
+  }
+
+  /** Deletes a range, or marks it as taken out while recording. */
+  cut(selection) {
+    return this.recording ? trackedDeleteRange(this.model, selection) : deleteRange(this.model, selection);
+  }
+
   /** Deletes to the edge of a word. */
   deleteWord(direction) {
     if (!isCollapsed(this.selection)) {
-      return collapsed(deleteRange(this.model, this.selection));
+      return collapsed(this.cut(this.selection));
     }
 
     const at = this.selection.anchor;
@@ -189,13 +238,14 @@ export class EditorController {
     }
 
     if (offset === at.offset) {
+      if (this.recording) return trackedDeleteStep(this.model, this.selection, direction);
       return direction < 0
         ? deleteBackward(this.model, this.selection)
         : deleteForward(this.model, this.selection);
     }
 
     const other = point(at.blockId, offset, at.itemIndex);
-    return collapsed(deleteRange(this.model, { anchor: at, focus: other }));
+    return collapsed(this.cut({ anchor: at, focus: other }));
   }
 
   /** The blocks a selection covers, copied. */
@@ -258,12 +308,15 @@ export class EditorController {
           && isCollapsed(self.selection)
           && !self.typing.shouldStartNew(text, self.selection.anchor);
         self.edit(
-          () => insertText(self.model, self.selection, text, self.activeMarks()),
+          () => (self.recording
+            ? trackedInsert(self.model, self.selection, text, self.activeMarks())
+            : insertText(self.model, self.selection, text, self.activeMarks())),
           { merge, typed: true },
         );
         // The characters that follow take their formatting from this one.
         self.pending = {};
         self.pendingAt = null;
+        if (!options.composed) self.autocorrectTyped(text);
       },
 
       splitBlock() {
@@ -302,19 +355,19 @@ export class EditorController {
         self.typing.end();
         self.edit(() => (byWord
           ? self.deleteWord(-1)
-          : deleteBackward(self.model, self.selection)));
+          : self.recording ? trackedDeleteStep(self.model, self.selection, -1) : deleteBackward(self.model, self.selection)));
       },
 
       deleteForward(byWord = false) {
         self.typing.end();
         self.edit(() => (byWord
           ? self.deleteWord(1)
-          : deleteForward(self.model, self.selection)));
+          : self.recording ? trackedDeleteStep(self.model, self.selection, 1) : deleteForward(self.model, self.selection)));
       },
 
       deleteSelection() {
         self.typing.end();
-        self.edit(() => collapsed(deleteRange(self.model, self.selection)));
+        self.edit(() => collapsed(self.cut(self.selection)));
       },
 
       toggleMark(mark) {
@@ -326,6 +379,7 @@ export class EditorController {
           const on = !self.markIsOn(mark);
           if (!samePoint(self.pendingAt, self.selection.anchor)) self.pending = {};
           self.pending[mark] = on;
+          if (on && PARTNER_MARKS[mark]) self.pending[PARTNER_MARKS[mark]] = false;
           self.pendingAt = self.selection.anchor;
           self.onChange({});
           return;

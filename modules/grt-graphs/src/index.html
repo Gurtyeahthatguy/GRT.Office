@@ -8,74 +8,79 @@
     <link rel="stylesheet" href="css/app.css" />
   </head>
   <body>
-    <header class="toolbar">
-      <div class="group">
-        <button id="btn-new" title="New diagram">New</button>
-        <button id="btn-open" title="Open (Ctrl+O)">Open</button>
-        <button id="btn-save" title="Save (Ctrl+S)">Save</button>
-        <button id="btn-save-as" title="Save as (Ctrl+Shift+S)">Save as</button>
+    <nav id="menubar" aria-label="Menus"></nav>
+    <header class="toolbars">
+      <div class="toolbar" id="toolbar-standard" role="toolbar" aria-label="Standard">
+        <div class="group">
+          <button id="btn-new" data-icon="new" title="New (Ctrl+N)">New</button>
+          <button data-command="File/Templates/Manage Templates…" data-icon="templates"></button>
+          <button id="btn-open" data-icon="open" title="Open (Ctrl+O)">Open</button>
+          <button id="btn-save" data-icon="save" title="Save (Ctrl+S)">Save</button>
+          <button id="btn-save-as" data-icon="saveAs" title="Save As (Ctrl+Shift+S)">Save As</button>
+        </div>
+        <div class="group">
+          <button id="btn-import" data-icon="importDiagram" title="Import from JSON or Mermaid">Import</button>
+          <button id="btn-export" data-icon="export" title="Export as SVG, PNG, PDF or JSON">Export</button>
+          <button id="btn-print" data-icon="print" title="Print (Ctrl+P)">Print</button>
+        </div>
+        <div class="group">
+          <button id="btn-undo" data-icon="undo" title="Undo (Ctrl+Z)">Undo</button>
+          <button id="btn-redo" data-icon="redo" title="Redo (Ctrl+Y)">Redo</button>
+        </div>
+        <div class="group">
+          <button data-command="Edit/Find and Replace…" data-icon="find"></button>
+          <button data-command="Tools/Spelling…" data-icon="spelling"></button>
+        </div>
+        <div class="group">
+          <button data-command="Insert/Special Character…" data-icon="special"></button>
+          <button data-command="Insert/Hyperlink…" data-icon="link"></button>
+          <button data-command="Insert/Comment" data-icon="comment"></button>
+        </div>
+        <div class="spacer"></div>
+        <div class="group end">
+          <button id="btn-commands" data-icon="commands" title="Search Commands (Ctrl+K)">Search Commands</button>
+          <button id="btn-settings" data-icon="settings" title="Options (Ctrl+,)">Options</button>
+        </div>
       </div>
-
-      <div class="group">
-        <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
-        <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
-      </div>
-
-      <div class="group">
-        <button id="btn-add" title="Add a node (Insert)">Add node</button>
-        <button id="btn-delete" title="Delete selection (Del)">Delete</button>
-        <select id="shape-picker" title="Shape of the selected nodes">
-          <option value="">Shape…</option>
-          <option value="rect">Rectangle</option>
-          <option value="rounded">Rounded</option>
-          <option value="ellipse">Ellipse</option>
-          <option value="diamond">Diamond</option>
-          <option value="parallelogram">Parallelogram</option>
-          <option value="hexagon">Hexagon</option>
-          <option value="triangle">Triangle</option>
-        </select>
-        <select id="style-picker" title="Style of the selected nodes">
-          <option value="">Style…</option>
-          <option value="default">Default</option>
-          <option value="accent">Accent</option>
-          <option value="warn">Warning</option>
-        </select>
-        <select id="routing-picker" title="Routing of the selected connectors">
-          <option value="">Routing…</option>
-          <option value="orthogonal">Orthogonal</option>
-          <option value="straight">Straight</option>
-          <option value="curved">Curved</option>
-        </select>
-      </div>
-
-      <div class="group">
-        <button id="btn-align-left" title="Align left edges">&#8676;</button>
-        <button id="btn-align-centre" title="Align centres">&#8596;</button>
-        <button id="btn-align-top" title="Align top edges">&#8613;</button>
-        <button id="btn-distribute" title="Space evenly across">&#8660;</button>
-        <button id="btn-layout" title="Arrange as a tree">Tree layout</button>
-        <button id="btn-validate" title="Check for problems">Check</button>
-      </div>
-
-      <div class="group">
-        <button id="btn-zoom-out" title="Zoom out">&minus;</button>
-        <span id="zoom-label">100%</span>
-        <button id="btn-zoom-in" title="Zoom in">+</button>
-        <button id="btn-fit" title="Fit to view (Ctrl+0)">Fit</button>
-      </div>
-
-      <div class="group">
-        <button id="btn-import" title="Import from JSON or Mermaid">Import</button>
-        <button id="btn-export" title="Export as SVG, PNG, PDF or JSON">Export</button>
-        <button id="btn-print" title="Print (Ctrl+P)">Print</button>
-      </div>
-
-      <div class="spacer"></div>
-
-      <div class="group">
-        <span id="status" class="muted"></span>
-        <button id="btn-commands" title="All commands (Ctrl+K)">Commands</button>
-        <button id="btn-settings" title="Settings (Ctrl+,)">Settings</button>
+      <div class="toolbar" id="toolbar-drawing" role="toolbar" aria-label="Drawing and Line and Filling">
+        <div class="group">
+          <button id="btn-add" data-icon="addNode" title="Insert Shape (Insert)">Insert Shape</button>
+          <button id="btn-delete" data-icon="delete" title="Delete (Del)">Delete</button>
+        </div>
+        <div class="group">
+          <select id="shape-picker" title="Shape of the selected shapes" aria-label="Shape">
+            <option value="">Shape…</option>
+            <option value="rect">Rectangle</option>
+            <option value="rounded">Rounded</option>
+            <option value="ellipse">Ellipse</option>
+            <option value="diamond">Diamond</option>
+            <option value="parallelogram">Parallelogram</option>
+            <option value="hexagon">Hexagon</option>
+            <option value="triangle">Triangle</option>
+          </select>
+          <select id="style-picker" title="Style of the selected shapes" aria-label="Style">
+            <option value="">Style…</option>
+            <option value="default">Default</option>
+            <option value="accent">Accent</option>
+            <option value="warn">Warning</option>
+          </select>
+          <select id="routing-picker" title="Routing of the selected connectors" aria-label="Connector">
+            <option value="">Connector…</option>
+            <option value="orthogonal">Orthogonal</option>
+            <option value="straight">Straight</option>
+            <option value="curved">Curved</option>
+          </select>
+        </div>
+        <div class="group">
+          <button id="btn-align-left" data-icon="alignLeft" title="Align Left">Align Left</button>
+          <button id="btn-align-centre" data-icon="alignCenter" title="Centered">Centered</button>
+          <button id="btn-align-top" data-icon="alignTopEdges" title="Align Top">Align Top</button>
+          <button id="btn-distribute" data-icon="distribute" title="Distribute Horizontally">Distribute Horizontally</button>
+        </div>
+        <div class="group">
+          <button id="btn-layout" data-icon="tree" title="Tree Layout">Tree Layout</button>
+          <button id="btn-validate" data-icon="check" title="Check for Problems">Check for Problems</button>
+        </div>
       </div>
     </header>
 
@@ -94,8 +99,21 @@
       </div>
       <input id="text-editor" class="text-editor hidden" type="text" />
     </main>
+    <aside id="diagram-text" class="diagram-text" hidden aria-label="Diagram as text">
+      <textarea id="diagram-source" spellcheck="false" aria-label="The diagram in Mermaid's flowchart language"></textarea>
+      <p id="diagram-status" class="hint">Mermaid flowchart: type here and the drawing follows.</p>
+    </aside>
     <aside id="properties"></aside>
     </div>
+    <footer id="statusbar" class="statusbar" aria-label="Status">
+      <span id="status" class="status-field grow"></span>
+      <span class="status-field" title="Page">Page 1 of 1</span>
+      <span id="status-language" class="status-field" title="Language"></span>
+      <button id="btn-zoom-out" class="status-field" type="button" title="Zoom Out">−</button>
+      <span id="zoom-label" class="status-field" title="Zoom">100%</span>
+      <button id="btn-zoom-in" class="status-field" type="button" title="Zoom In">+</button>
+      <button id="btn-fit" class="status-field" type="button" title="Optimal View (Ctrl+0)">Optimal View</button>
+    </footer>
 
     <div id="overlay" class="overlay hidden">
       <div class="panel" role="dialog" aria-modal="true">

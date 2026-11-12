@@ -21,6 +21,7 @@ import { readOdb, sqliteImport, writeOdb } from './odb.js';
 import { tableModel, inKeyOrder, odbForm, odbReport, reportDocument, objectsFromOdb } from './base.js';
 import { writeOdt } from './core/formats/odt-write.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
+import { searchEverywhere } from './core/everywhere.js';
 import { THEMES, applyTheme, isTheme } from './core/theme.js';
 import * as io from './io.js';
 
@@ -768,8 +769,8 @@ async function exportArchive() {
   );
 }
 
-async function importArchive() {
-  const source = await io.pickToOpen(io.FILTERS.grt, 'Import archive');
+async function importArchive(chosen = null) {
+  const source = typeof chosen === 'string' ? chosen : await io.pickToOpen(io.FILTERS.grt, 'Import archive');
   if (!source) return;
 
   const destination = runtime.ephemeral ? null : await io.pickToSave('imported.sqlite');
@@ -1123,9 +1124,30 @@ function wire() {
   document.addEventListener('keydown', (event) => {
     if (isDialogOpen() || isPaletteOpen() || isPrintPreviewOpen()) return;
     const control = event.ctrlKey || event.metaKey;
-    if (!control) return;
+    const target = event.target;
+    const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+      || target instanceof HTMLSelectElement || target?.isContentEditable;
+    // The keys that click a button only do what the button would, so a disabled one does nothing.
+    const press = (id) => { if (!el(id).disabled && !el(id).closest('.hidden')) { event.preventDefault(); el(id).click(); } };
 
-    if (event.key === 'k') { event.preventDefault(); openPalette(commands()); }
+    if (!control) {
+      // Page Up and Page Down turn pages of rows, or records in a form; not while typing, which would lose an edit.
+      if (typing) return;
+      const keys = view === 'form'
+        ? { PageUp: 'btn-form-prev', PageDown: 'btn-form-next', Home: 'btn-form-first', End: 'btn-form-last' }
+        : view === 'data' ? { PageUp: 'btn-prev-page', PageDown: 'btn-next-page' } : {};
+      if (keys[event.key]) press(keys[event.key]);
+      return;
+    }
+
+    if (event.key === 'f' && (view === 'data' || view === 'form')) {
+      event.preventDefault();
+      const box = el(view === 'form' ? 'form-search' : 'filter-value');
+      box.focus();
+      box.select();
+    }
+    else if (event.key === 's' && view === 'form') press('btn-form-save');
+    else if (event.key === 'k') { event.preventDefault(); openPalette(commands()); }
     else if (event.key === 'o') { event.preventDefault(); el('btn-open').click(); }
     else if (event.key === 'p') { event.preventDefault(); printData(); }
     else if (event.key === 'z') { event.preventDefault(); el('btn-undo').click(); }
@@ -1157,6 +1179,8 @@ function wireMenus() {
       rename: renameSelected, remove: removeSelected, saveView, saveQuery,
       setView, newTable: () => el('btn-new-table').click(), formWizard, reportWizard, addRow,
       settings: () => openSettings(),
+      // A Tables archive found is imported, which asks where its database goes.
+      everywhere: () => searchEverywhere({ kind: 'tables', open: (path) => importArchive(path), toast }),
     },
   });
   createMenubar(el('menubar'), menus);

@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import {
   toDays, fromDays, addDays, addMonths, addYears, weekday, startOfWeek,
   monthGrid, daysInMonth, minutesOfDay, timeFromMinutes, addMinutes,
-  minutesBetween, dayNumber, longDate, monthTitle,
+  minutesBetween, dayNumber, longDate, monthTitle, isoWeek,
 } from '../src/js/time.js';
 
 describe('civil calendar arithmetic', () => {
@@ -119,5 +119,16 @@ describe('display', () => {
   it('names the day and the month', () => {
     expect(longDate('2026-09-01')).toBe('Tuesday 1 September 2026');
     expect(monthTitle('2026-09-15')).toBe('September 2026');
+  });
+});
+
+describe('ISO week numbers', () => {
+  it('counts weeks as ISO 8601 does, across the turn of the year', () => {
+    // Expected values from Python's date.isocalendar().
+    const cases = {
+      '2026-01-01': 1, '2026-12-31': 53, '2027-01-01': 53, '2027-01-04': 1, '2020-12-31': 53,
+      '2021-01-03': 53, '2024-12-30': 1, '2026-11-12': 46, '2015-12-31': 53, '2016-01-03': 53,
+    };
+    for (const [date, week] of Object.entries(cases)) expect(isoWeek(date), date).toBe(week);
   });
 });

@@ -82,6 +82,18 @@ function overlayNodes(model, slideId, selection, extras) {
   const slide = model.slide(slideId);
   if (!slide) return nodes;
 
+  // Comment marks, their text as the tip under the pointer; never shown in the slide show or in what is exported.
+  if (!extras.hideComments) {
+    for (const comment of slide.comments ?? []) {
+      const mark = document.createElement('div');
+      mark.className = 'comment-mark';
+      mark.dataset.comment = comment.id;
+      mark.title = comment.text;
+      Object.assign(mark.style, { left: `${comment.x}px`, top: `${comment.y}px` });
+      nodes.push(mark);
+    }
+  }
+
   for (const element of slide.elements) {
     if (!selection.has(element.id)) continue;
 

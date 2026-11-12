@@ -85,6 +85,8 @@ mod linux {
         path: &std::path::Path,
         done: std::sync::mpsc::Sender<Result<(), String>>,
     ) {
+        // GTK's file printer would put the PDF in the list of recent files; GRT keeps none.
+        crate::forget_recent_files();
         let (setup, size) = page_setup(width, height);
         let settings = PrintSettings::new();
         // GTK names its file printer in the desktop's language, so the name is asked of GTK's own translation.
@@ -98,7 +100,12 @@ mod linux {
         operation.set_page_setup(&setup);
         operation.set_print_settings(&settings);
         let finished = done.clone();
+        let written = uri.clone();
         operation.connect_finished(move |_| {
+            // Whatever GTK put in the list of recent files for this PDF comes out again, now and once it has saved.
+            forget_recent(&written);
+            let later = written.clone();
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || forget_recent(&later));
             let _ = finished.send(Ok(()));
         });
         operation.connect_failed(move |_, error| {
@@ -107,7 +114,17 @@ mod linux {
         operation.print();
     }
 
+    /// Takes one file out of GTK's list of recent files, leaving every other entry as it was.
+    fn forget_recent(uri: &str) {
+        if let Some(manager) = gtk::RecentManager::default() {
+            if manager.has_item(uri) {
+                let _ = manager.remove_item(uri);
+            }
+        }
+    }
+
     pub fn print(webview: &WebView, width: f64, height: f64) {
+        crate::forget_recent_files();
         // Wide pages get wide paper rather than a landscape setup.
         let (setup, size) = page_setup(width, height);
 

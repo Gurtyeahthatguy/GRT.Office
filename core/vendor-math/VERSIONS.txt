@@ -1,2 +1,3 @@
-MathJax 3.2.2 (Apache-2.0), es5/tex-mml-svg.js only: TeX and MathML in, SVG paths out.
+MathJax 4.1.3 (Apache-2.0), tex-mml-svg.js only: TeX and MathML in, SVG paths out; npm sha512 checked.
+The SVG font chunks of @mathjax/mathjax-newcm-font 4.1.3 (Apache-2.0, as its package.json says), svg/dynamic only, loaded only for characters outside the base font.
 Copied by scripts/sync-core.mjs into the modules that show formulas: Paper, Slides and Notes.

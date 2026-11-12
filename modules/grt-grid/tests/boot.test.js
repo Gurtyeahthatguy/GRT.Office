@@ -317,8 +317,8 @@ describe('the status bar', () => {
     expect(document.getElementById('summary').textContent).toContain('Count 2');
   });
 
-  it('says nothing when there are no numbers', async () => {
-    expect(document.getElementById('summary').textContent).toBe('');
+  it('says the sum is 0 when there are no numbers, as Calc does', async () => {
+    expect(document.getElementById('summary').textContent).toBe('Sum 0');
   });
 });
 
@@ -579,12 +579,16 @@ describe('the menus and the data commands', () => {
   const down = (node) => node.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
 
   /** Opens a menu of the bar and picks an item by its label. */
-  async function menu(name, item) {
+  async function menu(name, ...path) {
     down([...document.querySelectorAll('#menubar > button')].find((b) => b.textContent === name));
     await settle();
-    const row = [...document.querySelectorAll('.grt-menu [role^="menuitem"]')].find((r) => r.firstChild.textContent === item);
-    down(row);
-    await settle();
+    for (const [i, item] of path.entries()) {
+      const rows = [...document.querySelectorAll('.grt-menu')].at(-1).querySelectorAll('[role^="menuitem"]');
+      const row = [...rows].find((r) => r.firstChild.textContent === item);
+      if (i < path.length - 1) row.dispatchEvent(new window.MouseEvent('mouseenter'));
+      else down(row);
+      await settle();
+    }
   }
 
   async function fillColumnAt(col, values) {
@@ -602,7 +606,7 @@ describe('the menus and the data commands', () => {
 
   it('a bar of menus, the commands of each also in the palette under LibreOffice’s names', async () => {
     const names = [...document.querySelectorAll('#menubar > button')].map((b) => b.textContent);
-    expect(names).toEqual(['File', 'Edit', 'View', 'Insert', 'Format', 'Sheet', 'Data', 'Help']);
+    expect(names).toEqual(['File', 'Edit', 'View', 'Insert', 'Format', 'Styles', 'Sheet', 'Data', 'Tools', 'Help']);
     press('k', { ctrlKey: true });
     await settle();
     const input = document.querySelector('.grt-palette input');
@@ -615,7 +619,7 @@ describe('the menus and the data commands', () => {
 
   it('sorts from the Data menu, the header row left in place', async () => {
     await fillColumn(['Name', 'pear', 'apple', 'fig']);
-    await menu('Data', 'Sort descending');
+    await menu('Data', 'Sort Descending');
     expect([0, 1, 2, 3].map((r) => cellAt(r, 0).textContent)).toEqual(['Name', 'pear', 'fig', 'apple']);
   });
 
@@ -678,7 +682,7 @@ describe('the menus and the data commands', () => {
     await fillColumn(['5', '50']);
     press('ArrowDown', { shiftKey: true });
     await settle();
-    await menu('Format', 'Conditional formatting…');
+    await menu('Format', 'Conditional…');
     await until(dialogOpen);
     document.querySelector('#panel-body [data-field="op"]').value = '>';
     document.querySelector('#panel-body [data-field="value1"]').value = '10';
@@ -703,7 +707,7 @@ describe('the menus and the data commands', () => {
     await fillColumn(['a', 'b']);
     press('ArrowDown', { shiftKey: true });
     await settle();
-    await menu('Format', 'Merge cells');
+    await menu('Format', 'Merge and Unmerge Cells', 'Merge Cells');
     await until(dialogOpen);
     choose('merge');
     await settle();

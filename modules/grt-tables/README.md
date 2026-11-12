@@ -129,5 +129,9 @@ is here from the start.
 |---|---|
 | `Ctrl+Enter` | run the query in the editor |
 | `Ctrl+Z` | undo |
+| `Ctrl+F` | filter the rows, or find a record in a form |
+| `Page Up` `Page Down` | the previous or next page of rows, or record in a form |
+| `Home` `End` | the first or last record in a form |
+| `Ctrl+S` | save the record in a form |
 | `Ctrl+K` | command palette |
 | double-click a row | edit it |

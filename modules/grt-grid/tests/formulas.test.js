@@ -35,6 +35,14 @@ describe('OpenFormula into Grid', () => {
   it('says what it could not carry', () => {
     expect(fromOpenFormula("of:=['file:///x.ods'#$Sheet1.A1]").problems).toContain('References to other files');
   });
+
+  it('keeps errors written as they are, and writes a lost reference as LibreOffice does', () => {
+    expect(of('of:=[.E26]-#REF!')).toBe('=E26-#REF!');
+    expect(of('of:=IF(#N/A;#DIV/0!;#NAME?)')).toBe('=IF(#N/A,#DIV/0!,#NAME?)');
+    expect(of('of:=[.A1]![.B1]')).toBe('=A1 B1');
+    expect(toOpenFormula('=E26-#REF!')).toBe('of:=[.E26]-[#REF!]');
+    expect(of(toOpenFormula('=E26-#REF!'))).toBe('=E26-#REF!');
+  });
 });
 
 describe('Grid into OpenFormula', () => {
@@ -77,5 +85,14 @@ describe('Excel’s files', () => {
 
   it('CANARY: leaves a formula without references as it is', () => {
     expect(shiftFormula('=PI()*2', 5, 5)).toBe('=PI()*2');
+  });
+});
+
+describe('Calc\'s CEILING and FLOOR in Excel', () => {
+  it('are written as Excel\'s .MATH ones, as LibreOffice writes them, and the .XCL ones as Excel\'s plain ones', () => {
+    expect(toExcelFormula('=FLOOR(20.2345;2;1)')).toBe('_xlfn.FLOOR.MATH(20.2345,2,1)');
+    expect(toExcelFormula('=CEILING(A1;0.1)+floor(B1;2)')).toBe('_xlfn.CEILING.MATH(A1,0.1)+_xlfn.FLOOR.MATH(B1,2)');
+    expect(toExcelFormula('=FLOOR.XCL(A1;2)')).toBe('FLOOR(A1,2)');
+    expect(fromExcelFormula('_xlfn.FLOOR.MATH(20.2345,2,1)')).toBe('=FLOOR.MATH(20.2345,2,1)');
   });
 });

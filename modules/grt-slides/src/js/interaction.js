@@ -96,7 +96,8 @@ export class Interaction {
       if (!this.selection.has(hit.id)) {
         if (!additive) this.selection.clear();
         this.selection.add(hit.id);
-      } else if (additive) {
+      } else if (additive && !(event.shiftKey && event.target?.closest?.('td[data-row]') && this.selection.size === 1)) {
+        // Shift on a cell of the one table chosen stretches the choice of cells instead.
         this.selection.delete(hit.id);
       }
       this.onSelectionChange();
@@ -221,14 +222,8 @@ export class Interaction {
 
     if (element?.kind === 'table') {
       // Which cell was hit matters.
-      const cell = event.target?.closest?.('td');
-      const row = cell?.parentElement;
-      if (cell && row) {
-        this.onEditText(id, {
-          row: [...row.parentElement.children].indexOf(row),
-          col: [...row.children].indexOf(cell),
-        });
-      }
+      const cell = event.target?.closest?.('td[data-row]');
+      if (cell) this.onEditText(id, { row: Number(cell.dataset.row), col: Number(cell.dataset.col) });
       return;
     }
 

@@ -223,6 +223,11 @@ export function textLook(props, styles = null) {
   look.italic = props['font-style'] === 'italic' || props['font-style'] === 'oblique';
   look.underline = !!props['text-underline-style'] && props['text-underline-style'] !== 'none';
   look.strike = !!props['text-line-through-style'] && props['text-line-through-style'] !== 'none';
+  if (look.underline && props['text-underline-type'] === 'double') look.double = true;
+  if (props['text-overline-style'] && props['text-overline-style'] !== 'none') look.overline = true;
+  if (props['text-shadow'] && props['text-shadow'] !== 'none') look.shadow = true;
+  if (props['text-outline'] === 'true') look.outline = true;
+  if (props['font-variant'] === 'small-caps') look.smallcaps = true;
 
   const position = String(props['text-position'] ?? '').trim().split(/\s+/)[0];
   if (position === 'super' || (position.endsWith('%') && parseFloat(position) > 0)) look.sup = true;
@@ -232,6 +237,14 @@ export function textLook(props, styles = null) {
   if (color && props['use-window-font-color'] !== 'true') look.color = color.toLowerCase();
   const background = props['background-color'];
   if (background && background !== 'transparent') look.highlight = background.toLowerCase();
+
+  // A language of none is no language given; zxx is text that is not to be checked.
+  const language = props.language;
+  if (language && language !== 'none') {
+    const country = props.country && props.country !== 'none' ? `-${props.country}` : '';
+    const tag = language.toLowerCase() === 'zxx' ? 'zxx' : `${language}${country}`;
+    if (/^([a-zA-Z]{2,3})(-([a-zA-Z]{2}|\d{3}))?$/.test(tag)) look.lang = tag.replace(/^[a-zA-Z]+/, (l) => l.toLowerCase()).replace(/-[a-z]{2}$/, (c) => c.toUpperCase());
+  }
 
   const size = props['font-size'];
   if (size && !size.endsWith('%')) {

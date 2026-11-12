@@ -3,7 +3,7 @@
 import { makeBlock, OBJECT, runsText, NUMBER_FORMATS, normaliseHeadingNumbers, normaliseNoteSettings } from './core/editor/model.js';
 import { insertObject, objectAt, insertBlockAt } from './core/editor/commands.js';
 import { fromDom, point, collapsed } from './core/editor/selection.js';
-import { documentFields } from './core/editor/fields.js';
+import { documentFields, runListsOf } from './core/editor/fields.js';
 import { tableAt } from './core/editor/tables.js';
 import { formulaDialog } from './core/formula-dialog.js';
 
@@ -23,6 +23,34 @@ export function longDocument(app) {
     app.edit(() => insertObject(model(), app.editor.selection, object));
     app.done();
   };
+
+  /** A citation of a source: a new one, or one the document already cites, chosen by its short name. */
+  async function insertCitation() {
+    if (!sel()) return;
+    const known = new Map();
+    for (const block of model().blocks) {
+      for (const { runs } of runListsOf(block)) for (const run of runs) if (run.object?.type === 'cite' && !known.has(run.object.key)) known.set(run.object.key, run.object);
+    }
+    const kinds = [['book', 'Book'], ['article', 'Article'], ['website', 'Web page'], ['thesis', 'Thesis'], ['report', 'Report'], ['misc', 'Other']];
+    const confirmed = await app.showPanel('Citation', `
+      <div class="form-grid">
+        <label for="ci-key">Short name</label><input id="ci-key" data-field="key" list="ci-known" placeholder="Doe2020" maxlength="60" />
+        <datalist id="ci-known">${[...known.keys()].map((k) => `<option value="${escape(k)}">`).join('')}</datalist>
+        <label for="ci-kind">Kind</label><select id="ci-kind" data-field="kind">${kinds.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+        <label for="ci-author">Author</label><input id="ci-author" data-field="author" maxlength="500" />
+        <label for="ci-title">Title</label><input id="ci-title" data-field="title" maxlength="500" />
+        <label for="ci-year">Year</label><input id="ci-year" data-field="year" maxlength="20" />
+        <label for="ci-publisher">Publisher</label><input id="ci-publisher" data-field="publisher" maxlength="500" />
+        <label for="ci-url">URL</label><input id="ci-url" data-field="url" maxlength="500" />
+      </div>
+      <p class="fp-note">A short name the document already cites brings its details with it; the others are left as typed. GRT never opens the URL.</p>`, 'Insert');
+    if (!confirmed) return;
+    const f = app.readFields();
+    const key = String(f.key ?? '').trim();
+    if (!key) return app.toast('A citation needs a short name');
+    const typed = Object.fromEntries(['author', 'title', 'year', 'publisher', 'url'].map((field) => [field, String(f[field] ?? '').trim()]).filter(([, v]) => v));
+    put({ ...(known.get(key) ?? {}), type: 'cite', key, kind: f.kind || known.get(key)?.kind || 'book', ...typed });
+  }
 
   async function noteText(title, runs = []) {
     const confirmed = await app.showPanel(title, `<label class="stacked">Text of the note<textarea data-field="text" rows="5" data-enter-confirms>${escape(runsText(runs))}</textarea></label>`, 'Apply');
@@ -255,7 +283,7 @@ export function longDocument(app) {
 
   return {
     insertFormula, editFormula,
-    insertNote, insertSpecialNote, headingNumbering, noteSettings, editNote, insertBookmark, insertReference, insertCaption, insertIndexEntry, insertLink,
+    insertNote, insertSpecialNote, insertCitation, headingNumbering, noteSettings, editNote, insertBookmark, insertReference, insertCaption, insertIndexEntry, insertLink,
     insertToc: () => insertGenerated('toc'),
     insertIndex: () => insertGenerated('index'),
     insertField: (field) => put({ type: 'field', field }),

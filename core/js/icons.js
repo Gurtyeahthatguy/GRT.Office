@@ -1,0 +1,103 @@
+/** GRT's own toolbar icons: 16 by 16, drawn with lines in the text colour, so every theme shows them. */
+
+const P = {
+  new: 'M4 1.5h5l3 3v10H4z M9 1.5v3h3',
+  templates: 'M2.5 2.5h11v11h-11z M2.5 6h11 M6 6v7.5',
+  open: 'M1.5 4h4l1.5 1.5h7v7.5h-12.5z M1.5 7h12.5',
+  save: 'M2.5 2.5h9l2 2v9h-11z M5 2.5v3.5h5v-3.5 M5 13.5v-4h6v4',
+  saveAs: 'M2.5 2.5h9l2 2v9h-11z M5 2.5v3.5h5v-3.5 M10.5 9.5l2 2 M9 13l3.5-3.5',
+  pdf: 'M4 1.5h5l3 3v10H4z M5.5 9h1.2a1 1 0 0 1 0 2H5.5v-2.5 M8.5 8.5v3h.8a1.5 1.5 0 0 0 0-3z',
+  export: 'M4 1.5h5l3 3v10H4z M8 12V6.5 M5.8 8.7 8 6.5l2.2 2.2',
+  print: 'M4 6V1.5h8V6 M2.5 6h11v5.5h-2 M4.5 11.5H2.5 M4.5 9h7v5.5h-7z',
+  cut: 'M4.5 13.5a1.8 1.8 0 1 0 0-.1 M11.5 13.5a1.8 1.8 0 1 0 0-.1 M5.6 12 11 2 M10.4 12 5 2',
+  copy: 'M5.5 5.5h8v8.5h-8z M10.5 5.5V2.5h-8v8.5h3',
+  clone: 'M2.5 2.5h7v3h-7z M9.5 4h2v3.5H6.5V9 M5.5 9h2v5.5h-2z',
+  clear: 'M3 13.5h6 M5 2.5h7 M8.5 2.5 6 13.5 M9.5 9.5l4 4 M13.5 9.5l-4 4',
+  undo: 'M5 3.5 2 6.5l3 3 M2 6.5h7a4 4 0 0 1 0 8H6',
+  redo: 'M11 3.5l3 3-3 3 M14 6.5H7a4 4 0 0 0 0 8h3',
+  find: 'M7 2.5a4.5 4.5 0 1 0 0 9a4.5 4.5 0 1 0 0-9 M10.3 10.3l4 4',
+  spelling: 'M1.5 9 4 2.5 6.5 9 M2.4 7h3.2 M8 9V2.5h2.2a1.6 1.6 0 0 1 0 3.2H8 M10.2 5.7a1.7 1.7 0 0 1 0 3.3H8 M3 12.5l2.5 2 6-6',
+  table: 'M1.5 2.5h13v11h-13z M1.5 6h13 M1.5 9.7h13 M5.8 2.5v11 M10.2 2.5v11',
+  image: 'M1.5 2.5h13v11h-13z M1.5 11l4-4 3.5 3.5 2-2 3.5 3.5 M10.5 5.5a1 1 0 1 0 0 .1',
+  chart: 'M1.5 14.5h13 M3.5 14.5V8h2.5v6.5 M7 14.5V3.5h2.5v11 M10.5 14.5V6h2.5v8.5',
+  pageBreak: 'M3 1.5v4h10v-4 M3 14.5v-4h10v4 M1.5 8h2 M5.5 8h2 M9.5 8h2 M13 8h1.5',
+  special: 'M4 13.5h2.5V11a4.5 4.5 0 1 1 3 0v2.5H12',
+  link: 'M7 9a3 3 0 0 0 4.2 0l2.3-2.3a3 3 0 0 0-4.2-4.2L8 3.8 M9 7a3 3 0 0 0-4.2 0L2.5 9.3a3 3 0 0 0 4.2 4.2L8 12.2',
+  footnote: 'M2 4h9 M2 7h9 M2 10h5 M12.5 2v4 M11.5 3l1-1 M2 13.5h12',
+  comment: 'M2 2.5h12v8.5H7l-3 3v-3H2z',
+  track: 'M2.5 13.5l1-3.5 7.5-7.5 2.5 2.5L6 12.5z M9.5 4l2.5 2.5 M2 14.5h12',
+  navigator: 'M8 1.5a6.5 6.5 0 1 0 0 13a6.5 6.5 0 1 0 0-13 M10.5 5.5 9 9 5.5 10.5 7 7z',
+  commands: 'M3 4h10 M3 8h10 M3 12h6 M12 11l1.5 1.5L12 14',
+  settings: 'M8 5.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5 M8 1.5v2 M8 12.5v2 M1.5 8h2 M12.5 8h2 M3.4 3.4l1.4 1.4 M11.2 11.2l1.4 1.4 M3.4 12.6l1.4-1.4 M11.2 4.8l1.4-1.4',
+  alignLeft: 'M2 3h12 M2 6.3h8 M2 9.7h12 M2 13h8',
+  alignCenter: 'M2 3h12 M4 6.3h8 M2 9.7h12 M4 13h8',
+  alignRight: 'M2 3h12 M6 6.3h8 M2 9.7h12 M6 13h8',
+  alignJustify: 'M2 3h12 M2 6.3h12 M2 9.7h12 M2 13h12',
+  bullets: 'M6 4h8 M6 8h8 M6 12h8 M2.8 4a.3.3 0 1 0 0 .1 M2.8 8a.3.3 0 1 0 0 .1 M2.8 12a.3.3 0 1 0 0 .1',
+  numbers: 'M6.5 4h7.5 M6.5 8h7.5 M6.5 12h7.5 M2 2.5l1-.5v3.5 M1.8 7.2a1 1 0 0 1 1.9.5L1.8 10h2 M1.8 11.5h1.9l-1 1.2a.9.9 0 1 1-.9 1.1',
+  indentMore: 'M7 3.5h7 M7 6.8h7 M7 10.1h7 M2 13.4h12 M2 4.5l2.5 2.3L2 9',
+  indentLess: 'M7 3.5h7 M7 6.8h7 M7 10.1h7 M2 13.4h12 M4.5 4.5 2 6.8l2.5 2.2',
+  lineSpacing: 'M7 3h7 M7 6.3h7 M7 9.7h7 M7 13h7 M3.5 2v12 M2 3.5l1.5-1.5L5 3.5 M2 12.5l1.5 1.5 1.5-1.5',
+  spacingMore: 'M6 6h8 M6 10h8 M3.5 2v4.5 M2 3.5 3.5 2 5 3.5 M3.5 14V9.5 M2 12.5 3.5 14 5 12.5',
+  spacingLess: 'M6 6h8 M6 10h8 M3.5 2v4.5 M2 5 3.5 6.5 5 5 M3.5 14V9.5 M2 11 3.5 9.5 5 11',
+  zoomIn: 'M7 2.5a4.5 4.5 0 1 0 0 9a4.5 4.5 0 1 0 0-9 M10.3 10.3l4 4 M5 7h4 M7 5v4',
+  insertRow: 'M1.5 6.5h13v6h-13z M1.5 9.5h13 M8 1.5v4 M6 3.5h4',
+  insertCol: 'M6.5 1.5v13h6v-13z M9.5 1.5v13 M1.5 8h4 M3.5 6v4',
+  deleteRow: 'M1.5 6.5h13v6h-13z M1.5 9.5h13 M6 3.5h4',
+  deleteCol: 'M6.5 1.5v13h6v-13z M9.5 1.5v13 M1.5 8h4',
+  sortUp: 'M4 2v12 M2 4l2-2 2 2 M8.5 3h5 M8.5 7h4 M8.5 11h3',
+  sortDown: 'M4 2v12 M2 12l2 2 2-2 M8.5 3h3 M8.5 7h4 M8.5 11h5',
+  filter: 'M1.5 2.5h13L9.5 8.5v5l-3 1.5v-6.5z',
+  pivot: 'M1.5 1.5h13v13h-13z M1.5 5h13 M5 1.5v13 M8 8.5h4 M10.5 7l1.5 1.5-1.5 1.5 M8 8.5v4',
+  freeze: 'M1.5 1.5h13v13h-13z M5.5 1.5v13 M1.5 5.5h13 M9 9l3 3 M12 9l-3 3',
+  wrap: 'M2 3h12 M2 7h10a2.5 2.5 0 0 1 0 5H8 M9.5 10.5 8 12l1.5 1.5 M2 12h3',
+  merge: 'M1.5 3.5h13v9h-13z M4 8h8 M5.5 6.5 4 8l1.5 1.5 M10.5 6.5 12 8l-1.5 1.5',
+  alignTop: 'M2 2h12 M5 5h6v8H5z',
+  alignMiddle: 'M2 8h3 M11 8h3 M5 4h6v8H5z',
+  alignBottom: 'M2 14h12 M5 3h6v8H5z',
+  date: 'M2 3.5h12v10.5H2z M2 6.5h12 M5 2v3 M11 2v3 M4.5 9h1.5 M7.3 9h1.5 M10 9h1.5 M4.5 11.5h1.5 M7.3 11.5h1.5',
+  borders: 'M1.5 1.5h13v13h-13z M8 1.5v13 M1.5 8h13',
+  conditional: 'M1.5 1.5h13v13h-13z M1.5 6h13 M1.5 10.5h13 M9 3.5h3 M3.5 8.5h4 M9 13h4',
+  importFile: 'M4 1.5h5l3 3v10H4z M8 6.5v5.5 M5.8 9.8 8 12l2.2-2.2',
+  textBox: 'M1.5 2.5h13v11h-13z M5 5.5h6 M8 5.5v6',
+  shape: 'M5.5 1.5a4 4 0 1 0 0 8a4 4 0 1 0 0-8 M8.5 7h6v7.5h-6z',
+  play: 'M4 2.5v11l9-5.5z',
+  playCurrent: 'M1.5 2.5h8v6h-8z M8 9.5v5l5-2.5z',
+  presenter: 'M1.5 2.5h9v6.5h-9z M6 9v3 M3.5 12h5 M12 4.5h2.5v7.5H12',
+  newSlide: 'M1.5 3.5h10v8h-10z M13.5 9v5 M11 11.5h5',
+  duplicate: 'M4.5 4.5h10v8h-10z M1.5 1.5h10v2 M1.5 1.5v8h2',
+  deleteSlide: 'M1.5 3.5h10v8h-10z M12 9.5l3 3 M15 9.5l-3 3',
+  layout: 'M1.5 2.5h13v11h-13z M1.5 5.5h13 M8 5.5v8',
+  master: 'M1.5 2.5h13v11h-13z M4 5.5h8 M4 8.5h8 M4 11h5',
+  design: 'M8 1.5a6.5 6.5 0 0 0 0 13c1 0 1.3-.8.9-1.6-.5-1 .1-2 1.2-2H12a2.5 2.5 0 0 0 2.5-2.5C14.5 4.5 11.6 1.5 8 1.5 M4.5 7.5a.8.8 0 1 0 0 .1 M6.5 4.5a.8.8 0 1 0 0 .1 M10 4.5a.8.8 0 1 0 0 .1',
+  slideSetup: 'M1.5 2.5h13v9h-13z M5 14.5h6 M8 11.5v3 M4 9l3-3 2 2 3-3',
+  front: 'M5.5 5.5h9v9h-9z M1.5 1.5h9v4 M1.5 1.5v9h4',
+  back: 'M1.5 1.5h9v9h-9z M10.5 5.5h4v9h-9v-4',
+  delete: 'M2.5 4h11 M6 4V2h4v2 M3.8 4l.8 10.5h6.8L12.2 4 M6.5 6.5v5.5 M9.5 6.5v5.5',
+  fit: 'M2 6V2h4 M10 2h4v4 M14 10v4h-4 M6 14H2v-4',
+  addNode: 'M1.5 4.5h9v7h-9z M13 4.5v5 M10.5 7h5',
+  alignTopEdges: 'M2 2h12 M4 4h3v9H4z M9 4h3v5H9z',
+  distribute: 'M2 2v12 M14 2v12 M6 4h4v8H6z',
+  tree: 'M6 1.5h4v3H6z M1.5 11.5h4v3h-4z M10.5 11.5h4v3h-4z M8 4.5V8 M3.5 11.5V8h9v3.5',
+  check: 'M2.5 8.5l3.5 3.5 7.5-8',
+  importDiagram: 'M4 1.5h5l3 3v10H4z M8 6.5v5.5 M5.8 9.8 8 12l2.2-2.2',
+  zoomOut: 'M7 2.5a4.5 4.5 0 1 0 0 9a4.5 4.5 0 1 0 0-9 M10.3 10.3l4 4 M5 7h4',
+};
+
+/** Letters drawn as text: the marks LibreOffice shows as letters too. */
+const LETTERS = {
+  bold: ['B', 'font-weight:700'], italic: ['I', 'font-style:italic;font-family:serif'], underline: ['U', 'text-decoration:underline'],
+  strike: ['S', 'text-decoration:line-through'], superscript: ['x²', ''], subscript: ['x₂', ''], shadow: ['S', 'text-shadow:1px 1px 0 currentColor;opacity:.85'],
+  currency: ['€', 'font-weight:600'], percent: ['%', 'font-weight:600'], sum: ['Σ', 'font-weight:600'], number: ['0.0', 'font-size:11px;font-weight:600'],
+};
+
+/** An icon's markup, or null when there is none of that name. */
+export function icon(name) {
+  if (P[name]) {
+    return `<svg class="grt-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="${P[name]}" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  if (LETTERS[name]) return `<span class="grt-icon grt-letter" aria-hidden="true" style="${LETTERS[name][1]}">${LETTERS[name][0]}</span>`;
+  return null;
+}
+
+export const ICON_NAMES = [...Object.keys(P), ...Object.keys(LETTERS)];

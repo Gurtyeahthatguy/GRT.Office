@@ -211,27 +211,10 @@ export function occurrencesBetween(model, from, to) {
     for (const entry of calendar.entries) {
       if (entry.kind !== 'event') continue;
       if (needle && !matches(entry, needle)) continue;
-
-      if (entry.zone && !entry.allDay) {
-        // Each occurrence is placed in its own zone and then on the local clock, a day either side to catch those that move across midnight.
-        const resolver = resolverFor(calendar);
-        for (const date of expand(entry, addDays(from, -1), addDays(to, 1))) {
-          const local = toLocal({ date, time: entry.start.time }, entry.zone, resolver);
-          if (local.date < from || local.date > to) continue;
-          rows.push({ entry, calendar, date: local.date, occurrence: date, time: local.time, minutes: minutesOfDay(local.time), lengthMinutes: durationOf(entry) });
-        }
-        continue;
-      }
-      for (const date of expand(entry, from, to)) {
-        rows.push({
-          entry,
-          calendar,
-          date,
-          occurrence: date,
-          time: entry.allDay ? null : entry.start.time,
-          minutes: entry.allDay ? 0 : minutesOfDay(entry.start.time),
-          lengthMinutes: durationOf(entry),
-        });
+      try {
+        rows.push(...entryOccurrences(entry, calendar, from, to));
+      } catch {
+        // One entry that cannot be worked out does not take the rest of the calendar with it.
       }
     }
   }
@@ -243,6 +226,33 @@ export function occurrencesBetween(model, from, to) {
     || a.entry.summary.localeCompare(b.entry.summary)
   ));
 
+  return rows;
+}
+
+/** The occurrences of one event between two dates, each placed on the local clock. */
+function entryOccurrences(entry, calendar, from, to) {
+  const rows = [];
+  if (entry.zone && !entry.allDay) {
+    // Each occurrence is placed in its own zone and then on the local clock, a day either side to catch those that move across midnight.
+    const resolver = resolverFor(calendar);
+    for (const date of expand(entry, addDays(from, -1), addDays(to, 1))) {
+      const local = toLocal({ date, time: entry.start.time }, entry.zone, resolver);
+      if (local.date < from || local.date > to) continue;
+      rows.push({ entry, calendar, date: local.date, occurrence: date, time: local.time, minutes: minutesOfDay(local.time), lengthMinutes: durationOf(entry) });
+    }
+    return rows;
+  }
+  for (const date of expand(entry, from, to)) {
+    rows.push({
+      entry,
+      calendar,
+      date,
+      occurrence: date,
+      time: entry.allDay ? null : entry.start.time,
+      minutes: entry.allDay ? 0 : minutesOfDay(entry.start.time),
+      lengthMinutes: durationOf(entry),
+    });
+  }
   return rows;
 }
 

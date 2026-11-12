@@ -13,6 +13,10 @@ export const DEFAULTS = {
   showNotes: true,
   autoShrinkText: false,
   autosave: 'recovery',
+  // The person's own shortcuts, by command.
+  keyboard: {},
+  // The dictionary the Spelling dialog starts with.
+  spellLanguage: /^it\b/i.test(globalThis.navigator?.language ?? '') ? 'it-IT' : 'en-US',
 };
 
 let current = { ...DEFAULTS };

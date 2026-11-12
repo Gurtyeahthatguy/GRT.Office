@@ -92,3 +92,13 @@ describe('a workbook written as .ods', () => {
     expect(cellsOf(back.document)).not.toEqual(cellsOf(model.toJSON()));
   });
 });
+
+describe('times between two seconds', () => {
+  it('keep their fraction in .ods', () => {
+    for (const [v, st] of [[0.64604166, 't'], [1 / 3, 't'], [-0.75, 't'], [45000.64604166, 'd'], [45000 + 1 / 3, 'd']]) {
+      const doc = { version: 1, type: 'grid', styles: { t: { format: 'hh:mm:ss' }, d: { format: 'yyyy-mm-dd hh:mm:ss' } }, charts: [], sheets: [{ name: 'S', cells: { '0,0': { v, s: st } } }] };
+      const back = readOds(decodeBlock(encodeBlock(writeOds(doc).entries))).document.sheets[0].cells['0,0'].v;
+      expect(Math.abs(back - v)).toBeLessThan(1e-9 * Math.max(1, v));
+    }
+  });
+});

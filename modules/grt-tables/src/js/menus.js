@@ -34,6 +34,7 @@ export function tablesMenus({ actions, view, has }) {
         { label: 'Copy table', run: actions.copyTable, enabled: has.table, aliases: ['Copy'] },
         { label: 'Paste table…', run: actions.pasteTable, enabled: has.copied, aliases: ['Paste', 'Paste Special', 'Copy Table wizard'] },
         { label: 'Select all rows', run: actions.selectAll, enabled: has.table, aliases: ['Select All'] },
+        { label: 'Search Everywhere…', run: actions.everywhere, aliases: ['Search everywhere', 'Search in files', 'Find in folder', 'Search all documents'] },
         { label: 'Copy rows as text', run: actions.copyRows, enabled: has.table },
         'separator',
         { label: 'Rename…', run: actions.rename, enabled: has.selected, aliases: ['Rename table', 'Rename query', 'Rename form', 'Rename report'] },

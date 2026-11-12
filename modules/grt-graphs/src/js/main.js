@@ -1,5 +1,12 @@
 /** Application wiring. */
 
+import { toMermaid, applyMermaid } from './diagram-text.js';
+import { compareDiagrams, isSame } from './compare.js';
+import { inspect } from './core/inspector.js';
+import { graphFindings, cleanGraphCopy } from './inspect.js';
+import { createMenubar, paletteEntries } from './core/menubar.js';
+import { graphsMenus } from './menus.js';
+import { drawTools } from './draw-tools.js';
 import { GraphModel } from './model.js';
 import { Renderer } from './render.js';
 import { Interaction } from './interaction.js';
@@ -7,6 +14,12 @@ import { treeLayout } from './layout.js';
 import { createProperties } from './core/properties.js';
 import { aboutDialog, licencesDialog } from './core/about.js';
 import { templateManager } from './core/template-manager.js';
+import { searchEverywhere } from './core/everywhere.js';
+import { applyShortcuts, customizeDialog } from './core/customize.js';
+import { wireToolbars } from './core/toolbar.js';
+import { NAMES as LANGUAGE_NAMES } from './core/language.js';
+import { createSpellChecker } from './core/spelling.js';
+import { spellingOverItems } from './core/spelling-items.js';
 import { SHAPES, ROUTINGS, PORTS } from './model.js';
 import { toSvg, toJson, toPng, toPrintPage } from './export.js';
 import { renderToPdf } from './core/pdf.js';
@@ -97,8 +110,13 @@ async function guard(label, action) {
 
 // Drawing
 
+let commentsHidden = false;
+/** The comparison shown, if one is. */
+let comparison = null;
+
 function draw() {
-  renderer.draw(model, interaction.selection, interaction.extras);
+  renderer.draw(model, interaction.selection, { ...interaction.extras, hideComments: commentsHidden, diff: comparison });
+  syncText();
   el('empty-state').classList.toggle('hidden', model.nodes.length > 0);
   refresh();
 }
@@ -117,8 +135,13 @@ function refresh() {
   if (selected > 0) parts.push(`${selected} selected`);
   if (model.dirty) parts.push('unsaved changes');
   el('status').textContent = parts.join(' • ');
+  el('status-language').textContent = LANGUAGE_NAMES.get(settings().spellLanguage) ?? settings().spellLanguage ?? '';
+  toolbars?.refresh();
   properties?.refresh();
 }
+
+/** The toolbars, wired once the menus exist. */
+let toolbars = null;
 
 // The properties sidebar
 
@@ -175,6 +198,7 @@ function describeSelection() {
 
 interaction.onChange = () => draw();
 interaction.onSelectionChange = () => refresh();
+interaction.newRouting = () => settings().defaultRouting;
 
 /** One undo entry per gesture. */
 interaction.onCommit = (before) => {
@@ -197,6 +221,7 @@ function editText(id) {
 
   // Positioned inside .workspace, which the canvas fills exactly.
   input.value = node.text;
+  input.dataset.node = id;
   input.style.left = `${(node.x - renderer.view.x) * scale}px`;
   input.style.top = `${(node.y + node.h / 2 - 14 - renderer.view.y) * scale}px`;
   input.style.width = `${node.w * scale}px`;
@@ -227,9 +252,13 @@ function editText(id) {
 
 // Editing commands
 
+/** A change as one step to undo; a change that says false made none, and leaves no step. */
 function change(mutate) {
   const before = model.snapshot();
-  mutate();
+  if (mutate() === false) {
+    model.restore(before);
+    return;
+  }
   interaction.onCommit(before);
   draw();
 }
@@ -501,6 +530,87 @@ async function writeAs(path, format, password = null) {
   return losses.lines();
 }
 
+// The diagram as text, kept in step with the drawing both ways.
+
+let textTimer = null;
+function syncText() {
+  const panel = el('diagram-text');
+  const area = el('diagram-source');
+  if (panel.hidden || document.activeElement === area) return;
+  const text = toMermaid(model);
+  if (area.value !== text) area.value = text;
+}
+
+function toggleDiagramText() {
+  const panel = el('diagram-text');
+  panel.hidden = !panel.hidden;
+  syncText();
+  if (!panel.hidden) el('diagram-source').focus();
+}
+
+el('diagram-source').addEventListener('input', () => {
+  clearTimeout(textTimer);
+  textTimer = setTimeout(() => {
+    try {
+      const before = model.snapshot();
+      const { added, removed } = applyMermaid(model, el('diagram-source').value);
+      interaction.onCommit(before);
+      renderer.draw(model, interaction.selection, { ...interaction.extras, hideComments: commentsHidden, diff: comparison });
+      refresh();
+      el('diagram-status').textContent = `${model.nodes.length} node(s), ${model.edges.length} line(s)${added ? `; ${added} new` : ''}${removed ? `; ${removed} taken out` : ''}`;
+    } catch (error) {
+      el('diagram-status').textContent = error.message;
+    }
+  }, 500);
+});
+el('diagram-source').addEventListener('blur', () => syncText());
+
+/** Tools, Compare Diagram: what changed from an older version, marked on the drawing until cleared. */
+async function compareDiagram() {
+  const path = await pickToOpen(FILTERS.diagrams, 'Compare with an older version');
+  if (!path) return;
+  const format = formatOf(path);
+  let other;
+  if (format === 'grt') {
+    const opened = await withPassword(baseName(path), (password) => readDocument(path, password));
+    if (!opened) return;
+    other = JSON.parse(opened.value['content/main.json'] ?? '{}');
+  } else if (format === 'fodg') other = readOdg(await readText(path)).document;
+  else if (format === 'odg' || format === 'otg') other = readOdg(await readPackage(path)).document;
+  else throw new Error(`Diagrams are compared with .grt or .odg files, not .${format}`);
+  comparison = compareDiagrams(model, other);
+  draw();
+  if (isSame(comparison)) {
+    comparison = null;
+    draw();
+    toast('No differences: the two diagrams are the same');
+    return;
+  }
+  const c = comparison;
+  toast(`${c.added.size} added, ${c.changed.size} changed, ${c.moved.size} moved, ${c.removed.length} taken away; ${c.addedEdges.size + c.changedEdges.size + c.removedEdges.length} line(s) differ. Tools, Clear Comparison removes the marks.`);
+}
+
+/** File, Inspect Document: what the diagram carries, and a clean copy without what is ticked. */
+async function inspectDiagram() {
+  const out = await inspect(graphFindings(model), { toast });
+  if (!out) return;
+  const confirmed = await showPanel('Clean copy', `
+    <div class="form-grid"><label for="ic-format">Format</label>
+    <select id="ic-format" data-field="format"><option value="odg">OpenDocument drawing (.odg)</option><option value="grt">GRT diagram (.grt)</option></select></div>`, 'Choose file');
+  if (!confirmed) return;
+  const { format } = readFields();
+  const base = model.path ? model.path.replace(/(\.[^./\\]+)?$/, '-clean') : 'diagram-clean';
+  const path = await pickToSave(withExtension(base, format), FILTERS[format], 'Write the clean copy to');
+  if (!path) return;
+  const copy = cleanGraphCopy(model, out);
+  if (format === 'grt') {
+    const parts = documentParts();
+    parts['content/main.json'] = `${JSON.stringify(copy, null, 2)}\n`;
+    await writeDocument(path, parts, null);
+  } else await writePackage(path, writeOdg(copy).entries, {});
+  toast(`Wrote the clean copy as ${baseName(path)}`);
+}
+
 /** Saves the diagram; silent, it asks and reports nothing. Resolves false when nothing was saved. */
 /** A copy written elsewhere, the diagram open staying as it is; a template is one such copy. */
 async function saveCopy(preferred = null) {
@@ -757,63 +867,7 @@ async function openSettings() {
 
 /** Every command the program has, in one list. */
 function commands() {
-  const selected = () => [...interaction.selection].filter((id) => model.node(id));
-  const withSelection = (label, hint, run) => ({ id: label, label, hint, run });
-
-  return [
-    withSelection('New diagram', 'Ctrl+N', () => el('btn-new').click()),
-    withSelection('Open…', 'Ctrl+O', () => el('btn-open').click()),
-    withSelection('Save', 'Ctrl+S', () => guard('Save', () => save(false))),
-    withSelection('Save as…', 'Ctrl+Shift+S', () => guard('Save', () => save(true))),
-    { ...withSelection('Save a copy…', '', () => guard('Save', () => saveCopy())), aliases: ['Save a Copy'] },
-    { ...withSelection('Templates…', 'Ctrl+Shift+N', () => templateManager({ extensions: ['otg'], open: openConfirmed, toast })), aliases: ['Manage Templates', 'Templates', 'New from template'] },
-    { ...withSelection('Save as template…', '', () => guard('Save', () => saveCopy('otg'))), aliases: ['Save as Template', 'Edit Template'] },
-    { ...withSelection('Reload', '', () => (model.path ? guard('Reload', () => openConfirmed(model.path)) : toast('This diagram has not been saved yet'))), aliases: ['Reload', 'Revert'] },
-    { ...withSelection('About GRT Graphs', '', async () => aboutDialog({ name: 'GRT Graphs', version: (await runtimeInfo()).version })), aliases: ['About', 'About %PRODUCTNAME'] },
-    { ...withSelection('Licences', '', () => licencesDialog({ name: 'GRT Graphs' })), aliases: ['License Information', 'Licenses'] },
-    withSelection('Export…', '', () => guard('Export', exportDocument)),
-    withSelection('Print…', 'Ctrl+P', () => guard('Print', printDiagram)),
-    withSelection('Import JSON…', '', () => el('btn-import').click()),
-    withSelection('Import Mermaid…', '', () => guard('Import', () => importMermaid())),
-
-    withSelection('Add node', 'Insert', () => addNode()),
-    withSelection('Delete selection', 'Del', () => deleteSelection()),
-    withSelection('Select all', 'Ctrl+A', () => {
-      interaction.selection = new Set(model.nodes.map((n) => n.id));
-      draw();
-    }),
-
-    withSelection('Align left', '', () => align('left')),
-    withSelection('Align right', '', () => align('right')),
-    withSelection('Align top', '', () => align('top')),
-    withSelection('Align bottom', '', () => align('bottom')),
-    withSelection('Align centres horizontally', '', () => align('centre-x')),
-    withSelection('Align centres vertically', '', () => align('centre-y')),
-    withSelection('Distribute horizontally', '', () => distribute('horizontal')),
-    withSelection('Distribute vertically', '', () => distribute('vertical')),
-
-    withSelection('Tree layout', '', () => runLayout()),
-    withSelection('Live value from Grid or Tables…', `${selected().length} selected`, () => guard('Live value', liveValueDialog)),
-    withSelection('Refresh values', '', () => guard('Refresh', refreshValues)),
-    withSelection('Diagram from a table…', 'Organisation chart', () => guard('Diagram from a table', diagramFromTable)),
-    withSelection('Data table…', '', () => guard('Data table', dataTable)),
-    withSelection('Plan: critical path and Gantt…', '', () => guard('Plan', showPlan)),
-    withSelection('Plan: send deadlines to Dates…', '', () => guard('Deadlines', sendDeadlines)),
-    withSelection('Check for problems', '', () => guard('Check', runValidation)),
-    withSelection('Fit to view', 'Ctrl+0', () => { renderer.fit(model); draw(); }),
-    withSelection('Undo', 'Ctrl+Z', () => step(-1)),
-    withSelection('Redo', 'Ctrl+Y', () => step(1)),
-    withSelection('Settings…', 'Ctrl+,', () => guard('Settings', openSettings)),
-
-    ...['rect', 'rounded', 'ellipse', 'diamond', 'parallelogram', 'hexagon', 'triangle']
-      .map((shape) => withSelection(
-        `Shape: ${shape}`, `${selected().length} selected`,
-        () => applyToSelection('shape', shape),
-      )),
-    ...['orthogonal', 'straight', 'curved'].map((routing) => withSelection(
-      `Routing: ${routing}`, '', () => applyToSelection('routing', routing),
-    )),
-  ];
+  return paletteEntries(menus).filter((entry) => entry.enabled());
 }
 
 // Live values, diagrams from tables, plans, data
@@ -975,6 +1029,127 @@ function distribute(axis) {
 // Events
 
 properties = createProperties(el('properties'), describeSelection);
+
+/** Spelling with GRT's own dictionaries. */
+const spellChecker = createSpellChecker();
+
+const tools = drawTools({
+  model: () => model,
+  selected: () => [...interaction.selection].filter((id) => model.node(id) || model.edges.some((e) => e.id === id)),
+  select: (ids) => { interaction.selection = new Set(ids); draw(); },
+  change: (mutate) => change(mutate),
+  toast: (message) => toast(message),
+  reveal: (box) => {
+    const area = canvas.getBoundingClientRect();
+    renderer.view.x = box.x + box.w / 2 - area.width / renderer.view.scale / 2;
+    renderer.view.y = box.y + box.h / 2 - area.height / renderer.view.scale / 2;
+    renderer.applyView();
+    draw();
+  },
+  centre: () => {
+    const area = canvas.getBoundingClientRect();
+    return renderer.toDiagram(area.left + area.width / 2, area.top + area.height / 2);
+  },
+  editText: (id) => editText(id),
+  file: () => ({
+    name: model.path ? baseName(model.path) : 'Untitled',
+    location: model.path ? model.path.replace(/[/\\][^/\\]*$/, '') : 'Not saved yet',
+    format: file.format,
+  }),
+  draw: () => draw(),
+});
+
+const menus = graphsMenus({
+  tools,
+  newFile: () => el('btn-new').click(),
+  open: () => el('btn-open').click(),
+  templates: () => templateManager({ extensions: ['otg'], open: openConfirmed, toast }),
+  everywhere: () => searchEverywhere({ kind: 'graphs', open: openConfirmed, toast }),
+  // The text of nodes and the labels of lines, as Find goes through them.
+  spelling: () => spellingOverItems({
+    checker: spellChecker,
+    toast,
+    language: () => settings().spellLanguage,
+    setLanguage: (tag) => updateSettings({ spellLanguage: tag }),
+    grammar: () => false,
+    items: () => [
+      ...model.nodes.map((n) => ({ key: `node|${n.id}`, label: 'Shape', text: n.text ?? '' })),
+      ...model.edges.map((e) => ({ key: `edge|${e.id}`, label: 'Line', text: e.label ?? '' })),
+    ],
+    show: (issue) => { const [kind, id] = issue.item.key.split('|'); tools.show({ kind, id }); },
+    replace: (key, from, to, text) => {
+      const [kind, id] = key.split('|');
+      change(() => {
+        if (kind === 'node') { const node = model.node(id); if (node) model.setText(id, node.text.slice(0, from) + text + node.text.slice(to)); }
+        else { const edge = model.edges.find((e) => e.id === id); if (edge) model.setEdgeLabel(id, edge.label.slice(0, from) + text + edge.label.slice(to)); }
+      });
+    },
+  }),
+  customize: async () => {
+    const next = await customizeDialog(menus, settings().keyboard);
+    if (!next) return;
+    const stored = await updateSettings({ keyboard: applyShortcuts(menus, next) });
+    toast(stored ? 'Shortcuts saved' : 'Shortcuts changed for this session only');
+  },
+  saveTemplate: () => guard('Save', () => saveCopy('otg')),
+  reload: () => (model.path ? guard('Reload', () => openConfirmed(model.path)) : toast('This diagram has not been saved yet')),
+  save: () => guard('Save', () => save(false)),
+  saveAs: () => guard('Save', () => save(true)),
+  saveCopy: () => guard('Save', () => saveCopy()),
+  importJson: () => el('btn-import').click(),
+  importMermaid: () => guard('Import', () => importMermaid()),
+  exportDocument: () => guard('Export', exportDocument),
+  print: () => guard('Print', printDiagram),
+  undo: () => step(-1),
+  redo: () => step(1),
+  selectAll: () => { interaction.selection = new Set(model.nodes.map((n) => n.id)); draw(); },
+  deleteSelection: () => deleteSelection(),
+  toggleComments: () => { commentsHidden = !commentsHidden; draw(); },
+  commentsShown: () => !commentsHidden,
+  zoomIn: () => { renderer.zoomCentre(1.25); draw(); },
+  zoomOut: () => { renderer.zoomCentre(1 / 1.25); draw(); },
+  fit: () => { renderer.fit(model); draw(); },
+  addNode: () => addNode(),
+  diagramFromTable: () => guard('Diagram from a table', diagramFromTable),
+  liveValue: () => guard('Live value', liveValueDialog),
+  apply: (kind, value) => applyToSelection(kind, value),
+  align: (how) => align(how),
+  distribute: (axis) => distribute(axis),
+  layout: () => runLayout(),
+  validate: () => guard('Check', runValidation),
+  plan: () => guard('Plan', showPlan),
+  deadlines: () => guard('Deadlines', sendDeadlines),
+  dataTable: () => guard('Data table', dataTable),
+  refreshValues: () => guard('Refresh', refreshValues),
+  settings: () => guard('Settings', openSettings),
+  about: async () => aboutDialog({ name: 'GRT Graphs', version: (await runtimeInfo()).version }),
+  licences: () => licencesDialog({ name: 'GRT Graphs' }),
+  inspect: () => guard('Inspect', inspectDiagram),
+  compare: () => guard('Compare', compareDiagram),
+  clearComparison: () => { comparison = null; draw(); },
+  comparing: () => Boolean(comparison),
+  diagramText: () => toggleDiagramText(),
+  diagramTextShown: () => !el('diagram-text').hidden,
+});
+createMenubar(el('menubar'), menus);
+toolbars = wireToolbars(document.querySelector('.toolbars'), menus);
+
+// A comment's mark opens it; Ctrl and a click on a linked node shows where the link goes.
+canvas.addEventListener('mousedown', (event) => {
+  const mark = event.target.closest?.('.comment-mark');
+  if (mark) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    guard('Comment', () => tools.openComment(mark.dataset.comment));
+    return;
+  }
+  const linked = event.target.closest?.('.node[data-href]');
+  if (linked && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    tools.followLink(linked.dataset.id);
+  }
+}, true);
 el('btn-align-left').onclick = () => align('left');
 el('btn-align-centre').onclick = () => align('centre-x');
 el('btn-align-top').onclick = () => align('top');
@@ -1078,6 +1253,7 @@ window.addEventListener('resize', () => draw());
 (async function start() {
   const info = await runtimeInfo();
   const prefs = await loadSettings(info.ephemeral);
+  applyShortcuts(menus, settings().keyboard);
 
   if (info.ephemeral) el('ephemeral-note').classList.remove('hidden');
   model.meta.snapToGrid = prefs.snapToGrid;

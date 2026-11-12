@@ -63,7 +63,8 @@ export class GridView {
   dispose() {
     this.observer?.disconnect();
     if (this.onResize) this.container.ownerDocument.defaultView?.removeEventListener('resize', this.onResize);
-    for (const node of [...this.pool, ...this.columnPool, ...this.rowPool, ...(this.chartNodes?.values() ?? [])]) node.remove();
+    for (const node of [...this.pool, ...this.columnPool, ...this.rowPool, ...(this.chartNodes?.values() ?? []), ...(this.noteNodes ?? [])]) node.remove();
+    this.noteNodes = [];
     this.chartNodes = new Map();
     this.pool = [];
     this.columnPool = [];
@@ -158,6 +159,7 @@ export class GridView {
     this.drawCells(range);
     this.drawHeaders(range);
     this.drawCharts();
+    this.drawNotes(range);
   }
 
   /** Where a line starts, past the end of the offsets counted at the default size. */
@@ -317,12 +319,56 @@ export class GridView {
       node.classList.toggle('break-left', colBreaks.has(col));
       node.classList.toggle('frozen-edge-bottom', frozenRows > 0 && row === frozenRows - 1);
       node.classList.toggle('frozen-edge-right', frozenCols > 0 && col === frozenCols - 1);
+      const noted = typeof cell?.n === 'string' && cell.n !== '';
+      node.classList.toggle('has-note', noted);
+      node.classList.toggle('has-link', typeof cell?.l === 'string' && cell.l !== '');
+      node.classList.toggle('redacted', Boolean(cell?.rd));
+      // A data bar is drawn as a background too; the comment's corner goes over it.
+      if (noted && node.style.backgroundImage) node.style.backgroundImage = `linear-gradient(225deg, #d93025 5px, transparent 5px), ${node.style.backgroundImage}`;
       node.hidden = false;
     }
 
     // Anything left over from a larger viewport is hidden rather than
     // removed, so it is there to be reused on the next pass.
     for (let i = index; i < this.pool.length; i += 1) this.pool[i].hidden = true;
+  }
+
+  /**
+   * Comment boxes beside their cells: all when View, Comments is on, those marked to be shown,
+   * and the one under the pointer.
+   */
+  drawNotes({ firstRow, lastRow, firstCol, lastCol }) {
+    const doc = this.body.ownerDocument;
+    const sheet = this.sheet.sheet;
+    const all = Boolean(this.sheet.view?.comments);
+    const hover = this.hoverNote;
+    const wanted = [];
+    for (let row = firstRow; row <= lastRow; row += 1) {
+      for (let col = firstCol; col <= lastCol; col += 1) {
+        const cell = sheet.cell(row, col);
+        if (typeof cell?.n !== 'string' || cell.n === '') continue;
+        if (all || cell.ns || (hover && hover.row === row && hover.col === col)) wanted.push({ row, col, text: cell.n });
+      }
+    }
+    if (hover && !wanted.some((w) => w.row === hover.row && w.col === hover.col)) {
+      const text = sheet.cell(hover.row, hover.col)?.n;
+      if (typeof text === 'string' && text !== '') wanted.push({ ...hover, text });
+    }
+    this.noteNodes ??= [];
+    while (this.noteNodes.length < wanted.length) {
+      const node = doc.createElement('div');
+      node.className = 'note-box';
+      node.setAttribute('role', 'note');
+      this.body.append(node);
+      this.noteNodes.push(node);
+    }
+    this.noteNodes.forEach((node, i) => {
+      const note = wanted[i];
+      node.hidden = !note;
+      if (!note) return;
+      node.textContent = note.text;
+      node.style.transform = `translate(${this.offsetAt('cols', note.col + 1) + 6}px, ${this.offsetAt('rows', note.row)}px)`;
+    });
   }
 
   /** The look conditional formatting gives a cell, or nothing. */
@@ -443,10 +489,14 @@ export function applyLook(node, style, value) {
   node.style.textAlign = style.align ?? alignmentFor(value);
   node.style.fontWeight = style.bold ? '700' : '';
   node.style.fontStyle = style.italic ? 'italic' : '';
-  const lines = [style.underline ? 'underline' : '', style.strike ? 'line-through' : ''].filter(Boolean).join(' ');
-  node.style.textDecoration = lines;
+  const lines = [style.underline || style.double ? 'underline' : '', style.strike ? 'line-through' : '', style.overline ? 'overline' : ''].filter(Boolean).join(' ');
+  node.style.textDecorationLine = lines;
+  node.style.textDecorationStyle = style.double ? 'double' : '';
+  node.style.textShadow = style.shadow ? '0.06em 0.06em 0 rgba(0, 0, 0, 0.35)' : '';
+  node.style.webkitTextStroke = style.outline ? '0.04em currentColor' : '';
+  node.style.webkitTextFillColor = style.outline ? 'transparent' : '';
   node.style.color = style.color ?? '';
-  node.style.background = style.bg ?? '';
+  node.style.backgroundColor = style.bg ?? '';
   node.style.fontFamily = style.font ?? '';
   node.style.fontSize = style.size ? `${style.size}pt` : '';
   node.style.whiteSpace = style.wrap ? 'pre-wrap' : '';

@@ -461,7 +461,7 @@ fn recover_entry(data: &Bytes, at: u64) -> Option<(Entry, u64)> {
 
     let (payload_end, contents) = match method {
         METHOD_DEFLATE if streamed => {
-            let rest = data.slice(start, data.0.len() as u64 - start).ok()?;
+            let rest = data.slice(start, (data.0.len() as u64).checked_sub(start)?).ok()?;
             let mut decoder = DeflateDecoder::new(rest);
             let mut out = Vec::new();
             (&mut decoder).take(MAX_ENTRY + 1).read_to_end(&mut out).ok()?;

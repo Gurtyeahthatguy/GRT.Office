@@ -1,6 +1,6 @@
 /** The statistics people use every day: spreads, ranks, percentiles, and conditions on several ranges. */
 
-import { ERROR, isError, isBlank, toNumber, collectNumbers, Matrix } from '../engine/values.js';
+import { ERROR, isError, isBlank, toNumber, collectNumbers, typedNumber, Matrix } from '../engine/values.js';
 import { criterion } from './criteria.js';
 
 const blockOf = (arg) => (arg?.matrix ?? new Matrix([[arg?.value ?? null]]));
@@ -10,12 +10,12 @@ function numbers(args) {
   const out = [];
   for (const arg of args) {
     if (arg.missing) continue;
-    if (arg.matrix) {
-      const found = collectNumbers(arg.matrix.flat);
+    if (arg.matrix || arg.reference) {
+      const found = collectNumbers(arg.matrix ? arg.matrix.flat : arg.values);
       if (isError(found)) return found;
       out.push(...found);
     } else {
-      const n = toNumber(arg.value);
+      const n = typedNumber(arg.value);
       if (isError(n)) return n;
       out.push(n);
     }
@@ -65,6 +65,18 @@ function percentile(list, p) {
   if (list.length === 0 || p < 0 || p > 1) return ERROR.num;
   const sorted = [...list].sort((a, b) => a - b);
   const at = p * (sorted.length - 1);
+  const low = Math.floor(at);
+  const high = Math.ceil(at);
+  return sorted[low] + (sorted[high] - sorted[low]) * (at - low);
+}
+
+/** The value at fraction p of the sorted list as PERCENTILE.EXC finds it, the ends left out. */
+function percentileExclusive(list, p) {
+  if (isError(list)) return list;
+  if (isError(p)) return p;
+  const at = p * (list.length + 1) - 1;
+  if (list.length === 0 || at < 0 || at > list.length - 1) return ERROR.value;
+  const sorted = [...list].sort((a, b) => a - b);
   const low = Math.floor(at);
   const high = Math.ceil(at);
   return sorted[low] + (sorted[high] - sorted[low]) * (at - low);
@@ -212,6 +224,11 @@ export const STATISTICS = {
   'QUARTILE.INC': (args) => {
     const q = Math.trunc(toNumber(args[1]?.value));
     return q < 0 || q > 4 ? ERROR.num : percentile(numbers([args[0]]), q / 4);
+  },
+  'PERCENTILE.EXC': (args) => percentileExclusive(numbers([args[0]]), toNumber(args[1]?.value)),
+  'QUARTILE.EXC': (args) => {
+    const q = Math.trunc(toNumber(args[1]?.value));
+    return q < 1 || q > 3 ? ERROR.num : percentileExclusive(numbers([args[0]]), q / 4);
   },
   RANK: rank,
   'RANK.EQ': rank,

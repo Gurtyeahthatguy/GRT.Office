@@ -469,3 +469,21 @@ input[type="search"] {
 .data-table th, .data-table td { border: 1px solid var(--border); padding: 2px 4px; text-align: left; }
 .data-table td input, .data-table th input { width: 9em; border: none; background: transparent; color: var(--text); font: inherit; }
 .data-table tr.critical td { color: #cf222e; font-weight: 600; }
+
+/* A node's link, and the marks of comments on the page. */
+.node-text.node-link { text-decoration: underline; fill: var(--link, #1a5fb4); }
+.comment-mark rect, .comment-mark path { fill: #ffe066; stroke: #b8a000; stroke-width: 1; cursor: pointer; }
+
+/* A comparison: added green, changed amber, moved blue, gone red and dashed. */
+.diff { fill: none; stroke-width: 3; pointer-events: none; }
+.diff-added { stroke: #2e9d47; }
+.diff-changed { stroke: #d08b00; }
+.diff-moved { stroke: #3b7dd8; stroke-dasharray: 2 4; }
+.diff-removed { stroke: #c5221f; }
+.diff-ghost { stroke-dasharray: 6 4; fill: rgba(197, 34, 31, 0.06); }
+.diff-ghost-text { fill: #c5221f; font-size: 13px; text-decoration: line-through; pointer-events: none; }
+.diff-edge { fill: none; stroke-width: 5; opacity: 0.45; pointer-events: none; }
+.diagram-text { width: 340px; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--bg-raised); }
+.diagram-text[hidden] { display: none; }
+.diagram-text textarea { flex: 1; resize: none; font-family: ui-monospace, monospace; font-size: 12px; border: 0; padding: 8px; background: var(--bg); color: var(--text); }
+.diagram-text .hint { margin: 6px 8px; }

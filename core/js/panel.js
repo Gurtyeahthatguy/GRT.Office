@@ -42,6 +42,8 @@ export function showPanel(title, html, confirmLabel = null) {
     };
 
     function onKey(event) {
+      // A field that reads keys for itself, such as one recording a shortcut, keeps them.
+      if (event.target?.closest?.('[data-keeps-keys]')) return;
       if (event.key === 'Escape') {
         event.stopPropagation();
         close(false);
@@ -95,6 +97,8 @@ export function showChoice(title, html, choices) {
     };
 
     function onKey(event) {
+      // A field that reads keys for itself, such as one recording a shortcut, keeps them.
+      if (event.target?.closest?.('[data-keeps-keys]')) return;
       if (event.key === 'Escape') {
         event.stopPropagation();
         close(null);

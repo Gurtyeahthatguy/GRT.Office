@@ -103,7 +103,7 @@ const nextId = (prefix) => {
   return `${prefix}${counter}`;
 };
 
-/** One sheet. `cells` maps `"row,col"` to `{v, f, s}`. */
+/** One sheet. `cells` maps `"row,col"` to `{v, f, s}`, `i` on a formula that intersects instead of spilling, and `n` a comment. */
 export class Sheet {
   constructor({
     id = null, name = 'Sheet1', cells = {}, cols = {}, rows = {}, frozen = null, print = null,
@@ -209,16 +209,23 @@ export class Sheet {
   }
 
   /** Writes a cell; null for everything removes it. */
-  set(row, col, { v = undefined, f = undefined, s = undefined, sp = undefined } = {}) {
+  set(row, col, { v = undefined, f = undefined, s = undefined, sp = undefined, n = undefined, ns = undefined, l = undefined, rd = undefined } = {}) {
     const at = key(row, col);
     const existing = this.cells.get(at);
     const cell = { ...(existing ?? {}) };
 
     if (v !== undefined) { if (v === null) delete cell.v; else cell.v = v; }
-    if (f !== undefined) { if (f === null) delete cell.f; else cell.f = f; }
+    if (f !== undefined) { if (f === null) { delete cell.f; delete cell.i; } else cell.f = f; }
     if (s !== undefined) { if (s === null) delete cell.s; else cell.s = s; }
     // Marks a formula that spills, so it runs again when the document opens.
     if (sp !== undefined) { if (sp === null) delete cell.sp; else cell.sp = sp; }
+    // A comment, as text, and whether it is always shown.
+    if (n !== undefined) { if (n === null || n === '') { delete cell.n; delete cell.ns; } else cell.n = String(n); }
+    if (ns !== undefined) { if (ns && cell.n) cell.ns = 1; else delete cell.ns; }
+    // A link, kept as written; nothing follows it without asking.
+    if (l !== undefined) { if (l === null || l === '') delete cell.l; else cell.l = String(l).slice(0, 2048); }
+    // A cell marked to be covered in a redacted copy.
+    if (rd !== undefined) { if (rd) cell.rd = 1; else delete cell.rd; }
 
     if (Object.keys(cell).length === 0) this.cells.delete(at);
     else this.cells.set(at, cell);
@@ -505,8 +512,9 @@ export class GridModel {
           cells[at] = rest;
         }
       }
+      // A blocked one is marked as a block of one cell, so it is read back as a formula that spills.
       for (const [at, anchor] of sheet.anchors) {
-        if (!anchor.blocked && cells[at]) cells[at] = { ...cells[at], a: [anchor.rows, anchor.cols] };
+        if (cells[at]) cells[at] = { ...cells[at], a: anchor.blocked ? [1, 1] : [anchor.rows, anchor.cols] };
       }
       for (const [at, value] of sheet.spills) {
         if (value !== null && value !== undefined) cells[at] = { ...(cells[at] ?? {}), v: value };

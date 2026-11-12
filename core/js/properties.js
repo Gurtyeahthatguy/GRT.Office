@@ -1,5 +1,7 @@
 /** The properties sidebar: what is selected and its properties, changed in place, in every program the same way. */
 
+import { livePreview } from './live-preview.js';
+
 const escape = (text) => String(text ?? '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 
 /** One field's control, by kind: number, text, select, colour or checkbox. */
@@ -62,6 +64,12 @@ export function createProperties(host, describe) {
       }
       return `<section><h3>${escape(section.title)}</h3>${groups.map((g) => (g.row ? `<div class="row">${g.html.join('')}</div>` : g.html.join(''))).join('')}</section>`;
     }).join('');
+    // A list that can show its choices on the document before one is chosen does so.
+    fields.forEach((field, i) => {
+      if (field.kind !== 'select' || !field.preview) return;
+      const select = host.querySelector(`select[data-prop="${i}"]`);
+      if (select) livePreview(select, { look: field.look, preview: field.preview, restore: field.restore ?? (() => {}) });
+    });
   }
 
   const valueOf = (input) => {

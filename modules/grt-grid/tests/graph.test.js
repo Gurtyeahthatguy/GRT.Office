@@ -378,3 +378,21 @@ describe('several sheets', () => {
     expect(value(0, 0)).toBe('#REF!');
   });
 });
+
+describe('a large sheet', () => {
+  it('is put in order without comparing every formula with every other', () => {
+    const graph = new DependencyGraph();
+    const ids = [];
+    for (let row = 0; row < 6000; row += 1) {
+      const at = nodeId('s', row, 1);
+      ids.push(at);
+      graph.setDependencies(at, { ranges: [{ sheetId: 's', from: { row: Math.max(0, row - 1), col: 0 }, to: { row: Math.max(0, row - 1), col: row ? 1 : 0 } }, { sheetId: 's', from: { row: 0, col: 2 }, to: { row: 0, col: 2 } }] });
+    }
+    const started = Date.now();
+    const { order, cyclic } = graph.topologicalOrder(ids);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(order).toHaveLength(6000);
+    expect(cyclic).toEqual([]);
+    expect(order.indexOf(nodeId('s', 10, 1))).toBeGreaterThan(order.indexOf(nodeId('s', 9, 1)));
+  });
+});

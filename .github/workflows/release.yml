@@ -148,8 +148,10 @@ jobs:
             echo
             echo "**On Linux, the \`.AppImage\` is the easy one**: one file,"
             echo "no installation, runs from anywhere. Make it executable"
-            echo "(\`chmod +x\`) and open it. The \`.deb\` and \`.rpm\` are"
-            echo "there for installing properly through the package manager."
+            echo "(\`chmod +x\`) and open it. It uses the WebKitGTK 4.1 the"
+            echo "system has, and says which package to install if it is"
+            echo "missing. The \`.deb\` and \`.rpm\` are there for installing"
+            echo "properly through the package manager."
             echo
             echo "**On Windows, take the \`-setup.exe\`**. The plain \`.exe\`"
             echo "beside it is the same program with no installer, if a"

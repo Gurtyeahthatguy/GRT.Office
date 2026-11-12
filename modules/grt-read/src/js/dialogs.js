@@ -8,14 +8,6 @@ import { showPanel, readFields, isDialogOpen, escapeHtml } from './core/panel.js
 // forms that go inside it.
 export { showPanel, readFields, isDialogOpen };
 
-const ui = {
-  overlay: () => el('overlay'),
-  title: () => el('panel-title'),
-  body: () => el('panel-body'),
-  cancel: () => el('panel-cancel'),
-  confirm: () => el('panel-confirm'),
-};
-
 // Form builders
 
 export function stampForm(current) {

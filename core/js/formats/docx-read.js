@@ -27,6 +27,14 @@ function fieldObject(instr) {
     case 'SEQ': return rest[0] ? { type: 'seq', name: rest[0].replace(/_/g, ' ') } : null;
     case 'REF': return rest[0] ? { type: 'ref', target: rest[0], show: 'number' } : null;
     case 'PAGEREF': return rest[0] ? { type: 'ref', target: rest[0], show: 'page' } : null;
+    case 'MERGEFIELD': {
+      const name = quoted ?? rest.find((word) => !word.startsWith('\\'));
+      return name ? { type: 'merge', name } : null;
+    }
+    case 'CITATION': {
+      const key = quoted ?? rest.find((word) => !word.startsWith('\\'));
+      return key ? { type: 'cite', key } : null;
+    }
     case 'XE': {
       if (!quoted) return null;
       const [term, sub] = quoted.split(':');
@@ -41,7 +49,7 @@ import { fontKind, extensionOf, DRAWABLE } from './odf.js';
 import { declareExternal } from './external.js';
 
 const W = NS.w;
-const MARKS = ['bold', 'italic', 'underline', 'strike', 'sup', 'sub'];
+const MARKS = ['bold', 'italic', 'underline', 'strike', 'sup', 'sub', 'double', 'overline', 'shadow', 'outline', 'smallcaps'];
 const PAPER_STYLES = ['body', 'h1', 'h2', 'h3', 'h4', 'quote', 'code', 'title', 'subtitle', 'hr'];
 
 const wAttr = (element, name) => attr(element, W, name);
@@ -91,6 +99,93 @@ class WordReader {
     this.customChars = new Map();
     this.footnotes = this.readNotes('footnotes', 'footnote');
     this.endnotes = this.readNotes('endnotes', 'endnote');
+    this.readComments();
+    this.readSources();
+    // What the text being read belongs to: a change putting it in or taking it out, and a comment.
+    this.review = { ins: null, del: null, cmt: null, cmtWord: null };
+    this.changeCount = 0;
+  }
+
+  /**
+   * The comments and their threads: which answers which and which are resolved come from commentsExtended,
+   * by the id of each comment's last paragraph. Names, initials and dates are not kept.
+   */
+  readComments() {
+    this.commentThreads = new Map();
+    this.commentShown = new Set();
+    const part = [...this.rels.values()].find((rel) => rel.type.endsWith('/comments') && !rel.external)?.target;
+    const doc = part ? readPart(this.pkg, part, 'the comments') : null;
+    const W14 = 'http://schemas.microsoft.com/office/word/2010/wordml';
+    const W15 = 'http://schemas.microsoft.com/office/word/2012/wordml';
+    const entries = [];
+    for (const comment of kids(doc?.documentElement, W, 'comment').slice(0, 5000)) {
+      if ((wAttr(comment, 'author') ?? '').trim() || wAttr(comment, 'date')) this.losses.add('Names and dates on changes and comments, left out');
+      const paragraphs = kids(comment, W, 'p');
+      const text = paragraphs.map((p) => [...p.getElementsByTagNameNS(W, 't')].map((t) => t.textContent).join('')).join('\n').slice(0, 100_000);
+      const last = paragraphs[paragraphs.length - 1];
+      entries.push({ wid: wAttr(comment, 'id'), text, paraId: last?.getAttributeNS(W14, 'paraId') ?? null });
+    }
+    const extended = [...this.rels.values()].find((rel) => rel.type.endsWith('/commentsExtended') && !rel.external)?.target;
+    const ext = extended ? readPart(this.pkg, extended, 'the comment threads') : null;
+    const info = new Map(kids(ext?.documentElement, W15, 'commentEx').map((e) => [e.getAttributeNS(W15, 'paraId'), {
+      parent: e.getAttributeNS(W15, 'paraIdParent') || null, done: ['1', 'true'].includes(e.getAttributeNS(W15, 'done')),
+    }]));
+    const byPara = new Map(entries.filter((e) => e.paraId).map((e) => [e.paraId, e]));
+    const rootOf = (entry) => {
+      let at = entry;
+      for (let hops = 0; hops < 50; hops += 1) {
+        const parent = info.get(at.paraId)?.parent;
+        const next = parent ? byPara.get(parent) : null;
+        if (!next || next === at) return at;
+        at = next;
+      }
+      return at;
+    };
+    for (const entry of entries) {
+      const root = rootOf(entry);
+      const done = info.get(entry.paraId)?.done ? { done: true } : {};
+      if (root === entry) {
+        this.commentThreads.set(entry.wid, { type: 'comment', id: `k${entry.wid}`, text: entry.text, ...done });
+      } else {
+        this.commentThreads.set(entry.wid, { reply: root.wid });
+      }
+    }
+    for (const entry of entries) {
+      const found = this.commentThreads.get(entry.wid);
+      if (!found?.reply) continue;
+      const root = this.commentThreads.get(found.reply);
+      if (!root || root.reply) continue;
+      root.replies = [...(root.replies ?? []), { id: `k${entry.wid}`, text: entry.text, ...(info.get(entry.paraId)?.done ? { done: true } : {}) }];
+    }
+  }
+
+  /** The sources Word keeps for citations, in a custom XML part, by their short names. */
+  readSources() {
+    this.sources = new Map();
+    const B = 'http://schemas.openxmlformats.org/officeDocument/2006/bibliography';
+    for (const rel of this.rels.values()) {
+      if (!rel.type.endsWith('/customXml') || rel.external) continue;
+      const root = readPart(this.pkg, rel.target, 'the sources')?.documentElement;
+      if (root?.namespaceURI !== B || root.localName !== 'Sources') continue;
+      for (const source of kids(root, B, 'Source').slice(0, 2000)) {
+        const text = (name) => kid(source, B, name)?.textContent.trim() || null;
+        const tag = text('Tag');
+        if (!tag) continue;
+        const names = [...source.getElementsByTagNameNS(B, 'Person')].map((p) => [kid(p, B, 'Last')?.textContent, kid(p, B, 'First')?.textContent].filter(Boolean).join(', '));
+        const corporate = [...source.getElementsByTagNameNS(B, 'Corporate')].map((c) => c.textContent.trim());
+        const kind = { Book: 'book', BookSection: 'book', JournalArticle: 'article', ArticleInAPeriodical: 'article', InternetSite: 'website', DocumentFromInternetSite: 'website', Report: 'report' }[text('SourceType')] ?? 'misc';
+        const author = [...corporate, ...names].filter(Boolean).join('; ');
+        this.sources.set(tag, Object.fromEntries(Object.entries({ kind, author, title: text('Title'), year: text('Year'), publisher: text('Publisher'), url: text('URL') }).filter(([, v]) => v)));
+      }
+    }
+  }
+
+  /** The comment object a comment of the document starts, once, when it is a thread's first. */
+  commentAt(wid) {
+    const thread = this.commentThreads.get(wid);
+    if (!thread || thread.reply || this.commentShown.has(wid)) return null;
+    this.commentShown.add(wid);
+    return thread;
   }
 
   part(type) {
@@ -150,7 +245,10 @@ class WordReader {
     for (const abstract of kids(doc?.documentElement, W, 'abstractNum')) {
       const levels = new Map();
       levels.texts = new Map();
+      levels.indents = new Map();
       for (const level of kids(abstract, W, 'lvl')) {
+        const left = Number(wAttr(kid(kid(level, W, 'pPr'), W, 'ind'), 'left') ?? wAttr(kid(kid(level, W, 'pPr'), W, 'ind'), 'start'));
+        if (Number.isFinite(left)) levels.indents.set(Number(wAttr(level, 'ilvl')), left);
         levels.set(Number(wAttr(level, 'ilvl')), wAttr(kid(level, W, 'numFmt'), 'val') ?? 'decimal');
         levels.texts.set(Number(wAttr(level, 'ilvl')), wAttr(kid(level, W, 'lvlText'), 'val') ?? '');
       if (Number(wAttr(level, 'ilvl')) === 0) levels.text = wAttr(kid(level, W, 'lvlText'), 'val');
@@ -208,6 +306,10 @@ class WordReader {
       set('strike', kid(rPr, W, 'strike') ?? kid(rPr, W, 'dstrike'));
       const underline = kid(rPr, W, 'u');
       if (underline) look.underline = !['none', '0', 'false'].includes(wAttr(underline, 'val') ?? 'single');
+      if (underline) look.double = wAttr(underline, 'val') === 'double';
+      set('shadow', kid(rPr, W, 'shadow'));
+      set('outline', kid(rPr, W, 'outline'));
+      set('smallcaps', kid(rPr, W, 'smallCaps'));
       const vertical = kid(rPr, W, 'vertAlign');
       if (vertical) {
         const value = wAttr(vertical, 'val');
@@ -222,6 +324,11 @@ class WordReader {
       if (shade && shade !== 'auto') look.highlight = `#${shade.toLowerCase()}`;
       const size = wAttr(kid(rPr, W, 'sz'), 'val');
       if (size) look.size = Number(size) / 2;
+      // Word marks text not to be checked with noProof, and its language with lang.
+      const lang = wAttr(kid(rPr, W, 'lang'), 'val');
+      if (lang && /^[a-zA-Z]{2,3}(-([a-zA-Z]{2}|\d{3}))?$/.test(lang)) look.lang = lang.replace(/^[a-zA-Z]+/, (l) => l.toLowerCase()).replace(/-[a-z]{2}$/, (c) => c.toUpperCase());
+      const noProof = kid(rPr, W, 'noProof');
+      if (noProof && toggle(noProof) !== false) look.lang = 'zxx';
       const fonts = kid(rPr, W, 'rFonts');
       if (fonts) {
         const theme = wAttr(fonts, 'asciiTheme');
@@ -316,12 +423,16 @@ class WordReader {
           }
           case 'customXml': case 'smartTag': this.walk(node); continue;
           case 'ins': case 'moveTo':
-            this.losses.add('Tracked changes, shown as if accepted');
+          case 'del': case 'moveFrom': {
+            // A change around whole paragraphs or tables: what it holds is read as marked.
+            const key = node.localName === 'ins' || node.localName === 'moveTo' ? 'ins' : 'del';
+            const outer = this.review[key];
+            this.changeCount += 1;
+            this.review[key] = `${key === 'ins' ? 'i' : 'd'}${this.changeCount}`;
             this.walk(node);
+            this.review[key] = outer;
             continue;
-          case 'del': case 'moveFrom':
-            this.losses.add('Tracked changes, shown as if accepted');
-            continue;
+          }
           case 'sectPr': case 'bookmarkStart': case 'bookmarkEnd': case 'proofErr':
           case 'permStart': case 'permEnd': case 'commentRangeStart': case 'commentRangeEnd':
             continue;
@@ -342,6 +453,10 @@ class WordReader {
 
   paragraph(p) {
     const pPr = kid(p, W, 'pPr');
+    // What the model cannot mark: paragraph breaks and formatting changed by a recorded change.
+    const markChange = kid(kid(pPr, W, 'rPr'), W, 'ins') ?? kid(kid(pPr, W, 'rPr'), W, 'del');
+    if (markChange) this.losses.add('Paragraph breaks put in or taken out by recorded changes, shown as made');
+    if (p.getElementsByTagNameNS(W, 'rPrChange').length || kid(pPr, W, 'pPrChange')) this.losses.add('Recorded changes of formatting, shown as made');
     // A paragraph there only to end a section with a continuous break is not text.
     const sectPr = kid(pPr, W, 'sectPr');
     if (sectPr && kids(p).every((child) => is(child, W, 'pPr')) && (wAttr(kid(sectPr, W, 'type'), 'val') === 'continuous')) {
@@ -418,8 +533,10 @@ class WordReader {
         const format = this.numbering.get(numId).get(ilvl) ?? this.numbering.get(numId).get(0) ?? 'bullet';
         const listType = format === 'bullet' || format === 'none' ? 'bullet' : 'number';
         const same = this.listAbstract.get(numId);
-        const continues = this.currentList && (ilvl > 0 || this.currentList.numId === numId
-          || (same && this.listAbstract.get(this.currentList.numId)?.abstract === same.abstract && !same.restarts));
+        const sameKind = same && this.listAbstract.get(this.currentList?.numId)?.abstract === same.abstract;
+        // Right after an item of the same kind, a numbering that starts again goes on in the list, from one.
+        const restart = Boolean(this.currentList && this.lastWasItem && sameKind && same.restarts && this.currentList.numId !== numId && ilvl === 0);
+        const continues = this.currentList && (ilvl > 0 || this.currentList.numId === numId || (sameKind && !same.restarts) || restart);
         if (!continues || this.pendingBreak || (index === 0 && breakBefore)) {
           this.currentList = { kind: 'list', style: 'body', align, listType, items: [], numId };
           // How the list counts, or the bullet it shows, when it is not the plain one.
@@ -435,10 +552,26 @@ class WordReader {
           this.losses.add('Lists mixing bullets and numbers, shown with one kind');
         }
         if (ilvl > 5) this.losses.add('Lists nested deeper than six levels, flattened');
-        this.currentList.items.push({ level: Math.min(ilvl, 5), runs });
+        this.currentList.items.push({ level: Math.min(ilvl, 5), runs, ...(restart && this.currentList.items.length ? { restart: true } : {}) });
+        if (restart) this.currentList.numId = numId;
+        this.lastWasItem = true;
         return;
       }
 
+      // A paragraph that says it has no number, right after a list's item, is an entry of that list without one.
+      if (this.currentList && this.lastWasItem && numId === '0' && kind === 'paragraph') {
+        let ilvl = Number(wAttr(kid(numPr, W, 'ilvl'), 'val') ?? 0);
+        // LibreOffice writes such an entry at level 0 with the indent of its real level: the level whose indent is nearest.
+        const left = Number(wAttr(kid(pPr, W, 'ind'), 'left') ?? wAttr(kid(pPr, W, 'ind'), 'start'));
+        const indents = this.numbering.get(this.currentList.numId)?.indents;
+        if (ilvl === 0 && Number.isFinite(left) && indents?.size) {
+          ilvl = [...indents].sort((a, b) => Math.abs(a[1] - left) - Math.abs(b[1] - left) || a[0] - b[0])[0][0];
+        }
+        this.currentList.items.push({ level: Math.min(ilvl, 5), runs, unnumbered: true });
+        return;
+      }
+
+      this.lastWasItem = false;
       this.currentList = null;
       const block = kind === 'heading'
         ? { kind: 'heading', level, style, align, runs }
@@ -486,6 +619,9 @@ class WordReader {
       if (fields.length > 0 && !fields[fields.length - 1].showing) return;
       const run = { text };
       if (object) run.object = object;
+      if (this.review.ins) run.ins = this.review.ins;
+      if (this.review.del) run.del = this.review.del;
+      if (this.review.cmt && !object) run.cmt = this.review.cmt;
       if (state.link) run.link = state.link;
       if (state.cstyle) run.cstyle = state.cstyle;
       if (!object) state.mark = null;
@@ -493,6 +629,7 @@ class WordReader {
       if (look.color && look.color !== baseline.color && look.color !== '#000000') run.color = look.color;
       if (look.highlight && look.highlight !== baseline.highlight) run.highlight = look.highlight;
       if (look.size && baseline.size && Math.abs(look.size - baseline.size) > 0.1) run.size = look.size;
+      if (look.lang && look.lang !== baseline.lang) run.lang = look.lang;
       if (look.font && baseline.font && look.font !== baseline.font && fontKind(look.font) !== fontKind(baseline.font)) {
         this.losses.add('Fonts that differ from the paragraph’s, shown in its font');
       }
@@ -549,6 +686,7 @@ class WordReader {
               } else if (type === 'end' && fields.length > 0) {
                 const top = fields.pop();
                 const object = top.parsed ? top.object : fieldObject(top.instr);
+                if (object?.type === 'cite') Object.assign(object, this.sources.get(object.key) ?? {});
                 if (object) this.fieldResult(object, state, marks, emit, look);
                 else if (!/^\s*(TOC|INDEX)\b/i.test(top.instr)) this.losses.add('Fields, kept as the text they showed');
               }
@@ -557,8 +695,18 @@ class WordReader {
             case 'instrText':
               if (fields.length > 0) fields[fields.length - 1].instr += child.textContent;
               continue;
-            case 'delText': case 'delInstrText': case 'rPr':
-            case 'lastRenderedPageBreak': case 'annotationRef': case 'commentReference':
+            case 'delText':
+              // Text taken out by a recorded change stands where it was, marked.
+              if (this.review.del) emit(child.textContent, look);
+              continue;
+            case 'commentReference': {
+              // A comment with no stretch of its own starts at its reference.
+              const thread = this.commentAt(wAttr(child, 'id'));
+              if (thread) emit(OBJECT, look, thread);
+              continue;
+            }
+            case 'delInstrText': case 'rPr':
+            case 'lastRenderedPageBreak': case 'annotationRef':
               continue;
             case 'footnoteReference': case 'endnoteReference': {
               const foot = child.localName === 'footnoteReference';
@@ -610,6 +758,7 @@ class WordReader {
             }
             case 'fldSimple': {
               const object = fieldObject(wAttr(child, 'instr'));
+              if (object?.type === 'cite') Object.assign(object, this.sources.get(object.key) ?? {});
               if (object) this.fieldResult(object, state, marks, emit, this.look(this.styleRuns(styleId)));
               else {
                 this.losses.add('Fields, kept as the text they showed');
@@ -627,12 +776,31 @@ class WordReader {
               } else emit(OBJECT, this.look(this.styleRuns(styleId)), { type: 'bookmark', name });
               continue;
             }
-            case 'ins': case 'moveTo':
-              this.losses.add('Tracked changes, shown as if accepted');
+            case 'ins': case 'moveTo': case 'del': case 'moveFrom': {
+              if ((wAttr(child, 'author') ?? '').trim() || wAttr(child, 'date')) this.losses.add('Names and dates on changes and comments, left out');
+              const key = child.localName === 'ins' || child.localName === 'moveTo' ? 'ins' : 'del';
+              const outer = this.review[key];
+              this.changeCount += 1;
+              this.review[key] = `${key === 'ins' ? 'i' : 'd'}${this.changeCount}`;
               walk(child);
+              this.review[key] = outer;
               continue;
-            case 'del': case 'moveFrom':
-              this.losses.add('Tracked changes, shown as if accepted');
+            }
+            case 'commentRangeStart': {
+              const wid = wAttr(child, 'id');
+              const thread = this.commentAt(wid);
+              if (thread) {
+                emit(OBJECT, this.look(this.styleRuns(styleId)), thread);
+                this.review.cmt = thread.id;
+                this.review.cmtWord = wid;
+              }
+              continue;
+            }
+            case 'commentRangeEnd':
+              if (wAttr(child, 'id') === this.review.cmtWord) {
+                this.review.cmt = null;
+                this.review.cmtWord = null;
+              }
               continue;
             case 'smartTag': case 'customXml': case 'dir': case 'bdo':
               walk(child);

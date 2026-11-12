@@ -2,7 +2,7 @@
 
 import { pivotData, readSource } from '../pivot.js';
 import { parse, transform, NODE } from '../parser/parser.js';
-import { evaluate, dependenciesOf, nameFormula } from './evaluate.js';
+import { evaluate, dependenciesOf, nameFormula, implicitValue } from './evaluate.js';
 import { DependencyGraph, nodeId, parseNodeId } from './graph.js';
 import { ERROR, Matrix, isMatrix } from './values.js';
 import {
@@ -68,6 +68,16 @@ export class Engine {
       formulaAt: (id, r, c) => this.model.sheetById(id)?.formulaAt(r, c) ?? null,
       sheetIndex: (id) => this.model.sheets.findIndex((sheet) => sheet.id === id) + 1 || null,
       sheetCount: () => this.model.sheets.length,
+      sheetName: (id) => this.model.sheetById(id)?.name ?? null,
+      formatAt: (id, r, c) => {
+        const style = this.model.sheetById(id)?.styleAt(r, c);
+        return (style && this.model.styles?.[style]?.format) || null;
+      },
+      alignAt: (id, r, c) => {
+        const style = this.model.sheetById(id)?.styleAt(r, c);
+        return (style && this.model.styles?.[style]?.align) || null;
+      },
+      columnWidth: (id, c) => this.model.sheetById(id)?.columnWidth(c) ?? null,
       isHidden: (id, r) => this.model.sheetById(id)?.isHidden('row', r) ?? false,
       isFiltered: (id, r) => this.model.sheetById(id)?.filtered.has(r) ?? false,
       pivotData: (id, r, c, field, pairs) => {
@@ -171,17 +181,50 @@ export class Engine {
     return this.recalculateFrom([nodeId(sheetId, row, col)]);
   }
 
-  /** Puts a formula in a cell and recalculates. */
-  setFormula(sheetId, row, col, text) {
+  /** Puts literal values in several cells of one sheet, then recalculates once. */
+  setValues(sheetId, cells) {
+    const sheet = this.model.sheetById(sheetId);
+    if (!sheet) return null;
+    for (const { row, col, value } of cells) {
+      this.forget(sheetId, row, col);
+      this.unspill(sheet, row, col);
+      sheet.set(row, col, { v: value, f: null, sp: null });
+    }
+    this.model.dirty = true;
+    this.bounds.delete(sheetId);
+    return this.recalculateFrom(cells.map(({ row, col }) => nodeId(sheetId, row, col)));
+  }
+
+  /**
+   * Puts a formula in a cell and recalculates.
+   * @param {boolean} [implicit] whether it intersects instead of spilling; left out, the cell keeps what it had
+   */
+  setFormula(sheetId, row, col, text, implicit = undefined) {
     const sheet = this.model.sheetById(sheetId);
     if (!sheet) return null;
 
     const normalised = text.startsWith('=') ? text : `=${text}`;
-    sheet.set(row, col, { f: normalised });
+    const cell = sheet.set(row, col, { f: normalised });
+    if (implicit === true) cell.i = 1;
+    else if (implicit === false) delete cell.i;
     this.model.dirty = true;
     this.bounds.delete(sheetId);
 
     this.register(sheetId, row, col, normalised);
+    return this.recalculateFrom([nodeId(sheetId, row, col)]);
+  }
+
+  /** Takes what a cell holds and leaves its look and its comment, as Calc's Delete key does. */
+  clearContent(sheetId, row, col) {
+    const sheet = this.model.sheetById(sheetId);
+    if (!sheet) return null;
+
+    this.forget(sheetId, row, col);
+    this.unspill(sheet, row, col);
+    sheet.set(row, col, { v: null, f: null, sp: null });
+    this.model.dirty = true;
+    this.bounds.delete(sheetId);
+
     return this.recalculateFrom([nodeId(sheetId, row, col)]);
   }
 
@@ -246,6 +289,8 @@ export class Engine {
       let value = held.error || !held.ast
         ? ERROR.name
         : evaluate(held.ast, this.contextFor(sheetId, row, col));
+      // A formula read from LibreOffice or an older Excel does not spill; it shows the value on its row.
+      if (isMatrix(value) && sheet.cells.get(key(row, col))?.i) value = implicitValue(value, row, col);
 
       if (isMatrix(value) && value.rows * value.cols > 1) {
         value = this.spill(sheet, row, col, value, spilled);

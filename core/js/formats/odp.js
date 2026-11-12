@@ -1,5 +1,6 @@
 /** OpenDocument presentations to and from Slides' document. */
 
+import { hasCovered } from './pptx-write.js';
 import { NS, kids, kid, attr, is, tag, xmlDocument, parseXml } from '../xml.js';
 import { FOOTER_PLACES, FOOTER_TOP, FOOTER_HEIGHT } from './slide-footer.js';
 import { odfChartDocument, readOdfChartDocument, CHART_MIMETYPE } from './chart-object.js';
@@ -10,10 +11,12 @@ import { naturalSize } from '../images.js';
 import { parsePath, formatPath, mapPath, normalisePath } from '../paths.js';
 import {
   odfDocuments, OdfStyles, MIMETYPES, ODF_VERSION, ROOT_NAMESPACES, odfPackage, odfText, internalHref,
-  MEDIA_TYPES, extensionOf, fontKind, unquote,
+  MEDIA_TYPES, extensionOf, fontKind, unquote, textLook,
 } from './odf.js';
 import { declareExternal } from './external.js';
 
+/** LibreOffice's namespace for comments on a slide. */
+const OFFICEOOO = 'http://openoffice.org/2009/office';
 const PX_PER_MM = 96 / 25.4;
 const ANIM = 'urn:oasis:names:tc:opendocument:xmlns:animation:1.0';
 const SMIL = 'urn:oasis:names:tc:opendocument:xmlns:smil-compatible:1.0';
@@ -67,6 +70,7 @@ class OdpReader {
     this.pkg = typeof source === 'string' ? null : source;
     this.body = body;
     const named = [docs.styles, docs.content].filter(Boolean);
+    this.stylesDoc = docs.styles ?? null;
     this.content = new OdfStyles(named, docs.content);
     this.masterScope = new OdfStyles(named, docs.styles ?? docs.content);
     this.losses = new Losses();
@@ -80,6 +84,18 @@ class OdpReader {
   id(prefix) {
     this.ids += 1;
     return `${prefix}${this.ids}`;
+  }
+
+  /** A slide's comments: their places and text; who wrote them and when are not kept. */
+  comments(page) {
+    const out = [];
+    for (const note of kids(page, OFFICEOOO, 'annotation').slice(0, 500)) {
+      if (kids(note).some((k) => k.localName === 'creator' || k.localName === 'date')) this.losses.add('Names and dates on comments, left out');
+      const text = kids(note, NS.text, 'p').map((p) => p.textContent).join('\n').slice(0, 100_000);
+      if (text.trim() === '') continue;
+      out.push({ id: this.id('c'), x: Math.round(px(attr(note, NS.svg, 'x')) ?? 0), y: Math.round(px(attr(note, NS.svg, 'y')) ?? 0), text });
+    }
+    return out.length ? { comments: out } : {};
   }
 
   read() {
@@ -139,6 +155,7 @@ class OdpReader {
         background,
         section: null,
         notes: this.notes(page),
+        ...this.comments(page),
         transition: this.transition(page, pageProps),
         elements,
         ...(pageProps.visibility === 'hidden' ? { hidden: true } : {}),
@@ -367,12 +384,26 @@ class OdpReader {
   }
 
   table(table, box, styles, out) {
-    const rows = [...table.getElementsByTagNameNS(NS.table, 'table-row')];
+    const rows = [...table.getElementsByTagNameNS(NS.table, 'table-row')].slice(0, 1000);
     let cols = 0;
-    let merged = false;
     let size = null;
-    const cells = rows.map((row) => kids(row).filter((c) => is(c, NS.table, 'table-cell') || is(c, NS.table, 'covered-table-cell')).map((cell) => {
-      if (cell.localName === 'covered-table-cell' || attr(cell, NS.table, 'number-columns-spanned') || attr(cell, NS.table, 'number-rows-spanned')) merged = true;
+    const merges = [];
+    // Column widths and row heights as their lengths; only their shares of the table are kept.
+    const widths = [];
+    for (const column of kids(table, NS.table, 'table-column')) {
+      const width = parseLength(styles.resolve('table-column', attr(column, NS.table, 'style-name'), 'column')['column-width']);
+      const repeat = Math.min(Number(attr(column, NS.table, 'number-columns-repeated') ?? 1) || 1, 64);
+      for (let i = 0; i < repeat && widths.length < 64; i += 1) widths.push(width);
+    }
+    const heights = rows.map((row) => {
+      const props = styles.resolve('table-row', attr(row, NS.table, 'style-name'), 'row');
+      return parseLength(props['row-height'] ?? props['min-row-height']);
+    });
+    const cells = rows.map((row, r) => kids(row).filter((c) => is(c, NS.table, 'table-cell') || is(c, NS.table, 'covered-table-cell')).slice(0, 64).map((cell, c) => {
+      if (cell.localName === 'covered-table-cell') return '';
+      const across = Math.min(Number(attr(cell, NS.table, 'number-columns-spanned') ?? 1) || 1, 64);
+      const down = Math.min(Number(attr(cell, NS.table, 'number-rows-spanned') ?? 1) || 1, 1000);
+      if (across > 1 || down > 1) merges.push({ top: r, left: c, bottom: r + down - 1, right: c + across - 1 });
       const paragraphs = paragraphsOf(cell);
       if (size === null) {
         const span = paragraphs[0]?.p.getElementsByTagNameNS(NS.text, 'span')[0];
@@ -382,13 +413,19 @@ class OdpReader {
       return paragraphs.map(({ p }) => plainText(p)).join('\n');
     }));
     for (const row of cells) cols = Math.max(cols, row.length);
-    if (merged) this.losses.add('Merged table cells, shown separate');
     if (rows.length > 30 || cols > 12) this.losses.add('Tables larger than 30 rows or 12 columns, cut to that size');
+    const rowCount = Math.min(Math.max(rows.length, 1), 30);
+    const colCount = Math.min(Math.max(cols, 1), 12);
+    const fits = (list, count) => (list.length >= count && list.slice(0, count).every((v) => v > 0) ? list.slice(0, count) : null);
+    const colW = fits(widths, colCount);
+    const rowH = fits(heights, rowCount);
     out.push({
       id: this.id('e'), kind: 'table', ...box, style: 'body',
-      rows: Math.min(Math.max(rows.length, 1), 30), cols: Math.min(Math.max(cols, 1), 12),
+      rows: rowCount, cols: colCount,
       header: attr(table, NS.table, 'use-first-row-styles') === 'true',
-      cells: cells.slice(0, 30).map((row) => Array.from({ length: Math.min(Math.max(cols, 1), 12) }, (_, c) => row[c] ?? '')),
+      cells: cells.slice(0, 30).map((row) => Array.from({ length: colCount }, (_, c) => row[c] ?? '')),
+      ...(colW ? { colW } : {}), ...(rowH ? { rowH } : {}),
+      ...(merges.length ? { merges: merges.filter((m) => m.top < rowCount && m.left < colCount).map((m) => ({ ...m, bottom: Math.min(m.bottom, rowCount - 1), right: Math.min(m.right, colCount - 1) })) } : {}),
       size: Math.round(size ?? 24), data: {},
     });
   }
@@ -399,21 +436,20 @@ class OdpReader {
     if (!paragraphs.some(({ p }) => plainText(p).trim() !== '')) return null;
     const runs = [];
     const sizes = [];
+    const paras = [];
     let elementColor = null;
     let align = null;
     let family = null;
-    let bulleted = false;
-    paragraphs.forEach(({ p, bullet, level }, index) => {
+    let spacing = null;
+    paragraphs.forEach(({ p, bullet, level, listStyle }, index) => {
       if (index > 0) runs.push({ text: '\n' });
       let started = false;
       const pStyle = attr(p, NS.text, 'style-name');
       const paragraphProps = { ...look.paragraph, ...styles.resolve('paragraph', pStyle, 'paragraph') };
       align ??= paragraphProps['text-align'] ?? 'start';
+      spacing ??= paragraphProps;
       const pText = { ...look.text, ...styles.resolve('paragraph', pStyle, 'text') };
-      if (bullet) {
-        bulleted = true;
-        runs.push({ text: `${'    '.repeat(level)}• ` });
-      }
+      paras.push(bullet ? { level, list: numbersLevel([holder.ownerDocument, this.stylesDoc], listStyle, level) ? 'number' : 'bullet' } : { level: 0 });
       const visit = (node, inherited) => {
         for (const child of node.childNodes) {
           if (child.nodeType === 3) {
@@ -422,7 +458,8 @@ class OdpReader {
             push(started ? collapsed : collapsed.replace(/^ /, ''), inherited);
           } else if (child.nodeType === 1 && child.namespaceURI === NS.text) {
             if (child.localName === 'span' || child.localName === 'a') {
-              visit(child, { ...inherited, ...styles.resolve('text', attr(child, NS.text, 'style-name'), 'text') });
+              const href = child.localName === 'a' ? child.getAttributeNS(NS.xlink, 'href') : null;
+              visit(child, { ...inherited, ...styles.resolve('text', attr(child, NS.text, 'style-name'), 'text'), ...(href ? { linkTarget: href.slice(0, 2048) } : {}) });
             } else if (child.localName === 's') push(' '.repeat(Number(attr(child, NS.text, 'c') ?? 1)), inherited);
             else if (child.localName === 'tab') push('\t', inherited);
             else if (child.localName === 'line-break') push('\n', inherited);
@@ -440,24 +477,36 @@ class OdpReader {
         const size = fontSize(props['font-size']);
         if (size) sizes.push(size);
         family ??= unquote(props['font-family'] ?? props['font-name'] ?? '') || null;
+        const marks = textLook(props);
         runs.push({
           text: value,
-          ...(props['font-weight'] === 'bold' || Number(props['font-weight']) >= 600 ? { bold: true } : {}),
-          ...(props['font-style'] === 'italic' || props['font-style'] === 'oblique' ? { italic: true } : {}),
-          ...(props['text-underline-style'] && props['text-underline-style'] !== 'none' ? { underline: true } : {}),
+          ...Object.fromEntries(['bold', 'italic', 'underline', 'strike', 'sup', 'sub', 'double', 'overline', 'shadow', 'outline', 'smallcaps']
+            .filter((m) => marks[m] && !(m === 'underline' && marks.double)).map((m) => [m, true])),
+          ...(marks.highlight ? { highlight: marks.highlight } : {}),
           ...(color && color !== elementColor ? { color } : {}),
+          ...(size ? { size: Math.round(size) } : {}),
+          ...(props.linkTarget ? { link: props.linkTarget } : {}),
         });
       };
       visit(p, pText);
     });
-    if (bulleted) this.losses.add('Bulleted lists, kept as text with bullet characters');
-    const distinct = [...new Set(sizes.map((s) => Math.round(s)))];
-    if (distinct.length > 1) this.losses.add('Text of different sizes in one box, shown at one size');
+    // The box takes the size most of its text has; runs of another size keep their own.
+    const counts = new Map();
+    for (const s of sizes.map((x) => Math.round(x))) counts.set(s, (counts.get(s) ?? 0) + 1);
+    const boxSize = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 24;
+    for (const run of runs) if (run.size === boxSize) delete run.size;
     const face = family ? (styles.font(family)?.family ?? family) : null;
+    const percent = /^(\d+(?:\.\d+)?)%$/.exec(spacing?.['line-height'] ?? '');
+    const above = px(spacing?.['margin-top']);
+    const below = px(spacing?.['margin-bottom']);
     return {
       style: 'body',
       content: mergeRuns(runs),
-      size: distinct[0] ?? 24,
+      ...(paras.some((x) => x.list || x.level) ? { paras } : {}),
+      ...(percent && Math.abs(Number(percent[1]) / 120 - 0.9) > 0.01 ? { lineHeight: Math.round((Number(percent[1]) / 120) * 100) / 100 } : {}),
+      ...(above ? { spaceBefore: Math.round(above) } : {}),
+      ...(below ? { spaceAfter: Math.round(below) } : {}),
+      size: boxSize,
       align: { center: 'center', end: 'right', right: 'right' }[align] ?? 'left',
       ...(look.valign !== 'top' ? { valign: look.valign } : {}),
       ...(elementColor ? { color: elementColor } : {}),
@@ -474,15 +523,30 @@ function fontSize(text) {
 }
 
 /** The paragraphs of a text holder, list items flattened and marked as bulleted. */
-function paragraphsOf(holder, level = -1) {
+function paragraphsOf(holder, level = -1, listStyle = null) {
   const out = [];
   for (const child of kids(holder)) {
-    if (is(child, NS.text, 'p') || is(child, NS.text, 'h')) out.push({ p: child, bullet: level >= 0, level: Math.max(level, 0) });
+    if (is(child, NS.text, 'p') || is(child, NS.text, 'h')) out.push({ p: child, bullet: level >= 0, level: Math.max(level, 0), listStyle });
     else if (is(child, NS.text, 'list')) {
-      for (const item of kids(child, NS.text, 'list-item')) out.push(...paragraphsOf(item, level + 1));
+      const style = attr(child, NS.text, 'style-name') ?? listStyle;
+      for (const item of kids(child, NS.text, 'list-item')) out.push(...paragraphsOf(item, level + 1, style));
     }
   }
   return out;
+}
+
+/** Whether a list style numbers a level, looked for in the file's automatic and named styles. */
+function numbersLevel(docs, name, level) {
+  if (!name) return false;
+  for (const doc of docs) {
+    for (const style of doc?.getElementsByTagNameNS(NS.text, 'list-style') ?? []) {
+      if (attr(style, NS.style, 'name') !== name) continue;
+      for (const child of kids(style)) {
+        if (Number(attr(child, NS.text, 'level')) === level + 1) return child.localName === 'list-level-style-number';
+      }
+    }
+  }
+  return false;
 }
 
 function plainText(p) {
@@ -498,7 +562,10 @@ function plainText(p) {
 }
 
 function mergeRuns(runs) {
-  const key = (r) => JSON.stringify([!!r.bold, !!r.italic, !!r.underline, r.color ?? null]);
+  const key = (r) => {
+    const { text, ...look } = r;
+    return JSON.stringify(Object.entries(look).sort());
+  };
   const out = [];
   for (const run of runs) {
     const last = out[out.length - 1];
@@ -582,7 +649,9 @@ const rounded = (box) => ({
  * @returns {{entries?: object[], text?: string, losses: Losses}}
  */
 export function writeOdp(document, images = new Map(), { flat = false } = {}) {
-  return new OdpWriter(document, images).write(flat);
+  const out = new OdpWriter(document, images).write(flat);
+  if (hasCovered(document)) out.losses.add('Text marked to be covered, written in full: File, Export As, Redacted Export makes a copy without it');
+  return out;
 }
 
 /** Automatic styles for one part of the file, with names of its own. */
@@ -599,6 +668,23 @@ class StyleSink {
       this.counts[short] = (this.counts[short] ?? 0) + 1;
       const name = `${this.prefix}${short}${this.counts[short]}`;
       this.styles.set(key, tag('style:style', { 'style:name': name, 'style:family': family }, properties));
+    }
+    return this.styles.get(key).attrs['style:name'];
+  }
+
+  /** A list style of nine levels, each a bullet or a number in the form its level uses. */
+  addList(kinds) {
+    const key = JSON.stringify(['list', kinds]);
+    if (!this.styles.has(key)) {
+      this.counts.L = (this.counts.L ?? 0) + 1;
+      const name = `${this.prefix}L${this.counts.L}`;
+      const levels = kinds.map((kind, i) => {
+        const place = tag('style:list-level-properties', { 'text:space-before': cm(i * 36), 'text:min-label-width': cm(28) });
+        return kind === 'number'
+          ? tag('text:list-level-style-number', { 'text:level': String(i + 1), 'style:num-format': ['1', 'a', 'i'][i % 3], 'style:num-suffix': '.' }, place)
+          : tag('text:list-level-style-bullet', { 'text:level': String(i + 1), 'text:bullet-char': ['•', '–', '▪', '◦', '•', '–', '▪', '◦', '•'][i] }, place);
+      });
+      this.styles.set(key, tag('text:list-style', { 'style:name': name }, levels));
     }
     return this.styles.get(key).attrs['style:name'];
   }
@@ -674,6 +760,9 @@ class OdpWriter {
         'xml:id': id, 'draw:id': id,
       },
       sortByZ(slide.elements ?? []).map((element) => this.element(element, content)),
+      (slide.comments ?? []).filter((c) => typeof c?.text === 'string' && c.text !== '').map((c) => tag('officeooo:annotation', {
+        'svg:x': cm(c.x ?? 0), 'svg:y': cm(c.y ?? 0), 'svg:width': cm(240), 'svg:height': cm(120),
+      }, String(c.text).split('\n').map((line) => tag('text:p', {}, odfText(line))))),
       transitionXml(slide.transition, id),
       (slide.notes ?? '').trim() !== '' ? this.notesXml(slide.notes, content, i + 1) : null);
     });
@@ -684,7 +773,7 @@ class OdpWriter {
       'style:print-orientation': this.canvas.w >= this.canvas.h ? 'landscape' : 'portrait',
     }));
     const namespaces = {
-      ...ROOT_NAMESPACES, 'xmlns:anim': ANIM, 'xmlns:smil': SMIL, 'office:version': ODF_VERSION,
+      ...ROOT_NAMESPACES, 'xmlns:anim': ANIM, 'xmlns:smil': SMIL, 'xmlns:officeooo': OFFICEOOO, 'office:version': ODF_VERSION,
     };
     const markers = tag('office:styles', {},
       tag('draw:marker', { 'draw:name': 'Arrow', 'svg:viewBox': '0 0 20 30', 'svg:d': 'M10 0l-10 30h20z' }));
@@ -793,10 +882,11 @@ class OdpWriter {
     })]);
     // A placeholder of the slide's layout says which, as LibreOffice and PowerPoint mark titles and bodies.
     return tag('draw:frame', { [placeholder ? 'presentation:style-name' : 'draw:style-name']: graphic, ...placement(element), 'presentation:class': placeholder, 'presentation:user-transformed': placeholder ? 'true' : null },
-      tag('draw:text-box', {}, this.paragraphs(element.content ?? [], look, sink)));
+      tag('draw:text-box', {}, this.paragraphs(element.content ?? [], look, sink, element)));
   }
 
-  paragraphs(runs, look, sink) {
+  /** A box's paragraphs: plain ones as they are, list items nested in lists by their level. */
+  paragraphs(runs, look, sink, element = {}) {
     const lines = [[]];
     for (const run of runs) {
       String(run.text ?? '').split('\n').forEach((piece, i) => {
@@ -804,13 +894,65 @@ class OdpWriter {
         if (piece !== '') lines[lines.length - 1].push({ ...run, text: piece });
       });
     }
+    const paras = lines.map((_, i) => element.paras?.[i] ?? { level: 0 });
     const paragraph = sink.add('paragraph', 'P', [
-      tag('style:paragraph-properties', { 'fo:text-align': { center: 'center', right: 'end' }[look.align] ?? 'start', 'fo:line-height': '108%' }),
+      tag('style:paragraph-properties', {
+        'fo:text-align': { center: 'center', right: 'end' }[look.align] ?? 'start',
+        'fo:line-height': `${Math.round((element.lineHeight ?? 0.9) * 120)}%`,
+        'fo:margin-top': element.spaceBefore ? cm(element.spaceBefore) : null,
+        'fo:margin-bottom': element.spaceAfter ? cm(element.spaceAfter) : null,
+      }),
       tag('style:text-properties', textProperties({}, look)),
     ]);
-    return lines.map((line) => tag('text:p', { 'text:style-name': paragraph },
-      line.map((run) => tag('text:span', { 'text:style-name': sink.add('text', 'T', [tag('style:text-properties', textProperties(run, look))]) },
-        odfText(run.text)))));
+    const p = (line) => tag('text:p', { 'text:style-name': paragraph },
+      line.map((run) => {
+        const span = tag('text:span', { 'text:style-name': sink.add('text', 'T', [tag('style:text-properties', textProperties(run, look))]) }, odfText(run.text));
+        return run.link ? tag('text:a', { 'xlink:type': 'simple', 'xlink:href': run.link }, span) : span;
+      }));
+    const out = [];
+    for (let i = 0; i < lines.length;) {
+      if (!paras[i].list) {
+        out.push(p(lines[i]));
+        i += 1;
+        continue;
+      }
+      // One list style serves a whole nested list, so a level that changes between bullets and numbers starts another list,
+      // at the last item of the first level before the change.
+      let end = i;
+      const seen = new Map();
+      while (end < lines.length && paras[end].list) {
+        const { level: l, list: kind } = paras[end];
+        if (seen.has(l) && seen.get(l) !== kind) {
+          let top = end - 1;
+          while (top > i && paras[top].level !== 0) top -= 1;
+          if (top > i) end = top;
+          break;
+        }
+        seen.set(l, kind);
+        end += 1;
+      }
+      const kinds = Array.from({ length: 9 }, (_, level) => paras.slice(i, end).find((x) => x.level === level)?.list ?? 'bullet');
+      const root = { items: [] };
+      const place = (node, level, content) => {
+        if (level === 0) {
+          node.items.push({ content, sub: null });
+          return;
+        }
+        let last = node.items[node.items.length - 1];
+        if (!last) {
+          last = { content: null, sub: null };
+          node.items.push(last);
+        }
+        last.sub ??= { items: [] };
+        place(last.sub, level - 1, content);
+      };
+      for (let k = i; k < end; k += 1) place(root, paras[k].level, p(lines[k]));
+      const list = (node, style) => tag('text:list', style ? { 'text:style-name': style } : {},
+        node.items.map((item) => tag('text:list-item', {}, item.content, item.sub ? list(item.sub, null) : null)));
+      out.push(list(root, sink.addList(kinds)));
+      i = end;
+    }
+    return out;
   }
 
   shape(element, sink) {
@@ -887,17 +1029,26 @@ class OdpWriter {
     const look = { ...this.look(element), align: 'left' };
     const rows = element.cells ?? [];
     const cols = Math.max(1, element.cols ?? rows[0]?.length ?? 1);
-    const column = sink.add('table-column', 'co', [tag('style:table-column-properties', { 'style:column-width': cm(element.w / cols) })]);
-    const row = sink.add('table-row', 'ro', [tag('style:table-row-properties', { 'style:row-height': cm(element.h / Math.max(1, rows.length)) })]);
+    const share = (list, count, i) => (Array.isArray(list) && list.length === count ? list[i] : 1 / count);
+    const columnStyle = (c) => sink.add('table-column', 'co', [tag('style:table-column-properties', { 'style:column-width': cm(element.w * share(element.colW, cols, c)) })]);
+    const rowStyle = (r) => sink.add('table-row', 'ro', [tag('style:table-row-properties', { 'style:row-height': cm(element.h * share(element.rowH, rows.length, r)) })]);
     const cell = sink.add('table-cell', 'ce', [tag('style:graphic-properties', { 'draw:fill': 'none' }),
       tag('style:table-cell-properties', { 'fo:border': `0.03cm solid ${this.theme.text}`, 'fo:padding': '0.1cm' })]);
     const graphic = sink.add('graphic', 'gr', [tag('style:graphic-properties', { 'draw:stroke': 'none', 'draw:fill': 'none', 'draw:shadow': 'hidden' })]);
+    const merges = element.merges ?? [];
+    const mergeAt = (r, c) => merges.find((m) => r >= m.top && r <= m.bottom && c >= m.left && c <= m.right);
     return tag('draw:frame', { 'draw:style-name': graphic, ...placement(element) },
       tag('table:table', { 'table:use-first-row-styles': element.header ? 'true' : null },
-        Array.from({ length: cols }, () => tag('table:table-column', { 'table:style-name': column })),
-        rows.map((cells, r) => tag('table:table-row', { 'table:style-name': row, 'table:default-cell-style-name': cell },
-          Array.from({ length: cols }, (_, c) => tag('table:table-cell', {},
-            this.paragraphs([{ text: cells[c] ?? '', ...(element.header && r === 0 ? { bold: true } : {}) }], look, sink)))))));
+        Array.from({ length: cols }, (_, c) => tag('table:table-column', { 'table:style-name': columnStyle(c) })),
+        rows.map((cells, r) => tag('table:table-row', { 'table:style-name': rowStyle(r), 'table:default-cell-style-name': cell },
+          Array.from({ length: cols }, (_, c) => {
+            const merge = mergeAt(r, c);
+            if (merge && (merge.top !== r || merge.left !== c)) return tag('table:covered-table-cell', {});
+            return tag('table:table-cell', {
+              'table:number-columns-spanned': merge ? String(merge.right - merge.left + 1) : null,
+              'table:number-rows-spanned': merge ? String(merge.bottom - merge.top + 1) : null,
+            }, this.paragraphs([{ text: cells[c] ?? '', ...(element.header && r === 0 ? { bold: true } : {}) }], look, sink));
+          })))));
   }
 
   notesXml(text, sink, number) {
@@ -917,15 +1068,25 @@ class OdpWriter {
 }
 
 function textProperties(run, look) {
+  const underline = run.underline || run.double;
   return {
-    'fo:font-size': `${Math.round(look.size * 0.75 * 100) / 100}pt`,
+    'fo:font-size': `${Math.round((run.size ?? look.size) * 0.75 * 100) / 100}pt`,
     'fo:color': run.color ?? look.color,
     'fo:font-family': look.family,
     'fo:font-weight': run.bold || look.bold ? 'bold' : 'normal',
     'fo:font-style': run.italic || look.italic ? 'italic' : 'normal',
-    'style:text-underline-style': run.underline ? 'solid' : 'none',
-    'style:text-underline-width': run.underline ? 'auto' : null,
-    'style:text-underline-color': run.underline ? 'font-color' : null,
+    'style:text-underline-style': underline ? 'solid' : 'none',
+    'style:text-underline-width': underline ? 'auto' : null,
+    'style:text-underline-color': underline ? 'font-color' : null,
+    'style:text-underline-type': run.double ? 'double' : null,
+    'style:text-line-through-style': run.strike ? 'solid' : null,
+    'style:text-overline-style': run.overline ? 'solid' : null,
+    'style:text-overline-color': run.overline ? 'font-color' : null,
+    'style:text-position': run.sup ? 'super 58%' : run.sub ? 'sub 58%' : null,
+    'fo:text-shadow': run.shadow ? '1pt 1pt' : null,
+    'style:text-outline': run.outline ? 'true' : null,
+    'fo:font-variant': run.smallcaps ? 'small-caps' : null,
+    'fo:background-color': run.highlight ?? null,
   };
 }
 

@@ -1,6 +1,6 @@
 /** SVG, JSON and PNG. */
 
-import { routeEdge, pathData } from './routing.js';
+import { routeEdge, pathData, edgePorts, labelPoint, drawnPoints } from './routing.js';
 
 const escape = (value) => String(value ?? '')
   .replace(/[<>&"']/g, (c) => ({
@@ -117,13 +117,14 @@ export function toSvg(model) {
     if (!from || !to) continue;      // a dangling edge is simply not drawn.
 
     const points = routeEdge(edge, from, to);
+    const ports = edgePorts(edge, from, to);
     parts.push(
-      `<path d="${pathData(points, edge.routing)}" fill="none" stroke="#333333" `
+      `<path d="${pathData(points, edge.routing, ports)}" fill="none" stroke="#333333" `
       + 'stroke-width="2" marker-end="url(#a)"/>',
     );
 
     if (edge.label) {
-      const middle = points[Math.floor(points.length / 2)];
+      const middle = labelPoint(points, edge.routing, ports);
       parts.push(
         `<text x="${round(middle.x)}" y="${round(middle.y - 6)}" text-anchor="middle" `
         + `font-family="sans-serif" font-size="12" fill="#333333">${escape(edge.label)}</text>`,
@@ -236,13 +237,15 @@ export function toPrintPage(model) {
     const to = nodesById.get(edge.to);
     if (!from || !to) continue;
 
-    const points = routeEdge(edge, from, to).map((p) => [p.x + ox, p.y + oy]);
+    const ports = edgePorts(edge, from, to);
+    const route = routeEdge(edge, from, to);
+    const points = drawnPoints(route, edge.routing, ports).map((p) => [p.x + ox, p.y + oy]);
     primitives.push({ type: 'polyline', points, stroke: '#333333', strokeWidth: 2 });
 
     if (edge.label) {
-      const middle = points[Math.floor(points.length / 2)];
+      const middle = labelPoint(route, edge.routing, ports);
       primitives.push({
-        type: 'text', x: middle[0], y: middle[1] - 14, text: edge.label,
+        type: 'text', x: middle.x + ox, y: middle.y + oy - 14, text: edge.label,
         size: 10, align: 'center', fill: '#333333',
       });
     }

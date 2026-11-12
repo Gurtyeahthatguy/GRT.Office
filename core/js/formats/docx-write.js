@@ -99,10 +99,21 @@ class WordWriter {
     this.endnotes = [];
     this.charts = [];
     this.marks = 0;
+    // Review: Word's ids for changes, and the comments written so far with the paragraph id each ends on.
+    this.changeIds = 0;
+    this.comments = [];
+    this.openComment = null;
+    this.sources = new Map();
   }
 
   write() {
     this.fields = documentFields({ blocks: this.doc.blocks });
+    // A file written from the working document holds the covered text in full; only the redacted export leaves it out.
+    if (this.doc.blocks.some((block) => [...runListsOf(block)].some(({ runs }) => runs.some((run) => run.redact)))) {
+      this.losses.add('Text marked to be covered, written in full: File, Export Redacted makes a copy without it');
+    }
+    this.commentRanges = new Set();
+    for (const block of this.doc.blocks) for (const { runs } of runListsOf(block)) for (const run of runs) if (run.cmt) this.commentRanges.add(run.cmt);
     this.headingTargets = new Set();
     for (const block of this.doc.blocks) {
       for (const { runs } of runListsOf(block)) {
@@ -138,10 +149,15 @@ class WordWriter {
             tag('w:p', {}, tag('w:pPr', {}, tag('w:pStyle', { 'w:val': part === 'footnotes' ? 'FootnoteText' : 'EndnoteText' })),
               tag('w:r', {}, tag('w:rPr', {}, tag('w:rStyle', { 'w:val': part === 'footnotes' ? 'FootnoteReference' : 'EndnoteReference' })),
                 note.mark ? tag('w:t', {}, note.mark) : tag(`w:${part === 'footnotes' ? 'footnoteRef' : 'endnoteRef'}`, {})),
-              plainRun(' '), this.runs(note.runs)))))),
+              plainRun(' '), this.runs(note.runs, { comments: false })))))),
       });
     }
     const section = this.section();
+    if (this.sources.size) this.rels.push({ id: `rId${this.rels.length + 1}`, type: REL_CUSTOM_XML, target: '../customXml/item1.xml' });
+    if (this.comments.length) {
+      this.rels.push({ id: `rId${this.rels.length + 1}`, type: REL_COMMENTS, target: 'comments.xml' });
+      this.rels.push({ id: `rId${this.rels.length + 1}`, type: REL_COMMENTS_EXTENDED, target: 'commentsExtended.xml' });
+    }
     const documentXml = xmlDocument(tag('w:document', {
       'xmlns:w': NS.w, 'xmlns:r': NS.r, 'xmlns:wp': NS.wp, 'xmlns:a': NS.a, 'xmlns:pic': NS.pic, 'xmlns:m': OMML,
     }, tag('w:body', {}, body, section)));
@@ -153,6 +169,8 @@ class WordWriter {
       ['word/numbering.xml', `${MAIN}.numbering+xml`],
       ...this.bands.map((band) => [`word/${band.file}`, `${MAIN}.${band.part}+xml`]),
       ...this.charts.map((chart) => [`word/${chart.name}`, OOXML_CHART_TYPE]),
+      ...(this.comments.length ? [['word/comments.xml', `${MAIN}.comments+xml`], ['word/commentsExtended.xml', `${MAIN}.commentsExtended+xml`]] : []),
+      ...(this.sources.size ? [['customXml/itemProps1.xml', 'application/vnd.openxmlformats-officedocument.customXmlProperties+xml']] : []),
     ];
     const defaults = {
       rels: 'application/vnd.openxmlformats-package.relationships+xml',
@@ -173,6 +191,8 @@ class WordWriter {
       { name: 'word/numbering.xml', data: this.numberingXml() },
       ...this.bands.map((band) => ({ name: `word/${band.file}`, data: band.xml })),
       ...this.charts.map((chart) => ({ name: `word/${chart.name}`, data: chart.xml })),
+      ...(this.comments.length ? [{ name: 'word/comments.xml', data: this.commentsXml() }, { name: 'word/commentsExtended.xml', data: this.commentsExtendedXml() }] : []),
+      ...(this.sources.size ? this.sourceParts() : []),
       ...[...this.media].map(([name, bytes]) => ({ name: `word/${name}`, data: bytes })),
     ];
     return { entries, losses: this.losses };
@@ -281,6 +301,7 @@ class WordWriter {
   settingsXml() {
     return xmlDocument(tag('w:settings', { 'xmlns:w': NS.w },
       this.page.running.evenDifferent ? tag('w:evenAndOddHeaders', {}) : null,
+      this.doc.review?.recording ? tag('w:trackRevisions', {}) : null,
       tag('w:defaultTabStop', { 'w:val': '709' }),
       this.notesPr(),
       tag('w:compat', {}, tag('w:compatSetting', {
@@ -429,10 +450,17 @@ class WordWriter {
         return splitLines(block.runs).map((runs, i) => this.paragraph(STYLE_IDS.code.id,
           { ...block, breakBefore: i === 0 && block.breakBefore }, this.runs(runs)));
       case 'list': {
-        const numId = block.listType === 'number' ? this.numId('number', block.format ?? null) : this.numId('bullet', block.bullet ?? null);
-        return block.items.map((item, i) => this.paragraph('ListParagraph',
-          { align: block.align, breakBefore: i === 0 && block.breakBefore, para: block.para }, this.runs(item.runs),
-          tag('w:numPr', {}, tag('w:ilvl', { 'w:val': String(Math.max(0, Math.min(item.level ?? 0, 8))) }), tag('w:numId', { 'w:val': numId }))));
+        const fresh = () => (block.listType === 'number' ? this.numId('number', block.format ?? null) : this.numId('bullet', block.bullet ?? null));
+        let numId = fresh();
+        return block.items.map((item, i) => {
+          // Numbering that starts again is a new instance counting from one; an entry without a number has none, as LibreOffice writes it.
+          if (item.restart && i > 0 && block.listType === 'number') numId = fresh();
+          const level = Math.max(0, Math.min(item.level ?? 0, 8));
+          return this.paragraph('ListParagraph',
+            { align: block.align, breakBefore: i === 0 && block.breakBefore, para: block.para, ...(item.unnumbered ? { hangingAt: 360 * (level + 1) } : {}) },
+            this.runs(item.runs),
+            tag('w:numPr', {}, tag('w:ilvl', { 'w:val': String(level) }), tag('w:numId', { 'w:val': item.unnumbered ? '0' : numId })));
+        });
       }
       case 'image':
         return this.image(block);
@@ -546,6 +574,27 @@ class WordWriter {
   object(run) {
     const object = run.object;
     switch (object.type) {
+      case 'merge':
+        return complexField(`MERGEFIELD ${/\s/.test(object.name) ? `"${object.name}"` : object.name}`, `«${object.name}»`);
+      case 'cite':
+        // A citation is Word's CITATION field; what it cites goes in the sources Word keeps beside the text.
+        this.sources.set(object.key, object);
+        return complexField(`CITATION "${object.key}"`, `[${object.key}]`);
+      case 'comment': {
+        // The thread's comments start here; they end where the text marked for them does, or here when none is.
+        const ids = [object, ...(object.replies ?? [])].map((entry, i) => {
+          const id = this.comments.length;
+          this.comments.push({ id, text: entry.text, done: !!entry.done, parent: i > 0 ? this.comments.length - i : null });
+          return id;
+        });
+        const starts = ids.map((id) => tag('w:commentRangeStart', { 'w:id': String(id) }));
+        if (this.commentRanges.has(object.id)) {
+          this.closeComment();
+          this.openComment = { id: object.id, ids };
+          return starts;
+        }
+        return [...starts, ...this.commentEnds(ids)];
+      }
       case 'note': {
         const list = object.kind === 'end' ? this.endnotes : this.footnotes;
         const id = list.length + 1;
@@ -606,7 +655,8 @@ class WordWriter {
           'w:line': block.para.lineHeight !== undefined ? String(Math.round((block.para.lineHeight / 1.15) * 240)) : null,
           'w:lineRule': block.para.lineHeight !== undefined ? 'auto' : null,
         }) : null,
-        block.para?.indent !== undefined ? tag('w:ind', { 'w:left': twipsFromPt(block.para.indent) }) : null,
+        block.para?.indent !== undefined ? tag('w:ind', { 'w:left': twipsFromPt(block.para.indent) })
+          : block.hangingAt ? tag('w:ind', { 'w:left': String(block.hangingAt) }) : null,
         block.align && block.align !== 'left' ? tag('w:jc', { 'w:val': ALIGN[block.align] }) : null),
       runs);
   }
@@ -643,7 +693,72 @@ class WordWriter {
     return out;
   }
 
-  runs(runs) {
+  /** Where a thread's comments end, and the references Word shows them by. */
+  commentEnds(ids) {
+    return ids.flatMap((id) => [tag('w:commentRangeEnd', { 'w:id': String(id) }),
+      tag('w:r', {}, tag('w:rPr', {}, tag('w:rStyle', { 'w:val': 'CommentReference' })), tag('w:commentReference', { 'w:id': String(id) }))]);
+  }
+
+  closeComment() {
+    if (!this.openComment) return [];
+    const ends = this.commentEnds(this.openComment.ids);
+    this.openComment = null;
+    return ends;
+  }
+
+  /** A run as text put in or taken out by a recorded change: no author's name and no date. */
+  tracked(run, element) {
+    if (!run.ins && !run.del) return element;
+    this.changeIds += 1;
+    const attrs = { 'w:id': String(this.changeIds), 'w:author': '' };
+    if (run.chgnote) this.losses.add('Notes on recorded changes, which Word cannot hold');
+    if (run.del) return tag('w:del', attrs, deletedText(element));
+    return tag('w:ins', attrs, element);
+  }
+
+  commentsXml() {
+    return xmlDocument(tag('w:comments', { 'xmlns:w': NS.w, 'xmlns:w14': W14 },
+      this.comments.map((comment) => {
+        const lines = String(comment.text).split('\n');
+        return tag('w:comment', { 'w:id': String(comment.id), 'w:author': '', 'w:initials': '' },
+          lines.map((line, i) => tag('w:p', i === lines.length - 1 ? { 'w14:paraId': paraId(comment.id) } : {},
+            i === 0 ? tag('w:r', {}, tag('w:rPr', {}, tag('w:rStyle', { 'w:val': 'CommentReference' })), tag('w:annotationRef', {})) : null,
+            tag('w:r', {}, textPieces(line)))));
+      })));
+  }
+
+  /** The sources of the citations, as Word's bibliography keeps them; the author as typed, under Corporate. */
+  sourceParts() {
+    const B = 'http://schemas.openxmlformats.org/officeDocument/2006/bibliography';
+    const type = { book: 'Book', article: 'JournalArticle', website: 'InternetSite', thesis: 'Report', report: 'Report', misc: 'Misc' };
+    const field = (name, value) => (value ? tag(`b:${name}`, {}, value) : null);
+    const sources = xmlDocument(tag('b:Sources', { 'xmlns:b': B, xmlns: B, SelectedStyle: '', StyleName: '' },
+      [...this.sources.values()].map((s) => tag('b:Source', {},
+        field('Tag', s.key), field('SourceType', type[s.kind] ?? 'Misc'),
+        s.author ? tag('b:Author', {}, tag('b:Author', {}, tag('b:Corporate', {}, s.author))) : null,
+        field('Title', s.title), field('Year', s.year), field('Publisher', s.publisher), field('URL', s.url)))));
+    const DS = 'http://schemas.openxmlformats.org/officeDocument/2006/customXml';
+    // One fixed id, so two saves of the same document are the same.
+    const props = xmlDocument(tag('ds:datastoreItem', { 'ds:itemID': '{5E7A3F2C-9B41-4D2E-8C65-1A0F3B7D9E24}', 'xmlns:ds': DS },
+      tag('ds:schemaRefs', {}, tag('ds:schemaRef', { 'ds:uri': B }))));
+    return [
+      { name: 'customXml/item1.xml', data: sources },
+      { name: 'customXml/itemProps1.xml', data: props },
+      { name: 'customXml/_rels/item1.xml.rels', data: relsXml([{ id: 'rId1', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps', target: 'itemProps1.xml' }]) },
+    ];
+  }
+
+  /** Which comment answers which, and which are resolved, as Word 2013 and LibreOffice read them. */
+  commentsExtendedXml() {
+    return xmlDocument(tag('w15:commentsEx', { 'xmlns:w15': W15 },
+      this.comments.map((comment) => tag('w15:commentEx', {
+        'w15:paraId': paraId(comment.id),
+        'w15:paraIdParent': comment.parent !== null ? paraId(comment.parent) : null,
+        'w15:done': comment.done ? '1' : '0',
+      }))));
+  }
+
+  runs(runs, { comments = true } = {}) {
     const out = [];
     let link = null;
     // Runs with the same link go inside one hyperlink element.
@@ -660,12 +775,16 @@ class WordWriter {
     };
     for (const run of runs ?? []) {
       if (!run.text) continue;
+      if (comments && this.openComment && run.cmt !== this.openComment.id && !run.object) {
+        flush();
+        out.push(...this.closeComment());
+      }
       if (run.object) {
         flush();
         out.push(...this.object(run));
         continue;
       }
-      const element = this.plainRunElement(run);
+      const element = this.tracked(run, this.plainRunElement(run));
       if (run.link) {
         if (link?.href !== run.link) flush();
         link ??= { href: run.link, runs: [] };
@@ -676,35 +795,60 @@ class WordWriter {
       }
     }
     flush();
+    // A comment's stretch ends with its paragraph at the latest, as one paragraph holds Word's reference.
+    if (comments) out.push(...this.closeComment());
     return out;
   }
 
   plainRunElement(run) {
+    if (run.overline) this.losses.add('Overlined text, which Word cannot show, kept plain');
     return [run].map((run) => {
       const props = [
         run.cstyle && this.doc.charStyles?.[run.cstyle] ? tag('w:rStyle', { 'w:val': charId(run.cstyle) }) : null,
         run.bold ? tag('w:b', {}) : null,
         run.italic ? tag('w:i', {}) : null,
         run.strike ? tag('w:strike', {}) : null,
-        run.underline ? tag('w:u', { 'w:val': 'single' }) : null,
+        run.double ? tag('w:u', { 'w:val': 'double' }) : run.underline ? tag('w:u', { 'w:val': 'single' }) : null,
+        run.outline ? tag('w:outline', {}) : null,
+        run.shadow ? tag('w:shadow', {}) : null,
+        run.smallcaps ? tag('w:smallCaps', {}) : null,
+        run.lang === 'zxx' ? tag('w:noProof', {}) : null,
         run.color ? tag('w:color', { 'w:val': run.color.replace('#', '').toUpperCase() }) : null,
         run.size ? tag('w:sz', { 'w:val': halfPoints(run.size) }) : null,
         run.size ? tag('w:szCs', { 'w:val': halfPoints(run.size) }) : null,
         run.highlight ? tag('w:shd', { 'w:val': 'clear', 'w:color': 'auto', 'w:fill': run.highlight.replace('#', '').toUpperCase() }) : null,
         run.sup ? tag('w:vertAlign', { 'w:val': 'superscript' }) : null,
         !run.sup && run.sub ? tag('w:vertAlign', { 'w:val': 'subscript' }) : null,
+        // Word reads noProof, LibreOffice reads the language zxx: both say the text is not checked.
+        run.lang ? tag('w:lang', { 'w:val': run.lang }) : null,
       ].filter(Boolean);
       return tag('w:r', {}, props.length ? tag('w:rPr', {}, props) : null, textPieces(run.text));
     })[0];
   }
 }
 
+const W14 = 'http://schemas.microsoft.com/office/word/2010/wordml';
+const W15 = 'http://schemas.microsoft.com/office/word/2012/wordml';
+const REL_COMMENTS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments';
+const REL_CUSTOM_XML = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml';
+const REL_COMMENTS_EXTENDED = 'http://schemas.microsoft.com/office/2011/relationships/commentsExtended';
+
+/** The paragraph id a comment's last paragraph carries, eight hex digits below 0x80000000 as Word wants. */
+const paraId = (n) => (0x10000000 + n).toString(16).toUpperCase();
+
+/** A run as deleted text: Word keeps it in delText instead of t. */
+function deletedText(element) {
+  if (!element || typeof element !== 'object') return element;
+  return { ...element, name: element.name === 'w:t' ? 'w:delText' : element.name, children: (element.children ?? []).map(deletedText) };
+}
+
 /** Text with its tabs and line breaks as Word elements. */
 function textPieces(text) {
   const out = [];
-  for (const piece of text.split(/(\t|\n)/)) {
+  for (const piece of text.split(/(\t|\n|\u00AD)/)) {
     if (piece === '\t') out.push(tag('w:tab', {}));
     else if (piece === '\n') out.push(tag('w:br', {}));
+    else if (piece === '\u00AD') out.push(tag('w:softHyphen', {}));
     else if (piece) out.push(tag('w:t', /^\s|\s$/.test(piece) ? { 'xml:space': 'preserve' } : {}, piece));
   }
   return out;

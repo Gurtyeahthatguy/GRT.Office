@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { GraphModel } from '../src/js/model.js';
 import { criticalPath, ganttSvg, deadlinesIcs, durationOf } from '../src/js/planning.js';
-import { readSqlite, pickValue, parseCell, sheetTables, cellValue, shownValue } from '../src/js/sources.js';
+import { readSqlite, pickValue, parseCell, sheetTables, cellValue, shownValue } from '../src/js/core/sources.js';
 
 // The test makes its databases with Node's own SQLite, which the bundler does not know as a built-in.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');

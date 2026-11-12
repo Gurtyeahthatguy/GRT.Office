@@ -1,6 +1,6 @@
 /** Model to SVG, on screen. */
 
-import { routeEdge, pathData } from './routing.js';
+import { routeEdge, pathData, edgePorts, labelPoint } from './routing.js';
 import { shapeMarkup, textLines } from './export.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -99,7 +99,7 @@ export class Renderer {
         const from = nodesById.get(edge.from);
         const to = nodesById.get(edge.to);
         if (!from || !to) return [];
-        return edgeElements(edge, routeEdge(edge, from, to), selection.has(edge.id));
+        return edgeElements(edge, routeEdge(edge, from, to), selection.has(edge.id), edgePorts(edge, from, to));
       }),
     );
 
@@ -107,7 +107,7 @@ export class Renderer {
       ...model.nodes.map((node) => nodeElement(node, model, selection.has(node.id))),
     );
 
-    this.layers.overlay.replaceChildren(...overlayElements(model, selection, extras));
+    this.layers.overlay.replaceChildren(...diffElements(model, extras.diff), ...overlayElements(model, selection, extras), ...commentElements(model, extras));
   }
 
   drawGrid(model) {
@@ -139,10 +139,65 @@ function defs() {
   return element;
 }
 
+/** A comparison's marks: a frame round each node added, changed or moved, the ghost of each one gone, and lines likewise. */
+function diffElements(model, diff) {
+  if (!diff) return [];
+  const out = [];
+  const frame = (box, kind, dashed = false) => {
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    for (const [k, v] of Object.entries({ x: box.x - 5, y: box.y - 5, width: box.w + 10, height: box.h + 10, rx: 6 })) rect.setAttribute(k, String(v));
+    rect.setAttribute('class', `diff diff-${kind}${dashed ? ' diff-ghost' : ''}`);
+    return rect;
+  };
+  for (const node of model.nodes) {
+    const kind = diff.added.has(node.id) ? 'added' : diff.changed.has(node.id) ? 'changed' : diff.moved.has(node.id) ? 'moved' : null;
+    if (kind) out.push(frame(node, kind));
+  }
+  for (const node of diff.removed) {
+    out.push(frame(node, 'removed', true));
+    const text = document.createElementNS(SVG_NS, 'text');
+    text.setAttribute('x', String(node.x + node.w / 2));
+    text.setAttribute('y', String(node.y + node.h / 2 + 5));
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('class', 'diff-ghost-text');
+    text.textContent = String(node.text ?? '');
+    out.push(text);
+  }
+  const byId = new Map(model.nodes.map((n) => [n.id, n]));
+  for (const edge of model.edges) {
+    const kind = diff.addedEdges.has(edge.id) ? 'added' : diff.changedEdges.has(edge.id) ? 'changed' : null;
+    const from = byId.get(edge.from);
+    const to = byId.get(edge.to);
+    if (!kind || !from || !to) continue;
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', pathData(routeEdge(edge, from, to), edge.routing, edgePorts(edge, from, to)));
+    path.setAttribute('class', `diff-edge diff-${kind}`);
+    out.push(path);
+  }
+  return out;
+}
+
+/** Comment marks on the page, each with its text as the tip shown under the pointer; hidden when View, Comments is off. */
+function commentElements(model, extras) {
+  if (extras.hideComments) return [];
+  return (model.meta.comments ?? []).map((comment) => {
+    const group = document.createElementNS(SVG_NS, 'g');
+    group.setAttribute('class', 'comment-mark');
+    group.dataset.comment = comment.id;
+    group.innerHTML = `<rect x="${comment.x}" y="${comment.y}" width="22" height="18" rx="2"></rect>`
+      + `<path d="M${comment.x + 5} ${comment.y + 18} l0 6 l6 -6 z"></path>`;
+    const tip = document.createElementNS(SVG_NS, 'title');
+    tip.textContent = comment.text;
+    group.append(tip);
+    return group;
+  });
+}
+
 function nodeElement(node, model, selected) {
   const group = document.createElementNS(SVG_NS, 'g');
   group.setAttribute('class', `node${selected ? ' selected' : ''}`);
   group.dataset.id = node.id;
+  if (node.link) group.dataset.href = node.link;
 
   const style = model.styles[node.style] ?? model.styles.default ?? {};
   group.innerHTML = shapeMarkup(node, style);
@@ -155,7 +210,7 @@ function nodeElement(node, model, selected) {
     text.setAttribute('x', String(node.x + node.w / 2));
     text.setAttribute('y', String(startY + i * 15));
     text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('class', 'node-text');
+    text.setAttribute('class', node.link ? 'node-text node-link' : 'node-text');
     text.textContent = line;
     group.append(text);
   });
@@ -163,9 +218,9 @@ function nodeElement(node, model, selected) {
   return group;
 }
 
-function edgeElements(edge, points, selected) {
+function edgeElements(edge, points, selected, ports) {
   const path = document.createElementNS(SVG_NS, 'path');
-  path.setAttribute('d', pathData(points, edge.routing));
+  path.setAttribute('d', pathData(points, edge.routing, ports));
   path.setAttribute('class', `edge${selected ? ' selected' : ''}`);
   path.setAttribute('marker-end', 'url(#arrow)');
   path.dataset.id = edge.id;
@@ -179,7 +234,7 @@ function edgeElements(edge, points, selected) {
   const elements = [hit, path];
 
   if (edge.label) {
-    const middle = points[Math.floor(points.length / 2)];
+    const middle = labelPoint(points, edge.routing, ports);
     const label = document.createElementNS(SVG_NS, 'text');
     label.setAttribute('x', String(middle.x));
     label.setAttribute('y', String(middle.y - 6));

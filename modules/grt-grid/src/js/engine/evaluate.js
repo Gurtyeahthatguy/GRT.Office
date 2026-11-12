@@ -22,6 +22,9 @@ export function evaluate(ast, context) {
   return visit(ast, context);
 }
 
+/** The kinds of argument that name cells rather than give a value. */
+const REFERENCES = new Set([NODE.ref, NODE.range, NODE.name, NODE.spill]);
+
 /** One argument as the library sees it: its first value, all of them, and the block they form. */
 export function argument(result) {
   if (isMatrix(result)) return { value: result.first, values: result.flat, grid: result.data, matrix: result };
@@ -82,7 +85,15 @@ function visit(node, context) {
 
 function mapResult(result, apply) {
   if (!isMatrix(result)) return apply(result);
-  return Matrix.of(result.rows, result.cols, (r, c) => apply(result.data[r][c]));
+  return withOrigin(Matrix.of(result.rows, result.cols, (r, c) => apply(result.data[r][c])), result);
+}
+
+/** A block worked out value by value from a range keeps the range's place, which implicit intersection needs. */
+function withOrigin(block, ...sources) {
+  if (!isMatrix(block) || block.origin) return block;
+  const source = sources.find((m) => isMatrix(m) && m.origin && m.rows === block.rows && m.cols === block.cols);
+  if (source) block.origin = source.origin;
+  return block;
 }
 
 /** Two results combined value by value; a single value or row or column stretches over the other. */
@@ -93,7 +104,7 @@ export function broadcast(left, right, apply) {
   const rows = Math.max(a.rows, b.rows);
   const cols = Math.max(a.cols, b.cols);
   if (rows * cols > RANGE_LIMIT) return ERROR.num;
-  return Matrix.of(rows, cols, (r, c) => apply(a.at(r, c), b.at(r, c)));
+  return withOrigin(Matrix.of(rows, cols, (r, c) => apply(a.at(r, c), b.at(r, c))), a, b);
 }
 
 const sheetFor = (node, context) => (node.sheet ? context.sheetIdFor(node.sheet) : context.sheetId);
@@ -184,6 +195,8 @@ function scalarBinary(op, left, right) {
 
 function binary(node, context) {
   const left = visit(node.left, context);
+  // What the formula has worked out so far, which CURRENT gives.
+  context.current = isMatrix(left) ? left.first : left;
   const right = visit(node.right, context);
   return broadcast(left, right, (a, b) => scalarBinary(node.op, a, b));
 }
@@ -225,6 +238,12 @@ const LAZY = {
     const value = visit(args[0], context);
     if (isMatrix(value)) return mapResult(value, (v) => (v === ERROR.na ? single(visit(args[1], context)) : v));
     return value === ERROR.na ? orBlank(visit(args[1], context)) : orBlank(value);
+  },
+  /** Excel's @, stored in its files as SINGLE: the value on the formula's own row or column. */
+  SINGLE(args, context) {
+    if (args.length !== 1) return ERROR.value;
+    const value = visit(args[0], context);
+    return isMatrix(value) ? implicitValue(value, context.row ?? 0, context.col ?? 0) : orBlank(value);
   },
   CHOOSE(args, context) {
     const index = toNumber(single(visit(args[0], context)));
@@ -296,6 +315,54 @@ const LAZY = {
   },
   AREAS(args) {
     return args[0] && (args[0].type === NODE.ref || args[0].type === NODE.range || args[0].type === NODE.spill) ? 1 : ERROR.value;
+  },
+  /** The value the formula has reached so far, as LibreOffice's CURRENT gives it. */
+  CURRENT(args, context) {
+    return args.length || context.current === undefined ? ERROR.value : context.current;
+  },
+  /** 1 for a number, 2 text, 4 a logical value, 8 a reference to a formula, 16 an error, 64 a block. */
+  TYPE(args, context) {
+    if (args.length !== 1) return ERROR.value;
+    const area = areaOf(args[0], context);
+    if (area && args[0].type === NODE.ref && context.formulaAt?.(area.sheetId, area.top, area.left)) return 8;
+    const value = visit(args[0], context);
+    if (isMatrix(value)) {
+      if (args[0].type === NODE.range || args[0].type === NODE.ref) return typeCode(value.first);
+      return value.rows * value.cols > 1 ? 64 : typeCode(value.first);
+    }
+    return typeCode(value);
+  },
+  CELL(args, context) {
+    if (args.length < 1 || args.length > 2) return ERROR.value;
+    const kind = String(toText(single(visit(args[0], context)))).toLowerCase();
+    const area = args[1] ? areaOf(args[1], context) : { sheetId: context.sheetId, top: context.row, left: context.col };
+    if (!area) return ERROR.ref;
+    const { sheetId, top: row, left: col } = area;
+    const value = context.valueAt(sheetId, row, col);
+    const format = context.formatAt?.(sheetId, row, col) ?? null;
+    const sheetName = context.sheetName?.(sheetId) ?? '';
+    switch (kind) {
+      case 'col': return col + 1;
+      case 'row': return row + 1;
+      case 'sheet': return context.sheetIndex?.(sheetId) ?? 1;
+      case 'address': return sheetId === context.sheetId ? `$${letters(col)}$${row + 1}` : `$${sheetName}.$${letters(col)}$${row + 1}`;
+      case 'coord': return `$${letters((context.sheetIndex?.(sheetId) ?? 1) - 1)}:$${letters(col)}$${row + 1}`;
+      // Where the file lives is never given; the sheet is.
+      case 'filename': return `#$${sheetName}`;
+      case 'contents': return value ?? 0;
+      case 'type': return isBlank(value) ? 'b' : typeof value === 'string' && !isError(value) ? 'l' : 'v';
+      case 'width': return Math.max(1, Math.round((context.columnWidth?.(sheetId, col) ?? 96) / 8.5));
+      case 'prefix': {
+        if (typeof value !== 'string') return '';
+        const align = context.alignAt?.(sheetId, row, col);
+        return align === 'right' ? '"' : align === 'center' ? '^' : "'";
+      }
+      case 'protect': return 1;
+      case 'format': return formatCode(format);
+      case 'color': return /\[red\]/i.test(format ?? '') ? 1 : 0;
+      case 'parentheses': return /^[^;]*\(/.test(format ?? '') ? 1 : 0;
+      default: return ERROR.value;
+    }
   },
   ISREF(args) {
     return Boolean(args[0]) && [NODE.ref, NODE.range, NODE.spill].includes(args[0].type);
@@ -421,12 +488,13 @@ function call(node, context) {
   const implementation = FUNCTIONS[node.name];
   if (!implementation) return ERROR.name;
 
+  // An argument that names cells keeps saying so: text in cells is skipped where text typed into the formula is read.
   const args = node.args.map((arg) => (arg.type === NODE.missing ? { value: null, values: [], grid: [[null]], matrix: null, missing: true }
-    : argument(visit(arg, context))));
+    : { ...argument(visit(arg, context)), reference: REFERENCES.has(arg.type) }));
 
   try {
     const result = implementation(args, context);
-    return result === undefined ? null : result;
+    return result === undefined ? null : withOrigin(result, ...args.map((arg) => arg.matrix));
   } catch {
     // A function that throws is a bug in this program, not in the sheet.
     return ERROR.value;
@@ -488,3 +556,53 @@ export function nameFormula(text) {
 }
 
 export { cellsInRange, formatNumberForText, isBlank };
+
+/**
+ * What a formula from LibreOffice or an older Excel shows when it gives a block: the value on its own row
+ * or column of the range the block came from, or the first value when it came from no range.
+ */
+export function implicitValue(block, row, col) {
+  const at = block.origin;
+  if (!at) return block.first;
+  const r = at.top === at.bottom ? 0 : row >= at.top && row <= at.bottom ? row - at.top : null;
+  const c = at.left === at.right ? 0 : col >= at.left && col <= at.right ? col - at.left : null;
+  if (r === null || c === null) return ERROR.value;
+  return block.data[r]?.[c] ?? null;
+}
+
+function typeCode(value) {
+  if (isError(value)) return 16;
+  if (typeof value === 'number' || value === null || value === undefined) return 1;
+  // A logical value is a number to LibreOffice.
+  if (typeof value === 'boolean') return 1;
+  return 2;
+}
+
+/** A column's letters, from 0. */
+function letters(col) {
+  let n = col + 1;
+  let out = '';
+  while (n > 0) {
+    const m = (n - 1) % 26;
+    out = String.fromCharCode(65 + m) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+/** A number format as CELL("format") names it: G, F2, ,2, C2, P0, S2, D1 and so on. */
+function formatCode(format) {
+  if (!format || /^general$/i.test(format)) return 'G';
+  const first = format.split(';')[0].replace(/"[^"]*"|\\./g, '');
+  const decimals = /\.(0+)/.exec(first)?.[1].length ?? 0;
+  let code;
+  if (/[ymdhs]/i.test(first) && !/[#0]/.test(first)) code = /h|s/i.test(first) ? 'D9' : 'D1';
+  else if (/%/.test(first)) code = `P${decimals}`;
+  else if (/E[+-]/i.test(first)) code = `S${decimals}`;
+  else if (/[$€£¥]/.test(first) || /\[\$/.test(format)) code = `C${decimals}`;
+  else if (/#,##/.test(first)) code = `,${decimals}`;
+  else code = `F${decimals}`;
+  if (/\[red\]/i.test(format)) code += '-';
+  if (/^[^;]*\(/.test(format)) code += '()';
+  return code;
+}

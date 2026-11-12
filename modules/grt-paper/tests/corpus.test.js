@@ -10,7 +10,8 @@ import { readOdt } from '../src/js/core/formats/odt-read.js';
 import { readDocx } from '../src/js/core/formats/docx-read.js';
 import { readRtf } from '../src/js/core/formats/rtf-read.js';
 import { decodeBlock } from '../src/js/core/package.js';
-import { DocumentModel, runsText } from '../src/js/core/editor/model.js';
+import { DocumentModel, itemsOf } from '../src/js/core/editor/model.js';
+import { documentFields, referenceText } from '../src/js/core/editor/fields.js';
 import {
   oracleAvailable, readBlock, convert, scratch, cleanup,
 } from '../../../scripts/oracle.mjs';
@@ -52,11 +53,23 @@ function coverage(theirs, mine) {
   return theirs.length === 0 ? 1 : found / theirs.length;
 }
 
+/** The words a reader sees: the runs, with references, notes and numbered captions as they are shown. */
 function plain(document) {
-  return new DocumentModel(document).toJSON().blocks.map((block) => {
-    if (block.kind === 'list') return block.items.map((item) => runsText(item.runs)).join('\n');
-    if (block.kind === 'image') return runsText(block.caption);
-    return runsText(block.runs);
+  const model = new DocumentModel(document);
+  const fields = documentFields(model);
+  const shown = (object) => {
+    if (object.type === 'note') return `${fields.notes.get(object)?.label ?? ''} ${shown.runs(object.runs)}`;
+    if (object.type === 'ref') return referenceText(object, fields);
+    if (object.type === 'seq') return String(fields.seqs.get(object.id)?.number ?? '');
+    // A mail merge field shows its column's name, as LibreOffice and Word draw it.
+    if (object.type === 'merge') return `«${object.name}»`;
+    return '';
+  };
+  shown.runs = (runs) => runs.map((run) => (run.object ? ` ${shown(run.object)} ` : run.text)).join('');
+  return model.toJSON().blocks.map((block) => {
+    if (itemsOf(block)) return itemsOf(block).map((item) => shown.runs(item.runs)).join('\n');
+    if (block.kind === 'image') return shown.runs(block.caption);
+    return shown.runs(block.runs ?? []);
   }).join('\n');
 }
 

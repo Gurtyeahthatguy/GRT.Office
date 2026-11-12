@@ -371,6 +371,8 @@ function signedBig(bytes) {
 
 /** An unscaled integer and its scale as a number, or as digits when a double would round it. */
 function decimal(unscaled, scale) {
+  // HSQLDB and Firebird keep scales far below this; a larger one would build a string of that many digits.
+  if (!Number.isInteger(scale) || Math.abs(scale) > 1000) fail('a number has a scale no database uses');
   const negative = unscaled < 0n;
   let digits = (negative ? -unscaled : unscaled).toString();
   if (scale > 0) {
@@ -599,6 +601,7 @@ function readFirebird(backup, losses) {
       domains.set(text(get(1)), { charLength: get(41) ? signed(get(41)) : null, precision: get(44) ? signed(get(44)) : 0 });
     } else if (type === REC.field && fields) {
       const domain = domains.get(text(get(2))) ?? {};
+      if (!get(8) || !get(10)) fail('a column of the backup has no type or length');
       const f = {
         name: text(get(1)), type: signed(get(8)), subType: signed(get(9) ?? [0]), length: signed(get(10)), scale: signed(get(11) ?? [0]),
         position: signed(get(13) ?? [0]), id: signed(get(22) ?? [0]), charset: signed(get(42) ?? [4]), precision: get(44) ? signed(get(44)) : domain.precision ?? 0,

@@ -1,6 +1,9 @@
 /** The presentation, independent of how it is drawn. */
 
+import { cleanComments, newComment, COMMENT_LIMITS } from './core/comments.js';
+import { normaliseTable, insertRows, deleteRows, insertCols, deleteCols, TABLE_LIMITS } from './tables.js';
 import { makeId } from './ids.js';
+import { cleanRuns, parasFor, normalisePara } from './paragraphs.js';
 import { footerBoxes } from './core/formats/slide-footer.js';
 import { normaliseChartData } from './core/formats/chart-object.js';
 
@@ -281,6 +284,33 @@ export class SlidesModel {
     this.dirty = true;
   }
 
+  // Comments on a slide, each at a place; who wrote them is not kept.
+
+  addComment(slideId, { x, y, text }) {
+    const slide = this.slide(slideId);
+    if (!slide) return null;
+    const comment = newComment({ x, y, text });
+    slide.comments = [...(slide.comments ?? []), comment].slice(-COMMENT_LIMITS.count);
+    this.dirty = true;
+    return comment;
+  }
+
+  setComment(slideId, id, text) {
+    const comment = this.slide(slideId)?.comments?.find((c) => c.id === id);
+    if (!comment) return;
+    if (String(text ?? '').trim() === '') return this.deleteComment(slideId, id);
+    comment.text = String(text).slice(0, COMMENT_LIMITS.text);
+    this.dirty = true;
+  }
+
+  deleteComment(slideId, id) {
+    const slide = this.slide(slideId);
+    if (!slide?.comments) return;
+    slide.comments = slide.comments.filter((c) => c.id !== id);
+    if (slide.comments.length === 0) delete slide.comments;
+    this.dirty = true;
+  }
+
   // Sections
 
   /** Sections group slides in the panel. */
@@ -338,12 +368,10 @@ export class SlidesModel {
         : {}),
       // A static grid, as decided against per-cell formatting.
       ...(element.kind === 'table'
-        ? {
-          rows: element.rows ?? 3,
-          cols: element.cols ?? 2,
-          header: element.header ?? true,
-          cells: normaliseCells(element.cells, element.rows ?? 3, element.cols ?? 2),
-        }
+        ? normaliseTable({
+          rows: element.rows ?? 3, cols: element.cols ?? 2, header: element.header ?? true, cells: element.cells,
+          colW: element.colW, rowH: element.rowH, merges: element.merges,
+        })
         : {}),
       ...(element.kind === 'chart'
         ? { type: element.type ?? 'column', data: normaliseChartData(element.data), title: element.title ?? '', legend: element.legend ?? 'right', ...(element.stacked ? { stacked: element.stacked } : {}) }
@@ -527,10 +555,24 @@ export class SlidesModel {
     const element = this.element(slideId, elementId);
     if (!element || element.kind !== 'table') return;
 
-    element.rows = Math.max(1, Math.min(rows ?? element.rows, 30));
-    element.cols = Math.max(1, Math.min(cols ?? element.cols, 12));
-    element.cells = normaliseCells(element.cells, element.rows, element.cols);
+    const wantRows = Math.max(1, Math.min(rows ?? element.rows, TABLE_LIMITS.rows));
+    const wantCols = Math.max(1, Math.min(cols ?? element.cols, TABLE_LIMITS.cols));
+    // Rows and columns come and go at the end, keeping the sizes of the others.
+    if (wantRows > element.rows) insertRows(element, element.rows, wantRows - element.rows);
+    else if (wantRows < element.rows) deleteRows(element, wantRows, element.rows - wantRows);
+    if (wantCols > element.cols) insertCols(element, element.cols, wantCols - element.cols);
+    else if (wantCols < element.cols) deleteCols(element, wantCols, element.cols - wantCols);
     this.dirty = true;
+  }
+
+  /** Runs a change on a table, then holds it to its rules; what the change gives back is returned. */
+  changeTable(slideId, elementId, op) {
+    const element = this.element(slideId, elementId);
+    if (!element || element.kind !== 'table') return false;
+    const result = op(element);
+    normaliseTable(element);
+    this.dirty = true;
+    return result;
   }
 
   setTableHeader(slideId, elementId, header) {
@@ -548,21 +590,28 @@ export class SlidesModel {
    * @param {string} elementId
    * @param {{text: string, bold?: boolean, italic?: boolean, underline?: boolean}[]} runs
    */
-  setContent(slideId, elementId, runs) {
+  setContent(slideId, elementId, runs, paras = null) {
     const element = this.element(slideId, elementId);
     if (!element || element.kind !== 'text') return;
 
-    element.content = runs
-      .filter((run) => typeof run.text === 'string')
-      .map((run) => ({
-        text: run.text,
-        ...(run.bold ? { bold: true } : {}),
-        ...(run.italic ? { italic: true } : {}),
-        ...(run.underline ? { underline: true } : {}),
-        ...(run.color ? { color: run.color } : {}),
-      }));
+    // The runs take every mark the editor of Paper knows; a paragraph keeps its list level.
+    element.content = cleanRuns((runs ?? []).filter((run) => typeof run.text === 'string'));
+    if (paras) element.paras = paras.map(normalisePara);
+    element.paras = parasFor(element);
+    if (element.paras.every((p) => p.level === 0 && !p.list)) delete element.paras;
+    this.dirty = true;
+  }
 
-    if (element.content.length === 0) element.content = [{ text: '' }];
+  /** Changes a text box's paragraph spacing: line height (times), space above and below and indent per level (px). */
+  setSpacing(slideId, elementId, patch) {
+    const element = this.element(slideId, elementId);
+    if (!element || element.kind !== 'text') return;
+    for (const key of ['lineHeight', 'spaceBefore', 'spaceAfter', 'indent']) {
+      if (!(key in patch)) continue;
+      const value = Number(patch[key]);
+      if (patch[key] === null || !Number.isFinite(value)) delete element[key];
+      else element[key] = key === 'lineHeight' ? Math.min(10, Math.max(0.5, value)) : Math.max(0, Math.min(500, value));
+    }
     this.dirty = true;
   }
 
@@ -692,6 +741,8 @@ export class SlidesModel {
     for (const slide of this.slides) {
       slide.id ??= makeId('s');
       slide.notes ??= '';
+      slide.comments = cleanComments(slide.comments);
+      if (slide.comments.length === 0) delete slide.comments;
       slide.transition ??= 'none';
       slide.master ??= null;
       slide.footer = normaliseFooter(slide.footer);
@@ -711,13 +762,12 @@ export class SlidesModel {
           element.thickness ??= 4;
           element.arrow ??= false;
         }
-        if (element.kind === 'table') {
-          element.rows ??= 3;
-          element.cols ??= 2;
-          element.header ??= true;
-          element.cells = normaliseCells(element.cells, element.rows, element.cols);
+        // A table from a file is held to the limits before anything is built from its size.
+        if (element.kind === 'table') normaliseTable(element);
+        if (element.kind === 'text') {
+          element.content = cleanRuns(element.content ?? [{ text: '' }]);
+          if (element.paras) element.paras = parasFor(element);
         }
-        if (element.kind === 'text') element.content ??= [{ text: '' }];
         if (element.kind === 'chart') element.data = normaliseChartData(element.data);
         if (element.kind === 'formula') element.tex = typeof element.tex === 'string' ? element.tex.slice(0, 5000) : '';
         if (!KINDS.includes(element.kind)) element.kind = 'text';
@@ -788,12 +838,3 @@ export class SlidesModel {
   }
 }
 
-/** A rows x cols grid of strings, whatever shape the input was. */
-function normaliseCells(cells, rows, cols) {
-  const source = Array.isArray(cells) ? cells : [];
-  return Array.from({ length: rows }, (_, r) =>
-    Array.from({ length: cols }, (_, c) => {
-      const value = source[r]?.[c];
-      return typeof value === 'string' ? value : '';
-    }));
-}

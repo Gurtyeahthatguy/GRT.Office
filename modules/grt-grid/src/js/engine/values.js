@@ -137,17 +137,21 @@ export function compare(left, right) {
 }
 
 /** Flattens arguments for a function that works over ranges. */
+/** A value typed into a function's arguments as a number: text there, even "5", is an error, as in Calc. */
+export function typedNumber(value) {
+  return typeof value === 'string' ? ERROR.value : toNumber(value);
+}
+
 export function collectNumbers(values) {
   const numbers = [];
   for (const value of values) {
     if (isError(value)) return value;
     if (value === null || value === undefined || value === '') continue;
-    if (typeof value === 'boolean') continue;      // booleans in a range do not count.
+    // Calc keeps TRUE and FALSE in cells as 1 and 0, so they count.
+    if (typeof value === 'boolean') { numbers.push(value ? 1 : 0); continue; }
     if (typeof value === 'number') { numbers.push(value); continue; }
 
-    const parsed = Number(String(value).trim());
-    if (Number.isFinite(parsed) && String(value).trim() !== '') numbers.push(parsed);
-    // Anything else is a label in a column of numbers, and is skipped.
+    // Text in cells is skipped, even text that looks like a number, as Calc and Excel do.
   }
   return numbers;
 }

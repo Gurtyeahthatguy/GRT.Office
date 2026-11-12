@@ -3,6 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import { GridModel } from '../src/js/model.js';
 import { Engine } from '../src/js/engine/recalc.js';
+import { SheetController } from '../src/js/controller.js';
 
 function sheet(cells) {
   const model = new GridModel({ version: 1, sheets: [{ name: 'S', cells }] });
@@ -72,5 +73,42 @@ describe('names, LET and whole columns', () => {
   it('keeps an argument left out empty', () => {
     const { at } = sheet({ '0,0': { f: '=IF(TRUE(),,5)' }, '1,0': { f: '=IF(FALSE(),,5)' } });
     expect([at(0, 0), at(1, 0)]).toEqual([0, 5]);
+  });
+});
+
+describe('a formula read from LibreOffice or an older Excel', () => {
+  const cells = { '0,0': { v: 1 }, '1,0': { v: 2 }, '2,0': { v: 3 } };
+
+  it('takes the value on its own row instead of spilling', () => {
+    const { at } = sheet({ ...cells, '1,1': { f: '=A1:A3*10', i: 1 }, '1,2': { f: '=A1:A3*10' } });
+    expect(at(1, 1)).toBe(20);
+    expect(at(2, 1) ?? null).toBe(null);
+    expect(at(1, 2)).toBe(10);
+    expect(at(2, 2)).toBe(20);
+  });
+
+  it('carries the row through functions that work value by value', () => {
+    const { at } = sheet({ ...cells, '2,1': { f: '=IF(COUNTIF(A1:A2,A1:A3),"",A1:A3)', i: 1 } });
+    expect(at(2, 1)).toBe(3);
+  });
+
+  it('gives #VALUE! on a row the range does not reach, and the first value of a block from no range', () => {
+    const { at } = sheet({ ...cells, '5,1': { f: '=A1:A3', i: 1 }, '5,2': { f: '=SEQUENCE(3)', i: 1 } });
+    expect(at(5, 1)).toBe('#VALUE!');
+    expect(at(5, 2)).toBe(1);
+  });
+
+  it('reads Excel 365\'s @, which its files keep as SINGLE', () => {
+    const { at } = sheet({ ...cells, '2,3': { f: '=SINGLE(A1:A3)+1' } });
+    expect(at(2, 3)).toBe(4);
+  });
+
+  it('stays so when it is filled down', () => {
+    const model = new GridModel({ version: 1, sheets: [{ name: 'S', cells: { ...cells, '0,1': { f: '=A1:A3*10', i: 1 } } }] });
+    const grid = new SheetController(model);
+    grid.selectRange(0, 1, 2, 1);
+    grid.fillDown();
+    expect([0, 1, 2].map((r) => model.sheet.valueAt(r, 1))).toEqual([10, 20, 30]);
+    expect(model.sheet.cell(2, 1).i).toBe(1);
   });
 });

@@ -61,7 +61,7 @@ export async function pageRenderer(bytes) {
     close() {
       for (const url of drawn.values()) URL.revokeObjectURL(url);
       drawn.clear();
-      doc.destroy();
+      doc.loadingTask.destroy();
     },
   };
 }

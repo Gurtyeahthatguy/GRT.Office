@@ -8,9 +8,9 @@ A personal productivity suite that runs entirely on the local machine.
   it produces.
 - **Open.** A privacy tool nobody can inspect does not deserve trust.
 
-It is not an Office clone. It is the subset that covers real use, without
-chasing feature parity. The measure of each module is not how closely it
-resembles Office, but whether it gets used instead of the alternative.
+By 1.0 it does everything LibreOffice does, except what would need the network
+or run code that comes inside a file; each version adds a share of it. The
+measure of each module is whether it gets used instead of the alternative.
 
 Ready-made programs for Linux and Windows are attached to each release.
 Building and installing: [INSTALL.md](INSTALL.md).

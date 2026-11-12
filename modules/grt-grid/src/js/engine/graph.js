@@ -109,8 +109,9 @@ export class DependencyGraph {
     const remaining = new Map();
     const feeds = new Map();
 
+    const places = placesOf(inSet);
     for (const id of inSet) {
-      const reads = this.precedentsWithin(id, inSet);
+      const reads = this.precedentsWithin(id, inSet, places);
       remaining.set(id, reads.size);
       for (const read of reads) {
         let list = feeds.get(read);
@@ -125,8 +126,8 @@ export class DependencyGraph {
       .sort();
 
     const order = [];
-    while (ready.length > 0) {
-      const id = ready.shift();
+    for (let next = 0; next < ready.length; next += 1) {
+      const id = ready[next];
       order.push(id);
       remaining.delete(id);
 
@@ -142,7 +143,7 @@ export class DependencyGraph {
   }
 
   /** The cells this one reads that are also in the set being ordered. */
-  precedentsWithin(id, inSet) {
+  precedentsWithin(id, inSet, places = placesOf(inSet)) {
     const held = this.precedents.get(id);
     const found = new Set();
     if (!held) return found;
@@ -151,19 +152,14 @@ export class DependencyGraph {
       if (inSet.has(precedent)) found.add(precedent);
     }
 
-    // A range's members are only interesting when they are being recalculated
-    // too, so the set is walked rather than the range expanded.
-    if (held.ranges.length > 0) {
-      for (const candidate of inSet) {
-        if (found.has(candidate)) continue;
-        const { sheetId, row, col } = parseNodeId(candidate);
-        for (const range of held.ranges) {
-          if (range.sheetId !== sheetId) continue;
-          if (row < range.top || row > range.bottom) continue;
-          if (col < range.left || col > range.right) continue;
-          found.add(candidate);
-          break;
-        }
+    // A range's members are only interesting when they are being recalculated too,
+    // so the set's cells inside it are found by row rather than the range expanded.
+    for (const range of held.ranges) {
+      const list = places.get(range.sheetId);
+      if (!list) continue;
+      for (let i = firstFrom(list, range.top); i < list.length && list[i].row <= range.bottom; i += 1) {
+        const { col, id: candidate } = list[i];
+        if (col >= range.left && col <= range.right) found.add(candidate);
       }
     }
 
@@ -227,4 +223,29 @@ function normaliseRange({ sheetId, from, to }) {
     left: Math.min(from.col, to.col),
     right: Math.max(from.col, to.col),
   };
+}
+
+/** The cells of a set by sheet, in row order, so a range finds those inside it without walking them all. */
+function placesOf(ids) {
+  const bySheet = new Map();
+  for (const id of ids) {
+    const { sheetId, row, col } = parseNodeId(id);
+    let list = bySheet.get(sheetId);
+    if (!list) { list = []; bySheet.set(sheetId, list); }
+    list.push({ row, col, id });
+  }
+  for (const list of bySheet.values()) list.sort((a, b) => a.row - b.row);
+  return bySheet;
+}
+
+/** Where the first place on a row at or below this one is, in a list in row order. */
+function firstFrom(list, row) {
+  let low = 0;
+  let high = list.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (list[middle].row < row) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }

@@ -93,6 +93,16 @@ const shape = (doc) => {
   return { grid: grid(table), header: table.rows.map((r) => !!r.header), bg: table.rows[1].cells[2].bg, widths: table.widths.map((w) => Math.round((w / table.widths.reduce((a, b) => a + b, 0)) * 100)) };
 };
 
+describe('a table whose rows differ in length', () => {
+  it('is as wide as its longest row, so no cell is lost', () => {
+    const model = new DocumentModel({ blocks: [{ kind: 'table', rows: [
+      { cells: [{ runs: [{ text: '' }] }, { runs: [{ text: '' }] }, { runs: [{ text: 'A3' }] }] },
+      { cells: [{ runs: [{ text: 'B1' }] }, { runs: [{ text: 'B2' }] }] },
+    ] }] });
+    expect(grid(model.blocks[0])).toEqual([['', '', 'A3'], ['B1', 'B2', '']]);
+  });
+});
+
 describe('tables through the formats', () => {
   const want = shape(richTable().toJSON());
   it('come back from .odt as they went', () => {

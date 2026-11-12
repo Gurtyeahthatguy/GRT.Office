@@ -6,7 +6,7 @@ import { agendaLayout } from './views/agenda.js';
 import { tasks } from './model.js';
 import { describe } from './recurrence.js';
 import {
-  today, longDate, shortDate, monthTitle, parseDate, weekday,
+  today, longDate, shortDate, monthTitle, parseDate, weekday, isoWeek,
 } from './time.js';
 
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -24,7 +24,7 @@ export function viewTitle(model, weekStart = 1) {
   if (model.view === 'day') return longDate(model.cursor);
   if (model.view === 'agenda') return `From ${longDate(model.cursor)}`;
   const { first, last } = weekLayout(model, model.cursor, { weekStart });
-  return `${shortDate(first)} to ${shortDate(last)} ${parseDate(last).year}`;
+  return `Week ${isoWeek(model.cursor)}: ${shortDate(first)} to ${shortDate(last)} ${parseDate(last).year}`;
 }
 
 /** Draws whichever view is current into `surface`. */
@@ -53,6 +53,8 @@ function monthView(model, weekStart) {
   body.style.setProperty('--rows', String(layout.weeks.length));
 
   for (const week of layout.weeks) {
+    // The week's number, read from its Thursday as ISO 8601 counts it, sits in the row's first cell.
+    const thursday = week.find((cell) => weekday(cell.date) === 4) ?? week[0];
     for (const cell of week) {
       const day = element('div', 'day-cell');
       day.dataset.date = cell.date;
@@ -61,6 +63,12 @@ function monthView(model, weekStart) {
       day.classList.toggle('weekend', cell.isWeekend);
 
       const number = element('div', 'day-number', String(cell.day));
+      if (cell === week[0]) {
+        const weekNumber = isoWeek(thursday.date);
+        const tag = element('span', 'week-number', String(weekNumber));
+        tag.title = `Week ${weekNumber}`;
+        day.append(tag);
+      }
       day.append(number);
 
       for (const row of cell.shown) day.append(chip(row));

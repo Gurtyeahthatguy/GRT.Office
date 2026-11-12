@@ -62,6 +62,17 @@ describe('conditional formats and validity through the formats', () => {
   it('come back from .xlsx', () => expectSame(readXlsx(through(writeXlsx(document()).entries)).document.sheets[0]));
 });
 
+describe('a rule over a whole column', () => {
+  it('is written as repeated rows, quickly, and comes back with its area', () => {
+    const whole = { area: { top: 1, left: 0, bottom: 1048575, right: 0 }, type: 'list', list: ['a', 'b'] };
+    const doc = { version: 1, type: 'grid', styles: {}, charts: [], sheets: [{ name: 'S', cells: { '0,0': { v: 'x' } }, cols: { 1023: { w: 80 } }, validations: [whole] }] };
+    const started = Date.now();
+    const { entries } = writeOds(doc);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(readOds(through(entries)).document.sheets[0].validations[0].area).toEqual(whole.area);
+  });
+});
+
 describe.skipIf(!oracleAvailable())('LibreOffice reads them and gives them back', () => {
   let dir;
   beforeAll(() => { dir = scratch(); });

@@ -95,8 +95,9 @@ pub struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
+    /// A lexer at an offset, which a damaged file may put past its end.
     pub fn new(bytes: &'a [u8], pos: usize) -> Self {
-        Lexer { bytes, pos }
+        Lexer { bytes, pos: pos.min(bytes.len()) }
     }
 
     fn at_end(&self) -> bool {
@@ -125,7 +126,7 @@ impl<'a> Lexer<'a> {
     /// The next regular word, without moving past it.
     fn peek_word(&mut self) -> &'a [u8] {
         self.skip_space();
-        let start = self.pos;
+        let start = self.pos.min(self.bytes.len());
         let mut end = start;
         while end < self.bytes.len() && !is_white(self.bytes[end]) && !is_delimiter(self.bytes[end]) {
             end += 1;

@@ -14,6 +14,7 @@ const CSS = `
 .grt-menu-hint { color: var(--text-dim, #777); font-size: 12px; }
 .grt-menu hr { border: none; border-top: 1px solid var(--border, #ccc); margin: 4px 2px; }
 .grt-menu [aria-checked="true"]::before { content: "✓ "; }
+.grt-menu [aria-haspopup="menu"] .grt-menu-hint::after { content: "›"; }
 `;
 
 function installStyle(doc) {
@@ -55,11 +56,81 @@ export function createMenubar(host, menus) {
     return button;
   });
 
-  /** The menu on screen: its index, its element, the items it lists and the one marked. */
+  /** The menu on screen: its index, its element, the items it lists, the one marked, and a submenu open from it. */
   let open = null;
+
+  /** The rows of a list of items, each remembering its item and whether it can be chosen. */
+  function rows(element, items, onEnter) {
+    const entries = [];
+    for (const item of items) {
+      if (item === 'separator') {
+        element.append(doc.createElement('hr'));
+        continue;
+      }
+      const row = doc.createElement('div');
+      const checkable = item.checked !== undefined;
+      row.setAttribute('role', checkable ? 'menuitemcheckbox' : 'menuitem');
+      if (checkable) row.setAttribute('aria-checked', String(isOn(item.checked)));
+      if (item.items) row.setAttribute('aria-haspopup', 'menu');
+      const enabled = item.items ? item.items.some((i) => i !== 'separator' && isOn(i.enabled ?? true)) : isOn(item.enabled ?? true);
+      if (!enabled) row.setAttribute('aria-disabled', 'true');
+      const label = doc.createElement('span');
+      label.textContent = item.label;
+      const hint = doc.createElement('span');
+      hint.className = 'grt-menu-hint';
+      hint.textContent = item.shortcut ?? '';
+      row.append(label, hint);
+      const entry = { row, item, enabled };
+      row.addEventListener('mouseenter', () => onEnter(entry));
+      row.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        if (!enabled) return;
+        if (item.items) openSub(entry);
+        else activate(item);
+      });
+      element.append(row);
+      entries.push(entry);
+    }
+    return entries;
+  }
+
+  function closeSub() {
+    if (!open?.sub) return;
+    open.sub.element.remove();
+    open.sub = null;
+  }
+
+  /** Opens the submenu of a row beside it; `focusFirst` marks its first item, as the keyboard does. */
+  function openSub(entry, focusFirst = false) {
+    if (!open || !entry.item.items || !entry.enabled) return;
+    if (open.sub?.entry === entry) return;
+    closeSub();
+    const element = doc.createElement('div');
+    element.className = 'grt-menu';
+    element.setAttribute('role', 'menu');
+    element.setAttribute('aria-label', entry.item.label);
+    const sub = { entry, element, entries: [], at: -1 };
+    sub.entries = rows(element, entry.item.items, (e) => markSub(sub.entries.indexOf(e)));
+    doc.body.append(element);
+    const box = entry.row.getBoundingClientRect();
+    const view = doc.defaultView;
+    const size = element.getBoundingClientRect();
+    const right = box.right + size.width + 4 > view.innerWidth ? box.left - size.width - 2 : box.right + 2;
+    element.style.left = `${Math.round(Math.max(0, right))}px`;
+    element.style.top = `${Math.round(Math.max(0, Math.min(box.top - 4, view.innerHeight - size.height - 4)))}px`;
+    open.sub = sub;
+    if (focusFirst) markSub(sub.entries.findIndex((e) => e.enabled));
+  }
+
+  function markSub(at) {
+    if (!open?.sub) return;
+    open.sub.entries.forEach((e, i) => e.row.classList.toggle('active', i === at));
+    open.sub.at = at;
+  }
 
   function close() {
     if (!open) return;
+    closeSub();
     open.element.remove();
     buttons[open.index].setAttribute('aria-expanded', 'false');
     doc.removeEventListener('keydown', onKey, true);
@@ -74,38 +145,17 @@ export function createMenubar(host, menus) {
     element.className = 'grt-menu';
     element.setAttribute('role', 'menu');
     element.setAttribute('aria-label', menu.label);
-    const entries = [];
-    for (const item of menu.items) {
-      if (item === 'separator') {
-        element.append(doc.createElement('hr'));
-        continue;
-      }
-      const row = doc.createElement('div');
-      const checkable = item.checked !== undefined;
-      row.setAttribute('role', checkable ? 'menuitemcheckbox' : 'menuitem');
-      if (checkable) row.setAttribute('aria-checked', String(isOn(item.checked)));
-      const enabled = isOn(item.enabled ?? true);
-      if (!enabled) row.setAttribute('aria-disabled', 'true');
-      const label = doc.createElement('span');
-      label.textContent = item.label;
-      const hint = doc.createElement('span');
-      hint.className = 'grt-menu-hint';
-      hint.textContent = item.shortcut ?? '';
-      row.append(label, hint);
-      row.addEventListener('mouseenter', () => mark(entries.findIndex((e) => e.row === row)));
-      row.addEventListener('mousedown', (event) => {
-        event.preventDefault();
-        if (enabled) activate(item);
-      });
-      element.append(row);
-      entries.push({ row, item, enabled });
-    }
+    const entries = rows(element, menu.items, (entry) => {
+      mark(entries.indexOf(entry));
+      if (entry.item.items) openSub(entry);
+      else closeSub();
+    });
     const box = buttons[index].getBoundingClientRect();
     element.style.left = `${Math.round(box.left)}px`;
     element.style.top = `${Math.round(box.bottom + 2)}px`;
     doc.body.append(element);
     buttons[index].setAttribute('aria-expanded', 'true');
-    open = { index, element, entries, at: -1 };
+    open = { index, element, entries, at: -1, sub: null };
     if (focusFirst) mark(entries.findIndex((e) => e.enabled));
     doc.addEventListener('keydown', onKey, true);
     doc.addEventListener('mousedown', onOutside, true);
@@ -113,6 +163,7 @@ export function createMenubar(host, menus) {
 
   function mark(at) {
     if (!open) return;
+    if (open.sub && open.sub.entry !== open.entries[at]) closeSub();
     open.entries.forEach((e, i) => e.row.classList.toggle('active', i === at));
     open.at = at;
     open.entries[at]?.row.scrollIntoView?.({ block: 'nearest' });
@@ -125,13 +176,14 @@ export function createMenubar(host, menus) {
 
   function onOutside(event) {
     if (!open) return;
-    if (open.element.contains(event.target) || host.contains(event.target)) return;
+    if (open.element.contains(event.target) || open.sub?.element.contains(event.target) || host.contains(event.target)) return;
     close();
   }
 
   function onKey(event) {
     if (!open) return;
-    const { entries } = open;
+    const sub = open.sub;
+    const { entries } = sub && sub.at >= 0 ? sub : open;
     const step = (from, by) => {
       for (let i = 1; i <= entries.length; i += 1) {
         const next = (from + by * i + entries.length * 2) % entries.length;
@@ -139,20 +191,34 @@ export function createMenubar(host, menus) {
       }
       return from;
     };
+    const inSub = Boolean(sub && sub.at >= 0);
+    const at = inSub ? sub.at : open.at;
+    const pick = inSub ? markSub : mark;
     switch (event.key) {
-      case 'Escape': close(); buttons[0].focus(); break;
-      case 'ArrowDown': mark(step(open.at, 1)); break;
-      case 'ArrowUp': mark(step(open.at < 0 ? 0 : open.at, -1)); break;
-      case 'ArrowRight': show((open.index + 1) % menus.length, true); break;
-      case 'ArrowLeft': show((open.index - 1 + menus.length) % menus.length, true); break;
-      case 'Enter': case ' ': if (open.at >= 0 && entries[open.at].enabled) activate(entries[open.at].item); break;
+      case 'Escape': if (inSub) { closeSub(); } else { close(); buttons[0].focus(); } break;
+      case 'ArrowDown': pick(step(at, 1)); break;
+      case 'ArrowUp': pick(step(at < 0 ? 0 : at, -1)); break;
+      case 'ArrowRight':
+        if (!inSub && entries[at]?.item.items) openSub(entries[at], true);
+        else show((open.index + 1) % menus.length, true);
+        break;
+      case 'ArrowLeft':
+        if (inSub) closeSub();
+        else show((open.index - 1 + menus.length) % menus.length, true);
+        break;
+      case 'Enter': case ' ':
+        if (at >= 0 && entries[at].enabled) {
+          if (entries[at].item.items) openSub(entries[at], true);
+          else activate(entries[at].item);
+        }
+        break;
       default: {
         // A letter jumps to the next item that starts with it.
         if (event.key.length !== 1) return;
         const letter = event.key.toLowerCase();
-        const found = entries.findIndex((e, i) => i > open.at && e.enabled && e.item.label.toLowerCase().startsWith(letter));
+        const found = entries.findIndex((e, i) => i > at && e.enabled && e.item.label.toLowerCase().startsWith(letter));
         const again = found === -1 ? entries.findIndex((e) => e.enabled && e.item.label.toLowerCase().startsWith(letter)) : found;
-        if (again !== -1) mark(again);
+        if (again !== -1) pick(again);
       }
     }
     event.preventDefault();
@@ -171,16 +237,35 @@ export function createMenubar(host, menus) {
   });
 
   // Every shortcut a menu shows works, unless the program has already answered the key itself.
-  const bound = menus.flatMap((menu) => menu.items).filter((item) => item !== 'separator' && item.run && item.shortcut && chordOf(item.shortcut));
+  // They are read at each key, so a shortcut the person changes works at once.
+  const bound = () => menus.flatMap((menu) => leaves(menu.items)).filter(({ item }) => item.run && item.shortcut && chordOf(item.shortcut)).map(({ item }) => item);
   doc.defaultView.addEventListener('keydown', (event) => {
     if (open || event.defaultPrevented || busyElsewhere(doc, event)) return;
-    const item = bound.find((each) => matches(chordOf(each.shortcut), event));
+    const item = bound().find((each) => matches(chordOf(each.shortcut), event));
     if (!item || !isOn(item.enabled ?? true)) return;
     event.preventDefault();
     item.run();
   });
+  // A shortcut the person gave comes before the program's own use of those keys.
+  doc.defaultView.addEventListener('keydown', (event) => {
+    if (open || busyElsewhere(doc, event)) return;
+    const item = bound().find((each) => each.customShortcut && matches(chordOf(each.shortcut), event));
+    if (!item || !isOn(item.enabled ?? true)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    item.run();
+  }, true);
 
-  return { close, show, get isOpen() { return Boolean(open); } };
+  /** Runs the item whose shortcut a key is, among those `allowed` lets through; true when one ran. */
+  function shortcut(event, allowed = () => true) {
+    const item = bound().find((each) => matches(chordOf(each.shortcut), event) && allowed(each));
+    if (!item || !isOn(item.enabled ?? true)) return false;
+    event.preventDefault();
+    item.run();
+    return true;
+  }
+
+  return { close, show, shortcut, get isOpen() { return Boolean(open); } };
 }
 
 /**
@@ -261,7 +346,7 @@ export function showContextMenu(event, items) {
 }
 
 /** A shortcut as written in a menu, such as Ctrl+Alt+F or F11; plain keys are left to the program. */
-function chordOf(text) {
+export function chordOf(text) {
   const parts = String(text).split('+');
   // "Ctrl++" names the plus key.
   if (parts.at(-1) === '' && parts.length > 1) {
@@ -280,6 +365,8 @@ function matches(chord, event) {
   if (/^[A-Za-z]$/.test(key)) return chord.shift === event.shiftKey && event.code === `Key${key.toUpperCase()}`;
   if (/^\d$/.test(key)) return chord.shift === event.shiftKey && event.code === `Digit${key}`;
   if (/^F\d{1,2}$/.test(key) || key === 'Enter' || key === 'Delete' || key === 'Insert') return chord.shift === event.shiftKey && event.key === key;
+  // Arrows are written as Left, Right, Up and Down, as menus show them.
+  if (['Left', 'Right', 'Up', 'Down'].includes(key)) return chord.shift === event.shiftKey && event.key === `Arrow${key}`;
   // Punctuation is read as typed, so Shift is whatever the layout needs for it.
   return event.key === key;
 }
@@ -298,18 +385,29 @@ function busyElsewhere(doc, event) {
 export function paletteEntries(menus) {
   const out = [];
   for (const menu of menus) {
-    for (const item of menu.items) {
-      if (item === 'separator' || !item.run) continue;
+    for (const { item, path } of leaves(menu.items)) {
+      if (!item.run) continue;
       out.push({
-        id: `${menu.label}/${item.label}`,
+        id: [menu.label, ...path, item.label].join('/'),
         label: item.label,
         hint: item.shortcut ?? '',
-        detail: menu.label,
+        detail: [menu.label, ...path].join(' › '),
         aliases: item.aliases ?? [],
         enabled: () => isOn(item.enabled ?? true),
         run: item.run,
       });
     }
+  }
+  return out;
+}
+
+/** The items that run something, inside submenus too, each with the submenus it sits in. */
+export function leaves(items, path = []) {
+  const out = [];
+  for (const item of items) {
+    if (item === 'separator') continue;
+    if (item.items) out.push(...leaves(item.items, [...path, item.label]));
+    else out.push({ item, path });
   }
   return out;
 }

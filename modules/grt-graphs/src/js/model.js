@@ -1,6 +1,7 @@
 /** The graph, independent of how it is drawn. */
 
 import { makeId } from './ids.js';
+import { cleanComments, newComment, COMMENT_LIMITS } from './core/comments.js';
 
 export const FORMAT_VERSION = 1;
 export const PORTS = ['auto', 'top', 'right', 'bottom', 'left'];
@@ -254,12 +255,14 @@ export class GraphModel {
     this.styles = document.styles ? structuredClone(document.styles) : structuredClone(DEFAULT_STYLES);
     this.meta = { gridSize: 10, snapToGrid: true, ...(document.meta ?? {}) };
 
-    // Missing fields are filled in rather than rejected.
+    // Missing fields are filled in rather than rejected; what must be text is made text.
     for (const node of this.nodes) {
       node.id ??= makeId('n');
       node.shape ??= 'rect';
       node.style ??= 'default';
-      node.text ??= '';
+      node.text = typeof node.text === 'string' ? node.text : String(node.text ?? '');
+      if (typeof node.link !== 'string' || node.link === '') delete node.link;
+      else node.link = node.link.slice(0, 2048);
       node.data ??= {};
       node.w ??= 160;
       node.h ??= 60;
@@ -269,12 +272,54 @@ export class GraphModel {
       edge.fromPort ??= 'auto';
       edge.toPort ??= 'auto';
       edge.routing ??= 'orthogonal';
-      edge.label ??= '';
+      edge.label = typeof edge.label === 'string' ? edge.label : String(edge.label ?? '');
       edge.waypoints ??= [];
       edge.data ??= {};
     }
 
+    this.meta.comments = cleanComments(this.meta.comments);
+    if (this.meta.comments.length === 0) delete this.meta.comments;
+
     this.dirty = false;
+  }
+
+  // Links and comments
+
+  /** Gives nodes a link; an empty address takes it away. */
+  setLink(ids, href) {
+    const clean = String(href ?? '').trim().slice(0, 2048);
+    for (const node of this.nodes) {
+      if (!ids.includes(node.id)) continue;
+      if (clean) node.link = clean;
+      else delete node.link;
+    }
+    this.dirty = true;
+  }
+
+  get comments() {
+    return this.meta.comments ?? [];
+  }
+
+  /** A comment on the page, at a place; who wrote it is not kept. */
+  addComment({ x, y, text }) {
+    const comment = newComment({ x, y, text });
+    this.meta.comments = [...this.comments, comment].slice(-COMMENT_LIMITS.count);
+    this.dirty = true;
+    return comment;
+  }
+
+  setComment(id, text) {
+    const comment = this.comments.find((c) => c.id === id);
+    if (!comment) return;
+    if (String(text ?? '').trim() === '') return this.deleteComment(id);
+    comment.text = String(text).slice(0, COMMENT_LIMITS.text);
+    this.dirty = true;
+  }
+
+  deleteComment(id) {
+    this.meta.comments = this.comments.filter((c) => c.id !== id);
+    if (this.meta.comments.length === 0) delete this.meta.comments;
+    this.dirty = true;
   }
 
   // Undo

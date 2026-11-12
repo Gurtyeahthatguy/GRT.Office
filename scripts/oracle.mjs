@@ -62,7 +62,8 @@ export function convert(source, filter, outDir = null) {
   const result = spawnSync('soffice', [
     `-env:UserInstallation=file://${profile}`,
     '--headless', '--norestore', '--convert-to', filter, '--outdir', out, source,
-  ], { encoding: 'utf8', timeout: 120000 });
+    // English number formats, as Grid writes them, whatever language this computer speaks.
+  ], { encoding: 'utf8', timeout: 60000, env: { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' } });
   const extension = filter.split(':')[0];
   const wanted = `${basename(source).replace(/\.[^.]+$/, '')}.${extension}`;
   const found = readdirSync(out).find((name) => name === wanted);

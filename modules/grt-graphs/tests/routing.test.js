@@ -3,6 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   routeEdge, orthogonalPath, resolveAutoPorts, portPoint, pathCrossesNode, pathData,
+  edgePorts, curveControls, labelPoint, drawnPoints,
 } from '../src/js/routing.js';
 
 const node = (x, y, w = 160, h = 60) => ({ id: `n${x}_${y}`, x, y, w, h });
@@ -118,6 +119,42 @@ describe('Path output', () => {
   it('curved routing produces a cubic curve', () => {
     const points = routeEdge(edge({ routing: 'curved' }), node(0, 0), node(400, 0));
     expect(pathData(points, 'curved')).toContain('C');
+  });
+
+  it('a curve leaves each end the way its port faces', () => {
+    const from = node(0, 0);
+    const to = node(0, 300);
+    const e = edge({ routing: 'curved' });
+    const ports = edgePorts(e, from, to);
+    expect(ports).toEqual({ fromPort: 'bottom', toPort: 'top' });
+    const [a, b] = routeEdge(e, from, to);
+    const [c1, c2] = curveControls(a, b, ports);
+    expect(c1.x).toBe(a.x);
+    expect(c1.y).toBeGreaterThan(a.y);
+    expect(c2.x).toBe(b.x);
+    expect(c2.y).toBeLessThan(b.y);
+    expect(pathData([a, b], 'curved', ports)).toBe(`M 80 60 C 80 180, 80 180, 80 300`);
+  });
+
+  it('puts a label halfway along the connector, not at its end', () => {
+    const from = node(0, 0);
+    const to = node(400, 0);
+    for (const routing of ['straight', 'curved', 'orthogonal']) {
+      const e = edge({ routing });
+      const mid = labelPoint(routeEdge(e, from, to), routing, edgePorts(e, from, to));
+      expect(mid.x).toBeCloseTo(280, 0);
+      expect(mid.y).toBeCloseTo(30, 0);
+    }
+  });
+
+  it('gives straight-line outputs the curve as points', () => {
+    const from = node(0, 0);
+    const to = node(400, 200);
+    const e = edge({ routing: 'curved' });
+    const points = drawnPoints(routeEdge(e, from, to), 'curved', edgePorts(e, from, to));
+    expect(points.length).toBeGreaterThan(2);
+    expect(points[0]).toEqual({ x: 160, y: 30 });
+    expect(points.at(-1)).toEqual({ x: 400, y: 230 });
   });
 
   it('orthogonal output is all move and line commands', () => {

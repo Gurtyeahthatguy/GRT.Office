@@ -1,6 +1,6 @@
 /** The week and day grids. */
 
-import { addDays, startOfWeek, today, minutesOfDay } from '../time.js';
+import { addDays, startOfWeek, today } from '../time.js';
 import { occurrencesBetween, durationOf } from '../model.js';
 
 /** Pixels per minute is decided in CSS; the layout works in minutes. */

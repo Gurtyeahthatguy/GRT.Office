@@ -16,9 +16,13 @@ const RELS = {
   presProps: `${REL_BASE}/presProps`,
   viewProps: `${REL_BASE}/viewProps`,
   tableStyles: `${REL_BASE}/tableStyles`,
+  comments: `${REL_BASE}/comments`,
+  commentAuthors: `${REL_BASE}/commentAuthors`,
   notesMaster: `${REL_BASE}/notesMaster`,
 };
 const P14 = 'http://schemas.microsoft.com/office/powerpoint/2010/main';
+/** Comment places are in PowerPoint's master units, 576 to the inch; a slide pixel is 1/96 inch. */
+const COMMENT_UNITS = 576 / 96;
 const TABLE_URI = 'http://schemas.openxmlformats.org/drawingml/2006/table';
 
 const PICTURES = { png: 'image/png', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp' };
@@ -44,8 +48,17 @@ const solid = (color) => tag('a:solidFill', {}, tag('a:srgbClr', { val: hex(colo
  * @returns {{entries: object[], losses: Losses}}
  */
 export function writePptx(document, images = new Map()) {
-  return new PptxWriter(document, images).write();
+  const out = new PptxWriter(document, images).write();
+  if (hasCovered(document)) out.losses.add(COVERED);
+  return out;
 }
+
+/** Whether a presentation has text or cells marked to be covered, which a file of it holds in full. */
+export function hasCovered(document) {
+  return (document.slides ?? []).some((slide) => (slide.elements ?? []).some((e) => (e.kind === 'table' && e.redact?.length) || (e.content ?? []).some((r) => r.redact)));
+}
+const COVERED = 'Text marked to be covered, written in full: File, Export As, Redacted Export makes a copy without it';
+
 
 class PptxWriter {
   constructor(document, images) {
@@ -95,6 +108,7 @@ class PptxWriter {
     entries.push({ name: 'ppt/theme/theme1.xml', data: this.themeXml('Slides') });
     overrides.push(['ppt/theme/theme1.xml', 'application/vnd.openxmlformats-officedocument.theme+xml']);
 
+    let commentCount = 0;
     slides.forEach((slide, i) => {
       const n = i + 1;
       const rels = [{ id: 'rId1', type: REL.slideLayout, target: `../slideLayouts/slideLayout${layoutOf.get(slide.master) ?? 1}.xml` }];
@@ -110,6 +124,19 @@ class PptxWriter {
           tag('p:clrMapOvr', {}, tag('a:masterClrMapping')),
           transition(slide.transition))),
       });
+      // Comments, with one author whose name is left empty: GRT keeps no names with them.
+      const comments = (slide.comments ?? []).filter((c) => typeof c?.text === 'string' && c.text !== '');
+      if (comments.length) {
+        rels.push({ id: 'rIdComments', type: RELS.comments, target: `../comments/comment${n}.xml` });
+        entries.push({
+          name: `ppt/comments/comment${n}.xml`,
+          data: xmlDocument(tag('p:cmLst', this.namespaces(), comments.map((c, k) => tag('p:cm', { authorId: '0', idx: String(k + 1) },
+            tag('p:pos', { x: String(Math.round((c.x ?? 0) * COMMENT_UNITS)), y: String(Math.round((c.y ?? 0) * COMMENT_UNITS)) }),
+            tag('p:text', {}, c.text))))),
+        });
+        overrides.push([`ppt/comments/comment${n}.xml`, `${PML}.comments+xml`]);
+        commentCount = Math.max(commentCount, comments.length);
+      }
       entries.push({ name: `ppt/slides/_rels/slide${n}.xml.rels`, data: relsXml(rels) });
       overrides.push([`ppt/slides/slide${n}.xml`, `${PML}.slide+xml`]);
       if (notes) {
@@ -156,6 +183,14 @@ class PptxWriter {
     add(RELS.viewProps, 'viewProps.xml');
     add(REL.theme, 'theme/theme1.xml');
     add(RELS.tableStyles, 'tableStyles.xml');
+    if (commentCount) {
+      add(RELS.commentAuthors, 'commentAuthors.xml');
+      entries.push({
+        name: 'ppt/commentAuthors.xml',
+        data: xmlDocument(tag('p:cmAuthorLst', this.namespaces(), tag('p:cmAuthor', { id: '0', name: '', initials: '', lastIdx: String(commentCount), clrIdx: '0' }))),
+      });
+      overrides.push(['ppt/commentAuthors.xml', `${PML}.commentAuthors+xml`]);
+    }
 
     const presentation = xmlDocument(tag('p:presentation', { ...this.namespaces(), saveSubsetFonts: '1' },
       tag('p:sldMasterIdLst', {}, tag('p:sldMasterId', { id: '2147483648', 'r:id': 'rId1' })),
@@ -199,7 +234,19 @@ class PptxWriter {
 
   // Shapes
 
+  /** The id of a slide's relationship to a web address, added the first time it is named. */
+  linkRel(href) {
+    const rels = this.currentRels;
+    if (!rels) return null;
+    const found = rels.find((rel) => rel.external && rel.target === href);
+    if (found) return found.id;
+    const id = `rIdLink${rels.filter((rel) => rel.external).length + 1}`;
+    rels.push({ id, type: REL.hyperlink, target: href, external: true });
+    return id;
+  }
+
   tree(elements, rels, mediaPath) {
+    this.currentRels = rels;
     let id = 1;
     const nextId = () => {
       id += 1;
@@ -258,7 +305,7 @@ class PptxWriter {
           anchor: { middle: 'ctr', bottom: 'b' }[element.valign] ?? 't',
         }, tag('a:noAutofit')),
         tag('a:lstStyle'),
-        paragraphs(element.content ?? [], look)));
+        paragraphs(element.content ?? [], look, element, this.losses, (href) => this.linkRel(href))));
   }
 
   /** A footer, slide number or date placeholder; the number and a date that follows the day are fields. */
@@ -361,8 +408,16 @@ class PptxWriter {
     const look = { ...this.look(element), align: 'left' };
     const rows = element.cells ?? [];
     const cols = Math.max(1, element.cols ?? rows[0]?.length ?? 1);
-    const width = element.w / cols;
-    const height = element.h / Math.max(1, rows.length);
+    const share = (list, count, i) => (Array.isArray(list) && list.length === count ? list[i] : 1 / count);
+    const merges = element.merges ?? [];
+    const mergeAt = (r, c) => merges.find((m) => r >= m.top && r <= m.bottom && c >= m.left && c <= m.right);
+    // The first cell of a merged block says how far it reaches; the others say whom they belong to.
+    const spans = (r, c) => {
+      const m = mergeAt(r, c);
+      if (!m) return {};
+      if (m.top === r && m.left === c) return { gridSpan: m.right > m.left ? String(m.right - m.left + 1) : null, rowSpan: m.bottom > m.top ? String(m.bottom - m.top + 1) : null };
+      return { hMerge: c > m.left ? '1' : null, vMerge: r > m.top ? '1' : null };
+    };
     const border = (name) => tag(`a:${name}`, { w: '12700' }, solid(this.theme.text));
     return tag('p:graphicFrame', {},
       tag('p:nvGraphicFramePr', {}, tag('p:cNvPr', { id, name: `Table ${id}` }),
@@ -371,9 +426,9 @@ class PptxWriter {
       tag('a:graphic', {}, tag('a:graphicData', { uri: TABLE_URI },
         tag('a:tbl', {},
           tag('a:tblPr', { firstRow: element.header ? '1' : null }),
-          tag('a:tblGrid', {}, Array.from({ length: cols }, () => tag('a:gridCol', { w: emu(width) }))),
-          rows.map((row, r) => tag('a:tr', { h: emu(height) },
-            Array.from({ length: cols }, (_, c) => tag('a:tc', {},
+          tag('a:tblGrid', {}, Array.from({ length: cols }, (_, c) => tag('a:gridCol', { w: emu(element.w * share(element.colW, cols, c)) }))),
+          rows.map((row, r) => tag('a:tr', { h: emu(element.h * share(element.rowH, rows.length, r)) },
+            Array.from({ length: cols }, (_, c) => tag('a:tc', spans(r, c),
               tag('a:txBody', {}, tag('a:bodyPr'), tag('a:lstStyle'),
                 paragraphs([{ text: row[c] ?? '', ...(element.header && r === 0 ? { bold: true } : {}) }], look)),
               tag('a:tcPr', {}, border('lnL'), border('lnR'), border('lnT'), border('lnB'), tag('a:noFill'))))))))));
@@ -502,8 +557,11 @@ function transition(kind) {
   return null;
 }
 
-/** Runs as paragraphs, a new one at each line break. */
-function paragraphs(runs, look) {
+const BULLETS = ['•', '–', '▪', '◦', '•', '–', '▪', '◦', '•'];
+const NUMBERING = ['arabicPeriod', 'alphaLcPeriod', 'romanLcPeriod'];
+
+/** Runs as paragraphs, a new one at each line break, each with its list level and bullet or number. */
+function paragraphs(runs, look, element = {}, losses = null, linkId = null) {
   const out = [[]];
   for (const run of runs) {
     const pieces = String(run.text ?? '').split('\n');
@@ -513,17 +571,42 @@ function paragraphs(runs, look) {
     });
   }
   const size = String(Math.round(look.size * 75));
-  const props = (run) => tag('a:rPr', {
-    lang: 'en-US', sz: size,
-    b: run.bold || look.bold ? '1' : null,
-    i: run.italic || look.italic ? '1' : null,
-    u: run.underline ? 'sng' : null,
-    dirty: '0',
-  }, solid(run.color ?? look.color), tag('a:latin', { typeface: look.typeface }));
-  return out.map((line) => tag('a:p', {},
-    tag('a:pPr', { algn: { center: 'ctr', right: 'r' }[look.align] ?? 'l' }, tag('a:lnSpc', {}, tag('a:spcPct', { val: '104000' }))),
-    line.map((run) => tag('a:r', {}, props(run), tag('a:t', {}, run.text))),
-    tag('a:endParaRPr', { lang: 'en-US', sz: size })));
+  const props = (run) => {
+    if (run.overline) losses?.add('Overlined text, which PowerPoint cannot show, kept plain');
+    return tag('a:rPr', {
+      lang: 'en-US', sz: run.size ? String(Math.round(run.size * 75)) : size,
+      b: run.bold || look.bold ? '1' : null,
+      i: run.italic || look.italic ? '1' : null,
+      u: run.double ? 'dbl' : run.underline ? 'sng' : null,
+      strike: run.strike ? 'sngStrike' : null,
+      cap: run.smallcaps ? 'small' : null,
+      baseline: run.sup ? '30000' : run.sub ? '-25000' : null,
+      dirty: '0',
+    },
+    run.outline ? tag('a:ln', { w: '6350' }, solid(run.color ?? look.color)) : null,
+    run.outline ? tag('a:noFill') : solid(run.color ?? look.color),
+    run.shadow ? tag('a:effectLst', {}, tag('a:outerShdw', { blurRad: '0', dist: '19050', dir: '2700000', algn: 'tl' }, tag('a:srgbClr', { val: '000000' }, tag('a:alpha', { val: '35000' })))) : null,
+    run.highlight ? tag('a:highlight', {}, tag('a:srgbClr', { val: run.highlight.replace('#', '').toUpperCase() })) : null,
+    tag('a:latin', { typeface: look.typeface }),
+    run.link && linkId && !run.link.startsWith('#') ? tag('a:hlinkClick', { 'r:id': linkId(run.link) }) : null);
+  };
+  const lineSpacing = String(Math.round((element.lineHeight ?? 0.87) * 120000));
+  const emu = (pxValue) => String(Math.round(pxValue * 9525));
+  const spacing = (name, value) => (value ? tag(name, {}, tag('a:spcPts', { val: String(Math.round(value * 75)) })) : null);
+  return out.map((line, i) => {
+    const para = element.paras?.[i] ?? { level: 0 };
+    const indent = (para.level ?? 0) * (element.indent ?? 36) + (para.list ? 28 : 0);
+    const bullet = para.list === 'bullet' ? tag('a:buChar', { char: BULLETS[para.level ?? 0] })
+      : para.list === 'number' ? tag('a:buAutoNum', { type: NUMBERING[(para.level ?? 0) % 3] }) : tag('a:buNone');
+    return tag('a:p', {},
+      tag('a:pPr', {
+        lvl: para.level ? String(para.level) : null, algn: { center: 'ctr', right: 'r' }[look.align] ?? 'l',
+        marL: indent ? emu(indent) : '0', indent: para.list ? emu(-28) : '0',
+      },
+      tag('a:lnSpc', {}, tag('a:spcPct', { val: lineSpacing })), spacing('a:spcBef', element.spaceBefore), spacing('a:spcAft', element.spaceAfter), bullet),
+      line.map((run) => tag('a:r', {}, props(run), tag('a:t', {}, run.text))),
+      tag('a:endParaRPr', { lang: 'en-US', sz: size }));
+  });
 }
 
 function pictureKind(bytes) {

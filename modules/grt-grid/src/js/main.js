@@ -1,5 +1,10 @@
 /** Wiring. */
 
+import { inspect } from './core/inspector.js';
+import { gridFindings, cleanGridCopy } from './inspect.js';
+import { autoRedactCells, redactedDocument } from './redact.js';
+import { SENSITIVE_KINDS } from './core/sensitive.js';
+import { searchPattern } from './core/find.js';
 import { GridModel } from './model.js';
 import { SheetController } from './controller.js';
 import { GridView } from './grid.js';
@@ -23,6 +28,14 @@ import { isTemplate, baseFormat, asTemplate } from './core/formats/templates.js'
 import { createMenubar, paletteEntries, showContextMenu } from './core/menubar.js';
 import * as sheets from './sheets.js';
 import { templateManager } from './core/template-manager.js';
+import { searchEverywhere } from './core/everywhere.js';
+import { applyShortcuts, customizeDialog } from './core/customize.js';
+import { wireToolbars } from './core/toolbar.js';
+import { livePreview } from './core/live-preview.js';
+import { applyLook } from './grid.js';
+import { NAMES as LANGUAGE_NAMES } from './core/language.js';
+import { createSpellChecker } from './core/spelling.js';
+import { spellingOverItems } from './core/spelling-items.js';
 import { gridMenus } from './menus.js';
 import * as dialogs from './dialogs.js';
 import { chartSvg } from './core/charts.js';
@@ -30,6 +43,8 @@ import { chartSpec, chartFromArea } from './charts.js';
 import { createProperties } from './core/properties.js';
 import { aboutDialog, licencesDialog } from './core/about.js';
 import { FUNCTIONS } from './functions/index.js';
+import { cellText } from './cell-text.js';
+import { showLink } from './core/honest-links.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -39,6 +54,8 @@ let view = null;
 let path = null;
 let runtime = { ephemeral: false, version: '0.0.0', initialFile: null };
 let settings = { theme: 'system', autosave: 'recovery' };
+/** Spelling with GRT's own dictionaries. */
+const spellChecker = createSpellChecker();
 
 /** Formats a spreadsheet can be saved back into. */
 const WRITABLE = new Set(['grt', 'ods', 'fods', 'xlsx', 'ots', 'xltx']);
@@ -92,6 +109,7 @@ async function start() {
 
   attach(new GridModel());
   wire();
+  text.restoreZoom();
   redraw();
 
   const initial = runtime.initialFile && OPENABLE.test(runtime.initialFile) && await io.fileExists(runtime.initialFile)
@@ -106,6 +124,10 @@ function normaliseSettings(raw) {
   return {
     theme: isTheme(raw?.theme) ? raw.theme : 'system',
     autosave: isMode(raw?.autosave) ? raw.autosave : 'recovery',
+    zoom: Number.isFinite(raw?.zoom) && raw.zoom >= 0.2 && raw.zoom <= 4 ? raw.zoom : 1,
+    // Checked against the menus once they exist.
+    keyboard: raw?.keyboard && typeof raw.keyboard === 'object' ? raw.keyboard : {},
+    spellLanguage: /^(it|en)-[A-Z]{2}$/.test(raw?.spellLanguage ?? '') ? raw.spellLanguage : (/^it\b/i.test(globalThis.navigator?.language ?? '') ? 'it-IT' : 'en-US'),
   };
 }
 
@@ -153,6 +175,30 @@ function redraw() {
   el('btn-undo').disabled = !sheet.undo.canUndo;
   el('btn-redo').disabled = !sheet.undo.canRedo;
   drawStylePicker();
+  const look = sheet.styleAt(sheet.active.row, sheet.active.col);
+  for (const [id, on] of [['btn-bold', look.bold], ['btn-italic', look.italic], ['btn-underline', look.underline || look.double],
+    ['btn-align-left', look.align === 'left'], ['btn-align-center', look.align === 'center'], ['btn-align-right', look.align === 'right'], ['btn-wrap', look.wrap]]) {
+    el(id).setAttribute('aria-pressed', String(Boolean(on)));
+  }
+  toolbars?.refresh();
+  const sheets = model.sheets ?? [];
+  el('sheet-count').textContent = `Sheet ${Math.max(1, sheets.findIndex((x) => x.id === sheet.sheetId) + 1)} of ${Math.max(1, sheets.length)}`;
+  el('status-language').textContent = LANGUAGE_NAMES.get(settings.spellLanguage) ?? settings.spellLanguage ?? '';
+}
+
+/** The toolbars, wired once the menus exist. */
+let toolbars = null;
+let cellStylePreview = null;
+
+/** Changes the drawn selected cells for a moment, as a preview; the next draw puts them back. */
+function previewCells(change) {
+  view.draw();
+  const { top, bottom, left, right } = sheet.selection;
+  for (const node of el('grid').querySelectorAll('.cell[data-row][data-col]')) {
+    const row = Number(node.dataset.row);
+    const col = Number(node.dataset.col);
+    if (row >= top && row <= bottom && col >= left && col <= right) change(node, row, col);
+  }
 }
 
 /** The toolbar's list of named styles, showing the one under the active cell. */
@@ -170,6 +216,7 @@ function drawStylePicker() {
     picker.dataset.styles = signature;
   }
   picker.value = sheet.namedStyleAt(sheet.active.row, sheet.active.col);
+  cellStylePreview?.refresh();
 }
 
 function drawFormulaBar() {
@@ -205,7 +252,8 @@ function drawSummary() {
     }
   }
 
-  if (numbers.length === 0) { el('summary').textContent = ''; return; }
+  // As in Calc, the sum shows even when nothing summed is selected.
+  if (numbers.length === 0) { el('summary').textContent = 'Sum 0'; return; }
 
   const total = numbers.reduce((a, b) => a + b, 0);
   el('summary').textContent =
@@ -320,13 +368,22 @@ async function chooseSaveTarget(preferred = null) {
   }
 }
 
+/** Writes the spreadsheet in a format; gives back what that format could not hold. */
 async function writeAs(destination, format, password = null) {
   const json = format === 'grt' ? model.toJSON() : model.exportJSON();
-  if (format === 'grt') return io.writeDocument(destination, json, password);
-  if (format === 'fods') return io.writeText(destination, writeOds(json, { flat: true }).text);
+  if (format === 'grt') {
+    await io.writeDocument(destination, json, password);
+    return [];
+  }
+  if (format === 'fods') {
+    const { text, losses } = writeOds(json, { flat: true });
+    await io.writeText(destination, text);
+    return losses?.lines() ?? [];
+  }
   const base = baseFormat(format);
-  const { entries } = base === 'ods' ? writeOds(json) : writeXlsx(json);
-  return writePackage(destination, isTemplate(format) ? asTemplate(entries, format) : entries, { protection: PROTECTION[format], password });
+  const { entries, losses } = base === 'ods' ? writeOds(json) : writeXlsx(json);
+  await writePackage(destination, isTemplate(format) ? asTemplate(entries, format) : entries, { protection: PROTECTION[format], password });
+  return losses?.lines() ?? [];
 }
 
 async function save({ as = false, silent = false } = {}) {
@@ -357,8 +414,9 @@ async function save({ as = false, silent = false } = {}) {
 
   const revision = keeper.revision;
   if (!canProtect(format)) password = null;
+  let lost;
   try {
-    await writeAs(destination, format, password);
+    lost = await writeAs(destination, format, password);
   } catch (error) {
     if (silent) throw error;
     await io.notify(`Cannot save.\n\n${error.message ?? error}`, 'Save failed');
@@ -371,6 +429,7 @@ async function save({ as = false, silent = false } = {}) {
   model.dirty = keeper.revision !== revision;
   sheet.undo.markSaved();
   redraw();
+  if (!silent && lost.length > 0) toast(`Saved ${io.baseName(destination)}, without: ${lost.join('; ')}`);
   await keeper.saved();
   return true;
 }
@@ -381,8 +440,8 @@ async function saveCopy(preferred = null) {
   const chosen = await chooseSaveTarget(preferred);
   if (!chosen) return;
   try {
-    await writeAs(chosen.destination, chosen.format, canProtect(chosen.format) ? chosen.password : null);
-    toast(`Saved a copy as ${io.baseName(chosen.destination)}`);
+    const lost = await writeAs(chosen.destination, chosen.format, canProtect(chosen.format) ? chosen.password : null);
+    toast(lost.length > 0 ? `Saved a copy as ${io.baseName(chosen.destination)}, without: ${lost.join('; ')}` : `Saved a copy as ${io.baseName(chosen.destination)}`);
   } catch (error) {
     await io.notify(`Cannot save.\n\n${error.message ?? error}`, 'Save failed');
   }
@@ -585,6 +644,89 @@ async function printSheets() {
   sheet.setPrint(active.id, printFromFields(final, before));
 }
 
+/** File, Inspect Document: what the workbook carries, and a clean copy without what is ticked. */
+async function inspectWorkbook() {
+  sheet.commitEdit();
+  const out = await inspect(gridFindings(sheet), { toast });
+  if (!out) return;
+  const confirmed = await showPanel('Clean copy', `
+    <label>Format<select data-field="format"><option value="ods">OpenDocument spreadsheet (.ods)</option><option value="xlsx">Excel (.xlsx)</option></select></label>`, 'Choose file');
+  if (!confirmed) return;
+  const { format } = readFields();
+  const base = path ? path.replace(/(\.[^./\\]+)?$/, '-clean') : 'spreadsheet-clean';
+  const destination = await io.pickToSave(io.withExtension(base, format), io.FILTERS[format], 'Write the clean copy to');
+  if (!destination) return;
+  const copy = cleanGridCopy(sheet, out);
+  const { entries } = format === 'ods' ? writeOds(copy) : writeXlsx(copy);
+  await writePackage(io.withExtension(destination, format), entries, {});
+  toast(`Wrote the clean copy as ${io.baseName(io.withExtension(destination, format))}`);
+}
+
+/** Tools, Auto-Redact: the local finder marks the cells whose values it flags. */
+async function autoRedactDialog() {
+  const checks = Object.entries(SENSITIVE_KINDS).map(([key, label]) => `<div class="setting"><span class="label">${escapeHtml(label)}</span><input type="checkbox" data-field="k-${key}" checked /></div>`).join('');
+  const confirmed = await showPanel('Auto-Redact', `${checks}
+    <label>Words of your own, one a line<textarea data-field="words" rows="3"></textarea></label>
+    <p class="hint">The finder runs here, on this computer, over every sheet. Look at the cells it marked before sharing.</p>`, 'Mark');
+  if (!confirmed) return;
+  const f = readFields();
+  const kinds = Object.keys(SENSITIVE_KINDS).filter((key) => f[`k-${key}`]);
+  const words = String(f.words ?? '').split('\n').map((w) => w.trim()).filter(Boolean).slice(0, 200);
+  const extra = words.length ? [searchPattern(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), { regex: true })] : [];
+  let count = 0;
+  sheet.record(() => { count = autoRedactCells(sheet, kinds, extra); });
+  toast(count ? `${count} cell(s) marked; File, Export As, Redacted Export makes the copy to share` : 'Nothing found to cover');
+}
+
+/** File, Export As, Redacted Export: a copy where covered cells, and every cell drawn from them, are gone. */
+async function redactedExport() {
+  sheet.commitEdit();
+  const marked = model.sheets.reduce((sum, each) => sum + [...each.cells.values()].filter((cell) => cell.rd).length, 0);
+  if (marked === 0) return toast('No cell is marked to be covered: use Tools, Redact or Auto-Redact first');
+  const confirmed = await showPanel('Redacted export', `
+    <label>Format<select data-field="format"><option value="pdf">PDF</option><option value="ods">OpenDocument spreadsheet (.ods)</option><option value="xlsx">Excel (.xlsx)</option><option value="csv">CSV, the active sheet</option></select></label>
+    <p class="hint">${marked} cell(s) are covered, and so is every cell whose formula draws on them. In the copy formulas become their values; comments, links, charts, pivot tables' settings and rules on what cells accept are left out. This spreadsheet is not changed.</p>`, 'Choose file');
+  if (!confirmed) return;
+  const { format } = readFields();
+  const base = path ? path.replace(/(\.[^./\\]+)?$/, '-redacted') : 'spreadsheet-redacted';
+  const destination = await io.pickToSave(io.withExtension(base, format), io.FILTERS[format], 'Export the redacted copy to');
+  if (!destination) return;
+  const { document: copy, covered } = redactedDocument(sheet);
+  const target = io.withExtension(destination, format);
+  if (format === 'pdf') {
+    const shared = new GridModel(copy);
+    const planned = planPages(shared.sheets.map((each) => ({ sheet: each, setup: each.print, area: printedArea(each) })));
+    const rendered = [];
+    for (const page of pdfPages(planned, shared.styles, [])) rendered.push(await renderToPdf(page, { audit: false, report: { replaced: 0 } }));
+    await io.writeBytes(target, await mergePdfPages(rendered));
+  } else if (format === 'csv') {
+    const shared = new GridModel(copy);
+    const index = Math.max(0, model.sheets.findIndex((each) => each.id === sheet.sheetId));
+    await io.writeText(target, csvOf(shared.sheets[index]));
+  } else {
+    const { entries } = format === 'ods' ? writeOds(copy) : writeXlsx(copy);
+    await writePackage(target, entries, {});
+  }
+  toast(`Exported the redacted copy, ${covered} cell(s) covered, as ${io.baseName(target)}`);
+}
+
+/** A sheet's values as CSV, for the redacted copy. */
+function csvOf(each) {
+  const bounds = each.usedBounds();
+  if (!bounds) return '';
+  const lines = [];
+  for (let row = 0; row <= bounds.bottom; row += 1) {
+    const cells = [];
+    for (let col = 0; col <= bounds.right; col += 1) {
+      const value = each.valueAt(row, col);
+      const text = value === null || value === undefined ? '' : String(value);
+      cells.push(/[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text);
+    }
+    lines.push(cells.join(','));
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 async function exportPdf() {
   sheet.commitEdit();
   const destination = await io.pickToSave(io.withExtension(path ?? 'spreadsheet.grt', 'pdf'), io.FILTERS.pdf, 'Export PDF');
@@ -635,6 +777,20 @@ function wire() {
   el('grid').addEventListener('scroll', () => view.draw(), { passive: true });
   el('grid').addEventListener('mousedown', onGridMouseDown);
   el('grid').addEventListener('dblclick', onGridDoubleClick);
+  // The comment of the cell under the pointer is shown while it stays there.
+  el('grid').addEventListener('mouseover', (event) => {
+    const node = event.target.closest?.('.cell.has-note');
+    const next = node ? { row: Number(node.dataset.row), col: Number(node.dataset.col) } : null;
+    const was = view.hoverNote;
+    if (was?.row === next?.row && was?.col === next?.col) return;
+    view.hoverNote = next;
+    view.draw();
+  });
+  el('grid').addEventListener('mouseleave', () => {
+    if (!view.hoverNote) return;
+    view.hoverNote = null;
+    view.draw();
+  });
 
   el('formula-input').addEventListener('focus', () => sheet.beginEdit());
   el('formula-input').addEventListener('input', (event) => {
@@ -692,6 +848,9 @@ function wire() {
       importCsv: () => importCsv(),
       exportCsv: () => exportCsv(),
       exportPdf: () => exportPdf(),
+      autoRedact: () => autoRedactDialog(),
+      inspect: () => inspectWorkbook(),
+      redactedExport: () => redactedExport(),
       print: () => printSheets(),
       settings: () => openSettings(),
       setPrintArea: () => {
@@ -707,6 +866,33 @@ function wire() {
       saveCopy: () => saveCopy(),
       saveTemplate: () => saveCopy('ots'),
       templates: () => templateManager({ extensions: ['ots', 'xltx', 'xltm'], open: openConfirmed, toast }),
+      everywhere: () => searchEverywhere({ kind: 'grid', open: openConfirmed, toast }),
+      // The text of this sheet's cells, row by row; numbers and formulas are not checked.
+      spelling: () => spellingOverItems({
+        checker: spellChecker,
+        toast,
+        language: () => settings.spellLanguage,
+        setLanguage: (tag) => { settings.spellLanguage = tag; io.writeSettings(settings); },
+        grammar: () => false,
+        items: () => [...sheet.sheet.cells]
+          .filter(([, cell]) => !cell.f && typeof cell.v === 'string')
+          .map(([at, cell]) => ({ key: at, label: `Cell ${a1(...at.split(',').map(Number))}`, text: cell.v }))
+          .sort((x, y) => { const [ar, ac] = x.key.split(',').map(Number); const [br, bc] = y.key.split(',').map(Number); return ar - br || ac - bc; }),
+        show: (issue) => { const [row, col] = issue.item.key.split(',').map(Number); sheet.select(row, col); redraw(); },
+        replace: (key, from, to, text) => {
+          const [row, col] = key.split(',').map(Number);
+          const value = String(sheet.sheet.cells.get(key)?.v ?? '');
+          sheet.record(() => sheet.setCellQuietly(row, col, value.slice(0, from) + text + value.slice(to)));
+          redraw();
+        },
+      }),
+      customize: async () => {
+        const next = await customizeDialog(menus, settings.keyboard);
+        if (!next) return;
+        settings.keyboard = applyShortcuts(menus, next);
+        io.writeSettings(settings);
+        toast('Shortcuts saved');
+      },
       reload: () => { if (path) openConfirmed(path); else toast('This spreadsheet has not been saved yet'); },
       toggleSidebar: () => el('properties').classList.toggle('hidden'),
       functionList: () => functionList(),
@@ -731,9 +917,30 @@ function wire() {
         if (cycled) { input.value = cycled.text; sheet.updateEdit(cycled.text); }
       },
       licences: () => licencesDialog({ name: 'GRT Grid' }),
+      text,
+      properties: () => propertiesDialog(),
     },
   });
+  settings.keyboard = applyShortcuts(menus, settings.keyboard);
   createMenubar(el('menubar'), menus);
+  toolbars = wireToolbars(document.querySelector('.toolbars'), menus);
+  // The cell style list shows each style as it looks, and the selected cells take it while it is pointed at.
+  cellStylePreview = livePreview(el('style-picker'), {
+    look: (id) => {
+      const style = model.styles[id] ?? {};
+      return { fontWeight: style.bold ? '700' : '', fontStyle: style.italic ? 'italic' : '', color: style.color ?? '', backgroundColor: style.bg ?? '' };
+    },
+    preview: (id) => previewCells((node, row, col) => {
+      const style = model.styles[id] ?? {};
+      const value = sheet.sheet.valueAt(row, col);
+      applyLook(node, style, value);
+      if (style.format) node.textContent = formatValue(value, style.format);
+    }),
+    restore: () => view.draw(),
+  });
+  el('zoom-out').onclick = () => { text.setZoom(text.zoom() / 1.25); redraw(); };
+  el('zoom-in').onclick = () => { text.setZoom(text.zoom() * 1.25); redraw(); };
+  el('zoom-label').onclick = () => text.zoomDialog();
   wireFormatBar();
 
   document.addEventListener('keydown', onKey);
@@ -770,6 +977,26 @@ function onGridMouseDown(event) {
   const cell = event.target.closest('.cell');
   if (!cell) return;
   sheet.select(Number(cell.dataset.row), Number(cell.dataset.col), { extend: event.shiftKey });
+  // Ctrl and a click on a linked cell shows where the link goes, and follows it only inside the workbook.
+  if ((event.ctrlKey || event.metaKey) && cell.classList.contains('has-link')) {
+    const href = sheet.linkAt(Number(cell.dataset.row), Number(cell.dataset.col));
+    if (href) showLink(href, cell.textContent, { follow: goToPlace, toast });
+  }
+}
+
+/** Goes to a place a link inside the workbook names: Sheet2.A1, Sheet2!A1, 'My sheet'.B4 or a cell of this sheet. */
+function goToPlace(target) {
+  const match = /^(?:'?(.+?)'?[.!])?\$?([A-Za-z]{1,3})\$?(\d{1,7})(?::.*)?$/.exec(target);
+  if (!match) return toast(`There is no place called ${target} in this workbook`);
+  const [, name, letters, digits] = match;
+  if (name) {
+    const found = model.sheets.find((each) => each.name === name);
+    if (!found) return toast(`There is no sheet called ${name}`);
+    sheet.switchSheet(found.id);
+  }
+  const col = [...letters.toUpperCase()].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+  sheet.select(Number(digits) - 1, col);
+  view.revealActive();
 }
 
 function onGridDoubleClick(event) {
@@ -795,8 +1022,8 @@ function dragChart(event, frame) {
   const start = { x: event.clientX, y: event.clientY, box: view.chartBox(chart) };
   let moved = false;
   const onMove = (e) => {
-    const dx = e.clientX - start.x;
-    const dy = e.clientY - start.y;
+    const dx = (e.clientX - start.x) / text.zoom();
+    const dy = (e.clientY - start.y) / text.zoom();
     if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
     moved = true;
     const node = view.chartNodes.get(id);
@@ -811,8 +1038,8 @@ function dragChart(event, frame) {
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
     if (!moved) return;
-    const dx = e.clientX - start.x;
-    const dy = e.clientY - start.y;
+    const dx = (e.clientX - start.x) / text.zoom();
+    const dy = (e.clientY - start.y) / text.zoom();
     if (resizing) sheet.updateChart(id, { width: Math.round(Math.max(120, start.box.width + dx)), height: Math.round(Math.max(90, start.box.height + dy)) });
     else sheet.updateChart(id, { anchor: view.anchorAt(start.box.x + dx, start.box.y + dy) });
   };
@@ -912,7 +1139,10 @@ function describeCells() {
   const title = top === bottom && left === right ? `Cell ${a1(top, left)}` : `Cells ${a1(top, left)}:${a1(bottom, right)}`;
   return [
     { title, fields: [
-      { label: 'Number format', kind: 'select', value: look.format ?? '', options: formats, apply: (v) => sheet.setNumberFormat(v || null) },
+      { label: 'Number format', kind: 'select', value: look.format ?? '', options: formats, apply: (v) => sheet.setNumberFormat(v || null),
+        // The selected cells show their values in a format while it is pointed at.
+        preview: (format) => previewCells((node, row, col) => { node.textContent = formatValue(sheet.sheet.valueAt(row, col), format || null); }),
+        restore: () => view.draw() },
     ] },
     { title: 'Text', fields: [
       { label: 'Bold', kind: 'checkbox', value: Boolean(look.bold), apply: set('bold'), row: 'marks' },
@@ -999,6 +1229,18 @@ function onKey(event) {
   if (event.key === 'F11') {
     event.preventDefault();
     dialogs.stylesDialog(sheet);
+    return;
+  }
+
+  if (control && !event.altKey && (event.key === ']' || event.key === '[')) {
+    event.preventDefault();
+    text.resize(event.key === ']' ? 1 : -1);
+    return;
+  }
+
+  if (event.shiftKey && !control && event.key === 'F3') {
+    event.preventDefault();
+    text.textCase('cycle');
     return;
   }
 
@@ -1174,6 +1416,38 @@ async function dropChoices() {
 }
 
 let menus = [];
+
+const text = cellText({
+  sheet: () => sheet,
+  settings: () => settings,
+  saveSettings: () => io.writeSettings(settings),
+  redraw: () => view?.draw(),
+  toast: (message) => toast(message),
+});
+
+/** What the document holds, counted; GRT keeps no author or dates in it, so there are none to show. */
+async function propertiesDialog() {
+  let cells = 0;
+  let formulas = 0;
+  for (const s of model.sheets) {
+    for (const cell of s.cells.values()) {
+      if (cell.v !== undefined || cell.f) cells += 1;
+      if (cell.f) formulas += 1;
+    }
+  }
+  const rowsOf = [
+    ['Name', path ? io.baseName(path) : 'Untitled'],
+    ['Location', path ? path.replace(/[/\\][^/\\]*$/, '') : 'Not saved yet'],
+    ['Format', file.format.toUpperCase()],
+    ['Sheets', model.sheets.length],
+    ['Cells with content', cells],
+    ['Formulas', formulas],
+    ['Charts', model.charts.length],
+    ['Pivot tables', model.sheets.reduce((sum, each) => sum + (each.pivots?.length ?? 0), 0)],
+  ];
+  await showChoice('Properties', `<div class="form-grid">${rowsOf.map(([k, v]) => `<span class="label">${escapeHtml(k)}</span><span>${escapeHtml(String(v))}</span>`).join('')}</div>
+    <p class="hint">GRT writes no author, dates or editing time into the file.</p>`, [{ id: 'ok', label: 'Close', primary: true }]);
+}
 
 function commands() {
   return paletteEntries(menus).filter((entry) => entry.enabled());

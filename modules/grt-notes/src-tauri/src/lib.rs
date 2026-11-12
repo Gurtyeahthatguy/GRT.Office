@@ -1,5 +1,6 @@
 //! Rust backend for GRT Notes.
 
+mod history;
 mod index;
 
 use std::fs;
@@ -215,7 +216,10 @@ fn delete_entry(path: String) -> Result<(), String> {
         return fs::remove_dir_all(target).map_err(|e| format!("Cannot remove {path}: {e}"));
     }
 
-    if !matches!(target.extension().and_then(|e| e.to_str()), Some("grt" | "md")) {
+    if !matches!(
+        target.extension().and_then(|e| e.to_str()),
+        Some("grt" | "md")
+    ) {
         return Err("Only notes and folders can be removed".to_string());
     }
 
@@ -243,7 +247,10 @@ fn check_vault(app: AppHandle, path: String) -> Result<String, String> {
     if allowed.iter().any(|root| wanted.starts_with(root)) {
         return Ok(wanted.to_string_lossy().into_owned());
     }
-    let names: Vec<String> = allowed.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let names: Vec<String> = allowed
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     Err(format!(
         "GRT Notes opens vaults kept in {}. This folder is elsewhere, where the program is not allowed to write; move the vault there and open it again.",
         if names.is_empty() { "your Documents or Downloads folder".to_string() } else { names.join(" or ") }
@@ -276,7 +283,9 @@ fn visible(dir: &Path) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = fs::read_dir(dir)
         .map(|read| {
             read.flatten()
-                .filter(|entry| !(entry.file_type().is_ok_and(|t| t.is_symlink()) && entry.path().is_dir()))
+                .filter(|entry| {
+                    !(entry.file_type().is_ok_and(|t| t.is_symlink()) && entry.path().is_dir())
+                })
                 .map(|entry| entry.path())
                 .collect()
         })
@@ -307,8 +316,13 @@ fn nested_sections(top: &Path, dir: &Path, depth: usize, out: &mut Vec<serde_jso
             .strip_prefix(top)
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
-        let pages: Vec<serde_json::Value> = visible(&child).iter().filter_map(|p| markdown_entry(p)).collect();
-        out.push(serde_json::json!({ "name": name, "path": child.to_string_lossy(), "pages": pages }));
+        let pages: Vec<serde_json::Value> = visible(&child)
+            .iter()
+            .filter_map(|p| markdown_entry(p))
+            .collect();
+        out.push(
+            serde_json::json!({ "name": name, "path": child.to_string_lossy(), "pages": pages }),
+        );
         nested_sections(top, &child, depth + 1, out);
     }
 }
@@ -381,7 +395,11 @@ fn read_resource(path: String, name: String, password: Option<String>) -> Result
 }
 
 #[tauri::command(async)]
-fn write_grt(path: String, parts: serde_json::Value, password: Option<String>) -> Result<(), String> {
+fn write_grt(
+    path: String,
+    parts: serde_json::Value,
+    password: Option<String>,
+) -> Result<(), String> {
     let map = parts
         .as_object()
         .ok_or_else(|| "Document parts must be an object".to_string())?;
@@ -408,6 +426,112 @@ fn write_grt(path: String, parts: serde_json::Value, password: Option<String>) -
         fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
     }
     atomic_write(target, &bytes)
+}
+
+// Earlier versions of notes.
+
+fn history_data(app: &AppHandle) -> Result<PathBuf, String> {
+    if is_ephemeral() {
+        return Err("Nothing is kept in ephemeral mode".to_string());
+    }
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("No data directory available: {e}"))
+}
+
+/// Keeps a version of a note, sealed with its notebook's password when it has one; false when one was kept moments ago.
+#[tauri::command(async)]
+fn history_save(
+    app: AppHandle,
+    notebook: String,
+    note: String,
+    parts: serde_json::Value,
+    password: Option<String>,
+    force: bool,
+) -> Result<bool, String> {
+    let dir = history::note_dir(&history_data(&app)?, &notebook, &note)?;
+    let map = parts
+        .as_object()
+        .ok_or_else(|| "Document parts must be an object".to_string())?;
+    let mut entries = vec![grt_container::Entry::new(
+        grt_container::README_NAME,
+        grt_container::README_TEXT.as_bytes().to_vec(),
+    )];
+    for (name, value) in map {
+        let text = value
+            .as_str()
+            .ok_or_else(|| format!("Part {name} is not text"))?;
+        entries.push(grt_container::Entry::new(
+            name.clone(),
+            text.as_bytes().to_vec(),
+        ));
+    }
+    let bytes = grt_app::package::seal_document(entries, password.as_deref())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as u64;
+    history::keep(&dir, now, &bytes, force, atomic_write)
+}
+
+#[tauri::command]
+fn history_list(
+    app: AppHandle,
+    notebook: String,
+    note: String,
+) -> Result<serde_json::Value, String> {
+    let dir = history::note_dir(&history_data(&app)?, &notebook, &note)?;
+    Ok(serde_json::json!(history::list(&dir)
+        .into_iter()
+        .map(|(id, size)| serde_json::json!({ "id": id.to_string(), "size": size }))
+        .collect::<Vec<_>>()))
+}
+
+#[tauri::command(async)]
+fn history_read(
+    app: AppHandle,
+    notebook: String,
+    note: String,
+    id: String,
+    password: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let path = history::version_path(
+        &history::note_dir(&history_data(&app)?, &notebook, &note)?,
+        &id,
+    )?;
+    read_grt(path.to_string_lossy().to_string(), password)
+}
+
+/// Moves a note's versions with it, or drops them when it goes where none are kept.
+#[tauri::command]
+fn history_move(app: AppHandle, from: [String; 2], to: Option<[String; 2]>) -> Result<(), String> {
+    let data = history_data(&app)?;
+    let source = history::note_dir(&data, &from[0], &from[1])?;
+    let Some(to) = to else {
+        return history::remove(&source);
+    };
+    let target = history::note_dir(&data, &to[0], &to[1])?;
+    if !source.exists() || source == target {
+        return Ok(());
+    }
+    history::remove(&target)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Cannot create the history folder: {e}"))?;
+    }
+    fs::rename(&source, &target).map_err(|e| format!("Cannot move the history: {e}"))
+}
+
+/// Forgets the versions of one notebook, or of every note when none is named.
+#[tauri::command]
+fn history_forget(app: AppHandle, notebook: Option<String>) -> Result<(), String> {
+    let data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("No data directory available: {e}"))?;
+    match notebook {
+        Some(key) => history::remove(&history::notebook_dir(&data, &key)?),
+        None => history::remove(&history::root_in(&data)),
+    }
 }
 
 // Search.
@@ -499,8 +623,8 @@ fn index_dump(app: AppHandle, state: State<'_, Index>) -> Result<serde_json::Val
     let rows = with_index(&app, &state, index::dump)?;
     Ok(serde_json::json!(rows
         .into_iter()
-        .map(|(path, title, body)| serde_json::json!({
-            "path": path, "title": title, "body": body,
+        .map(|(path, title, body, tags)| serde_json::json!({
+            "path": path, "title": title, "body": body, "tags": tags,
         }))
         .collect::<Vec<_>>()))
 }
@@ -578,6 +702,7 @@ fn forget_settings(app: AppHandle, state: State<'_, Index>) -> Result<(), String
 
     if let Ok(dir) = app.path().app_data_dir() {
         let _ = fs::remove_file(index::path_in(&dir));
+        history::remove(&history::root_in(&dir))?;
     }
 
     Ok(())
@@ -638,12 +763,25 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(grt_app::setup)
         .manage(grt_app::CloseGuard::default())
         .manage(grt_app::Recovery::default())
         .on_window_event(grt_app::on_window_event)
         .manage(Index::default())
         .plugin(tauri_plugin_dialog::init())
+        .manage(grt_app::everywhere::Everywhere::default())
+        .manage(grt_app::spelling::Spelling::default())
         .invoke_handler(tauri::generate_handler![
+            grt_app::spelling::spell_check,
+            grt_app::spelling::spell_suggest,
+            grt_app::spelling::spell_languages,
+            grt_app::spelling::spell_added,
+            grt_app::spelling::spell_add,
+            grt_app::spelling::spell_remove,
+            grt_app::everywhere::everywhere_folder,
+            grt_app::everywhere::everywhere_search,
+            grt_app::everywhere::everywhere_search_locked,
+            grt_app::everywhere::everywhere_forget,
             grt_app::commands::set_close_guard,
             grt_app::commands::close_ack,
             grt_app::commands::close_window,
@@ -669,6 +807,11 @@ pub fn run() {
             index_search,
             index_dump,
             index_forget,
+            history_save,
+            history_list,
+            history_read,
+            history_move,
+            history_forget,
             runtime_info,
             read_settings,
             write_settings,
@@ -707,9 +850,25 @@ mod tests {
         {
             let connection = index::open(Some(&path)).unwrap();
             for i in 0..50 {
-                index::upsert(&connection, &format!("/n/{i}.grt"), "filler", "", &"ordinary words ".repeat(40), 1).unwrap();
+                index::upsert(
+                    &connection,
+                    &format!("/n/{i}.grt"),
+                    "filler",
+                    "",
+                    &"ordinary words ".repeat(40),
+                    1,
+                )
+                .unwrap();
             }
-            index::upsert(&connection, "/secret.grt", "Diagnosi", "", "zebrafishsecret medical results", 1).unwrap();
+            index::upsert(
+                &connection,
+                "/secret.grt",
+                "Diagnosi",
+                "",
+                "zebrafishsecret medical results",
+                1,
+            )
+            .unwrap();
             index::remove(&connection, "/secret.grt").unwrap();
             index::purge(&connection).unwrap();
         }

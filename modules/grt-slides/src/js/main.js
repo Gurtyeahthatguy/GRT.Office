@@ -1,12 +1,24 @@
 /** Application wiring. */
 
+import { inspect } from './core/inspector.js';
+import { slideFindings, cleanSlidesCopy } from './inspect.js';
+import { autoRedactSlides, redactedPresentation, toggleCells, redactedCount } from './redact.js';
+import { SENSITIVE_KINDS } from './core/sensitive.js';
+import { searchPattern } from './core/find.js';
 import { SlidesModel, FONTS, PRESETS, TRANSITIONS, ALIGNMENTS, LAYOUTS as SLIDE_LAYOUTS } from './model.js';
 import { createProperties } from './core/properties.js';
 import { Renderer } from './render.js';
 import { Interaction } from './interaction.js';
 import { Thumbnails } from './thumbnails.js';
 import { Presentation } from './present.js';
-import { runsToHtml, htmlToRuns, toggleFormat } from './text.js';
+import { editMarkup, readEdit, parasFor } from './paragraphs.js';
+import { textTools } from './text-tools.js';
+import { tableTools } from './table-tools.js';
+import { mergeAt } from './tables.js';
+import { findTools } from './find-tools.js';
+import { commentTools } from './comment-tools.js';
+import { showLink } from './core/honest-links.js';
+import { textLook } from './export.js';
 import { editInPlace } from './editing.js';
 import { toHtml, slideToSvg, slideToPrintPage } from './export.js';
 import { describeFont, fontMediaType } from './fonts.js';
@@ -21,6 +33,14 @@ import { openPalette, isPaletteOpen } from './core/palette.js';
 import { createMenubar, paletteEntries } from './core/menubar.js';
 import { aboutDialog, licencesDialog } from './core/about.js';
 import { templateManager } from './core/template-manager.js';
+import { searchEverywhere } from './core/everywhere.js';
+import { applyShortcuts, customizeDialog } from './core/customize.js';
+import { wireToolbars } from './core/toolbar.js';
+import { createStatusBar } from './core/statusbar.js';
+import { NAMES as LANGUAGE_NAMES } from './core/language.js';
+import { createSpellChecker } from './core/spelling.js';
+import { spellingOverItems } from './core/spelling-items.js';
+import { applyEdits } from './core/autocorrect.js';
 import { slidesMenus } from './menus.js';
 import { THEMES } from './core/theme.js';
 import { Keeper, MODES } from './core/keeper.js';
@@ -112,10 +132,13 @@ async function guard(label, action) {
 
 // Drawing
 
+let commentsHidden = false;
+
 function draw() {
-  renderer.draw(model, currentSlideId, interaction.selection, interaction.extras, images);
+  renderer.draw(model, currentSlideId, interaction.selection, { ...interaction.extras, hideComments: commentsHidden }, images);
   thumbs.draw(model, currentSlideId, images);
   el('notes').value = model.slide(currentSlideId)?.notes ?? '';
+  tables.mark();
   refresh();
 }
 
@@ -129,13 +152,14 @@ function refresh() {
     el(id).disabled = selected === 0;
   }
 
-  const index = model.slides.findIndex((s) => s.id === currentSlideId);
-  const parts = [`Slide ${index + 1} of ${model.slides.length}`];
-  if (selected > 0) parts.push(`${selected} selected`);
-  if (model.dirty) parts.push('unsaved changes');
-  el('status').textContent = parts.join(' • ');
+  toolbars?.refresh();
+  statusbar?.refresh();
   properties?.refresh();
 }
+
+/** The toolbars and the status bar, made once the menus exist. */
+let toolbars = null;
+let statusbar = null;
 
 // The properties sidebar
 
@@ -204,9 +228,13 @@ function selectSlide(id) {
   broadcastIndex();
 }
 
+/** A change as one step to undo; a change that says false made none, and leaves no step. */
 function change(mutate) {
   const before = model.snapshot();
-  mutate();
+  if (mutate() === false) {
+    model.restore(before);
+    return;
+  }
   interaction.onCommit(before);
   draw();
 }
@@ -225,19 +253,20 @@ function editText(id) {
 
   const before = model.snapshot();
 
-  editInPlace(node, {
+  const finish = editInPlace(node, {
     className: 'editing',
     selectAll: true,
     // A box nobody has typed in yet is replaced by what is typed.
     replace: element.content.map((run) => run.text).join('') === NEW_TEXT,
-    seed: () => { node.innerHTML = runsToHtml(element.content); },
-    read: () => htmlToRuns(node),
-    changed: (runs) => JSON.stringify(runs) !== JSON.stringify(element.content),
-    commit: (runs) => {
-      model.setContent(currentSlideId, id, runs);
+    seed: () => { node.innerHTML = editMarkup(element); },
+    read: () => readEdit(node),
+    changed: (value) => JSON.stringify(value.content) !== JSON.stringify(element.content)
+      || JSON.stringify(value.paras) !== JSON.stringify(parasFor(element)),
+    commit: (value) => {
+      model.setContent(currentSlideId, id, value.content, value.paras);
       interaction.onCommit(before);
     },
-    after: () => draw(),
+    after: () => { activeEdit = null; draw(); },
     keys: (event, finish) => {
       // Enter belongs to the paragraph being typed, so committing needs the
       // modifier; a text box is the one place in the program where a plain
@@ -247,15 +276,169 @@ function editText(id) {
         finish(true);
         return true;
       }
-      if ((event.ctrlKey || event.metaKey) && 'biu'.includes(event.key.toLowerCase())) {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && 'biu'.includes(event.key.toLowerCase())) {
         event.preventDefault();
-        toggleFormat({ b: 'bold', i: 'italic', u: 'underline' }[event.key.toLowerCase()]);
+        text.mark({ b: 'bold', i: 'italic', u: 'underline' }[event.key.toLowerCase()]);
         return true;
       }
-      return false;
+      // The shortcuts of the Format menu work inside the box too; the others wait until the edit is done.
+      return menubar.shortcut(event, (item) => formatItems.has(item));
     },
   });
+  activeEdit = { node, id, finish };
 }
+
+/** The text box being edited, if one is. */
+let activeEdit = null;
+
+// The buttons follow the caret in the box being edited, and the keys that format it.
+for (const kind of ['selectionchange', 'keyup']) document.addEventListener(kind, () => { if (activeEdit) toolbars?.refresh(); });
+
+const text = textTools({
+  model: () => model,
+  slideId: () => currentSlideId,
+  editing: () => activeEdit,
+  chosen: () => [...interaction.selection].map((id) => model.element(currentSlideId, id)).filter(Boolean),
+  change: (mutate) => change(mutate),
+  toast: (message) => toast(message),
+  baseSize: (element) => textLook(element, model).size,
+});
+
+const tables = tableTools({
+  model: () => model,
+  slideId: () => currentSlideId,
+  chosen: () => [...interaction.selection].map((id) => model.element(currentSlideId, id)).filter(Boolean),
+  change: (mutate) => change(mutate),
+  toast: (message) => toast(message),
+  surface,
+  select: (ids) => { interaction.selection = new Set(ids); draw(); },
+  size: (element) => textLook(element, model).size,
+});
+/** Spelling with GRT's own dictionaries. */
+const spellChecker = createSpellChecker();
+
+const finder = findTools({
+  model: () => model,
+  slideId: () => currentSlideId,
+  goTo: (id) => selectSlide(id),
+  select: (ids) => { interaction.selection = new Set(ids); draw(); },
+  surface,
+  change: (mutate) => change(mutate),
+  toast: (message) => toast(message),
+  chooseCell: (id, row, col) => tables.choose(id, row, col),
+});
+
+const notesOnSlides = commentTools({
+  model: () => model,
+  slideId: () => currentSlideId,
+  chosen: () => [...interaction.selection].map((id) => model.element(currentSlideId, id)).filter(Boolean),
+  change: (mutate) => change(mutate),
+  file: () => ({
+    name: model.path ? baseName(model.path) : 'Untitled',
+    location: model.path ? model.path.replace(/[/\\][^/\\]*$/, '') : 'Not saved yet',
+    format: file.format,
+  }),
+});
+
+// A comment's mark opens it, before the press can select or move anything.
+surface.addEventListener('mousedown', (event) => {
+  const mark = event.target.closest?.('.comment-mark');
+  if (!mark) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  guard('Comment', () => notesOnSlides.open(mark.dataset.comment));
+}, true);
+
+/** Tools, Redact: selected text in a box being edited, or the chosen cells of a table, are marked to be covered. */
+function redactChosen() {
+  if (activeEdit) return text.mark('redact');
+  const table = [...interaction.selection].map((id) => model.element(currentSlideId, id)).find((e) => e?.kind === 'table');
+  if (table && tables.cells?.id === table.id) {
+    const { anchor, focus } = tables.cells;
+    const area = { top: Math.min(anchor.row, focus.row), bottom: Math.max(anchor.row, focus.row), left: Math.min(anchor.col, focus.col), right: Math.max(anchor.col, focus.col) };
+    change(() => model.changeTable(currentSlideId, table.id, (live) => toggleCells(live, area)));
+    return;
+  }
+  toast('Select text in a box, or cells of a table, to cover');
+}
+
+async function autoRedactDialog() {
+  const checks = Object.entries(SENSITIVE_KINDS).map(([key, label]) => `<div class="setting"><span class="label">${escapeHtml(label)}</span><input type="checkbox" data-field="k-${key}" checked /></div>`).join('');
+  const confirmed = await showPanel('Auto-Redact', `${checks}
+    <div class="form-grid"><label for="ar-words">Words of your own, one a line</label><textarea id="ar-words" data-field="words" rows="3"></textarea></div>
+    <p class="fp-note">The finder runs here, on this computer, over every slide. Speaker notes never go into the redacted copy.</p>`, 'Mark');
+  if (!confirmed) return;
+  const f = readFields();
+  const kinds = Object.keys(SENSITIVE_KINDS).filter((key) => f[`k-${key}`]);
+  const words = String(f.words ?? '').split('\n').map((w) => w.trim()).filter(Boolean).slice(0, 200);
+  const extra = words.length ? [searchPattern(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), { regex: true })] : [];
+  let count = 0;
+  change(() => {
+    count = autoRedactSlides(model, kinds, extra);
+    return count > 0;
+  });
+  toast(count ? `${count} stretch(es) or cell(s) marked; File, Redacted Export makes the copy to share` : 'Nothing found to cover');
+}
+
+/** File, Inspect Document: what the presentation carries, and a clean copy without what is ticked. */
+async function inspectPresentation() {
+  if (activeEdit) activeEdit.finish(true);
+  const out = await inspect(slideFindings(model), { toast });
+  if (!out) return;
+  const confirmed = await showPanel('Clean copy', `
+    <div class="form-grid"><label for="ic-format">Format</label>
+    <select id="ic-format" data-field="format"><option value="odp">OpenDocument presentation (.odp)</option><option value="pptx">PowerPoint (.pptx)</option><option value="pdf">PDF</option></select></div>`, 'Choose file');
+  if (!confirmed) return;
+  const { format } = readFields();
+  const base = model.path ? model.path.replace(/(\.[^./\\]+)?$/, '-clean') : 'presentation-clean';
+  const path = await pickToSave(withExtension(base, format), FILTERS[format], 'Write the clean copy to');
+  if (!path) return;
+  const copy = cleanSlidesCopy(model, out);
+  if (format === 'pdf') {
+    const shared = new SlidesModel(copy);
+    const pages = await Promise.all(shared.slides.map((slide) => renderToPdf(slideToPrintPage(shared, slide.id, imageBytes), { audit: false, report: { replaced: 0 } })));
+    await writeBytes(path, await mergePdfPages(pages));
+  } else {
+    const { entries } = format === 'odp' ? writeOdp(copy, imageBytes) : writePptx(copy, imageBytes);
+    await writePackage(path, entries, {});
+  }
+  toast(`Wrote the clean copy as ${baseName(path)}`);
+}
+
+async function redactedExport() {
+  const count = redactedCount(model);
+  if (count === 0) return toast('Nothing is marked to be covered: use Tools, Redact or Auto-Redact first');
+  const confirmed = await showPanel('Redacted export', `
+    <div class="form-grid"><label for="rx-format">Format</label>
+    <select id="rx-format" data-field="format"><option value="pdf">PDF</option><option value="odp">OpenDocument presentation (.odp)</option><option value="pptx">PowerPoint (.pptx)</option></select></div>
+    <p class="fp-note">Covered text and cells become black blocks of the same length every time. Speaker notes and comments are left out of the copy. This presentation is not changed.</p>`, 'Choose file');
+  if (!confirmed) return;
+  const { format } = readFields();
+  const base = model.path ? model.path.replace(/(\.[^./\\]+)?$/, '-redacted') : 'presentation-redacted';
+  const path = await pickToSave(withExtension(base, format), FILTERS[format], 'Export the redacted copy to');
+  if (!path) return;
+  const copy = redactedPresentation(model.toJSON());
+  if (format === 'pdf') {
+    const shared = new SlidesModel(copy);
+    const pages = await Promise.all(shared.slides.map((slide) => renderToPdf(slideToPrintPage(shared, slide.id, imageBytes), { audit: false, report: { replaced: 0 } })));
+    await writeBytes(path, await mergePdfPages(pages));
+  } else {
+    const { entries } = format === 'odp' ? writeOdp(copy, imageBytes) : writePptx(copy, imageBytes);
+    await writePackage(path, entries, {});
+  }
+  toast(`Exported the redacted copy as ${baseName(path)}`);
+}
+
+// Ctrl and a click on a link shows where it goes; nothing on a slide is followed by itself.
+surface.addEventListener('click', (event) => {
+  const link = event.target.closest?.('.text-link');
+  if (!link || !(event.ctrlKey || event.metaKey) || event.target.closest('.editing')) return;
+  event.preventDefault();
+  showLink(link.dataset.href ?? '', link.textContent, { toast });
+});
+
+// After the selection has taken the table, a press on one of its cells chooses that cell.
+surface.addEventListener('mousedown', (event) => setTimeout(() => tables.press(event), 0));
 
 // Editing commands
 
@@ -420,9 +603,10 @@ function editCell(elementId, row, col) {
   const element = model.element(currentSlideId, elementId);
   if (!element || element.kind !== 'table') return;
 
-  const cell = surface.querySelector(
-    `[data-id="${elementId}"] tr:nth-child(${row + 1}) td:nth-child(${col + 1})`,
-  );
+  // A cell under a merge is edited in the block's first cell, which holds the text.
+  const merge = mergeAt(element, row, col);
+  if (merge) [row, col] = [merge.top, merge.left];
+  const cell = surface.querySelector(`[data-id="${CSS.escape(elementId)}"] td[data-row="${row}"][data-col="${col}"]`);
   if (!cell) return;
 
   const before = model.snapshot();
@@ -480,12 +664,7 @@ async function editTable() {
       <span class="label">First row is a heading</span>
       <input type="checkbox" data-field="header" ${element.header ? 'checked' : ''} />
     </div>
-    <p class="fp-note">
-      A static grid: rows, columns and text. Merged cells and per-cell
-      formatting are deliberately absent: tables in slides are almost always
-      three rows by two columns, and the full version costs a second model and
-      a second way of editing for a case that rarely arrives.
-    </p>`, 'Apply');
+    <p class="fp-note">Rows and columns come and go at the end. Format, Table puts them in where the chosen cells are, merges cells and fits sizes to the text.</p>`, 'Apply');
   if (!confirmed) return;
 
   const fields = readFields();
@@ -1279,6 +1458,8 @@ const menus = slidesMenus({
     masterObjects: () => !model.slide(currentSlideId)?.hideMaster,
   },
   a: {
+    text,
+    palette: () => openPalette(commands()),
     newFile: () => guard('New', newDocumentConfirmed),
     open: () => el('btn-open').click(),
     save: () => guard('Save', () => save(false)),
@@ -1286,6 +1467,46 @@ const menus = slidesMenus({
     saveCopy: () => guard('Save', () => saveCopy()),
     saveTemplate: () => guard('Save', () => saveCopy('otp')),
     templates: () => templateManager({ extensions: ['otp', 'potx', 'potm'], open: openConfirmed, toast }),
+    everywhere: () => searchEverywhere({ kind: 'slides', open: openConfirmed, toast }),
+    spelling: () => spellingOverItems({
+      checker: spellChecker,
+      toast,
+      language: () => settings().spellLanguage,
+      setLanguage: (tag) => updateSettings({ spellLanguage: tag }),
+      grammar: () => true,
+      // Boxes, table cells and notes, slide after slide, as Find goes through them.
+      items: () => model.slides.flatMap((slide, n) => [
+        ...(slide.elements ?? []).flatMap((element) => (element.kind === 'text'
+          ? [{ key: `t|${slide.id}|${element.id}`, label: `Slide ${n + 1}`, text: (element.content ?? []).map((r) => r.text).join('') }]
+          : element.kind === 'table'
+            ? element.cells.flatMap((row, r) => row.map((cell, c) => ({ key: `c|${slide.id}|${element.id}|${r}|${c}`, label: `Slide ${n + 1}, table`, text: String(cell ?? '') })))
+            : [])),
+        { key: `n|${slide.id}`, label: `Slide ${n + 1}, notes`, text: slide.notes ?? '' },
+      ]),
+      show: (issue) => {
+        const [kind, slideId, id, row, col] = issue.item.key.split('|');
+        finder.show({ kind: { t: 'text', c: 'cell', n: 'notes' }[kind], slideId, id, row: Number(row), col: Number(col), from: issue.from, to: issue.to });
+      },
+      replace: (key, from, to, text) => {
+        const [kind, slideId, id, row, col] = key.split('|');
+        change(() => {
+          const slide = model.slides.find((s) => s.id === slideId);
+          if (kind === 'n') model.setNotes(slideId, (slide.notes ?? '').slice(0, from) + text + (slide.notes ?? '').slice(to));
+          const element = slide?.elements?.find((e) => e.id === id);
+          if (kind === 't' && element) model.setContent(slideId, id, applyEdits(element.content ?? [], [{ from, to, text }]), element.paras ?? null);
+          if (kind === 'c' && element) {
+            const cell = String(element.cells[Number(row)][Number(col)] ?? '');
+            model.setCell(slideId, id, Number(row), Number(col), cell.slice(0, from) + text + cell.slice(to));
+          }
+        });
+      },
+    }),
+    customize: async () => {
+      const next = await customizeDialog(menus, settings().keyboard);
+      if (!next) return;
+      const stored = await updateSettings({ keyboard: applyShortcuts(menus, next) });
+      toast(stored ? 'Shortcuts saved' : 'Shortcuts changed for this session only');
+    },
     reload: () => { if (model.path) guard('Reload', () => openConfirmed(model.path)); else toast('This presentation has not been saved yet'); },
     exportDocument: () => guard('Export', exportDocument),
     print: () => guard('Print', printDeck),
@@ -1308,6 +1529,15 @@ const menus = slidesMenus({
     design: () => guard('Design', openDesign),
     elementLook: () => guard('Look', openElementLook),
     editTable: () => guard('Table', editTable),
+    table: tables,
+    finder,
+    comments: notesOnSlides,
+    redact: () => redactChosen(),
+    inspect: () => guard('Inspect', inspectPresentation),
+    autoRedact: () => guard('Auto-Redact', autoRedactDialog),
+    redactedExport: () => guard('Export', redactedExport),
+    toggleComments: () => { commentsHidden = !commentsHidden; draw(); },
+    commentsShown: () => !commentsHidden,
     addFont: () => guard('Font', addFont),
     addSlide: () => addSlide(),
     duplicateSlide: () => duplicateSlide(),
@@ -1326,7 +1556,27 @@ const menus = slidesMenus({
     licences: () => licencesDialog({ name: 'GRT Slides' }),
   },
 });
-createMenubar(el('menubar'), menus);
+const menubar = createMenubar(el('menubar'), menus);
+toolbars = wireToolbars(document.querySelector('.toolbars'), menus);
+statusbar = createStatusBar(el('statusbar'), [
+  { key: 'slide', title: 'The slide in front of you', text: () => `Slide ${Math.max(1, model.slides.findIndex((x) => x.id === currentSlideId) + 1)} of ${model.slides.length}` },
+  { key: 'selected', title: 'What is selected', text: () => (interaction.selection?.size ? `${interaction.selection.size} selected` : '') },
+  { key: 'master', title: 'The slide master', text: () => { const id = model.slide(currentSlideId)?.master; return (id && model.master(id)?.name) || 'Default'; } },
+  { key: 'language', title: 'The language Spelling starts with', text: () => LANGUAGE_NAMES.get(settings().spellLanguage) ?? settings().spellLanguage ?? '' },
+  { key: 'modified', title: 'The presentation has changes not yet saved', text: () => (model.dirty ? 'Unsaved changes' : ''), grow: true },
+]);
+// A click on the menus may collapse the selection in the box being edited, so it is taken first.
+el('menubar').addEventListener('mousedown', () => text.remember(), true);
+
+/** The items of the Format menu, inside its submenus too. */
+const formatItems = new Set();
+(function collect(items) {
+  for (const item of items) {
+    if (item === 'separator') continue;
+    if (item.items) collect(item.items);
+    else formatItems.add(item);
+  }
+}(menus.find((m) => m.label === 'Format').items));
 
 function commands() {
   const entry = (label, hint, run) => ({ id: label, label, hint, run });
@@ -1553,6 +1803,7 @@ window.addEventListener('resize', () => {
   const info = await runtimeInfo();
   await loadSettings(info.ephemeral);
   applySettings();
+  applyShortcuts(menus, settings().keyboard);
 
   if (info.ephemeral) el('ephemeral-note').classList.remove('hidden');
 

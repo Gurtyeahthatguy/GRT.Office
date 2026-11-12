@@ -36,9 +36,9 @@ export function formatDate({ year, month, day }) {
   return `${pad(year, 4)}-${pad(month)}-${pad(day)}`;
 }
 
-/** `YYYY-MM-DD` to `{year, month, day}`. */
+/** `YYYY-MM-DD` to `{year, month, day}`; a year past 9999, which arithmetic can reach, has more digits. */
 export function parseDate(iso) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso));
+  const match = /^(-?\d{4,})-(\d{2})-(\d{2})$/.exec(String(iso));
   if (!match) throw new Error(`Not a date: ${iso}`);
   return { year: +match[1], month: +match[2], day: +match[3] };
 }
@@ -87,6 +87,13 @@ export function daysInMonth(year, month) {
 export function weekday(iso) {
   const n = dayNumber(iso);
   return ((n + 4) % 7 + 7) % 7;
+}
+
+/** The ISO 8601 week number: weeks start on Monday, and week 1 holds the year's first Thursday. */
+export function isoWeek(iso) {
+  const thursday = addDays(iso, 3 - ((weekday(iso) + 6) % 7));
+  const { year } = parseDate(thursday);
+  return Math.floor((dayNumber(thursday) - dayNumber(formatDate({ year, month: 1, day: 1 }))) / 7) + 1;
 }
 
 /** The first day of the week containing `iso`. */

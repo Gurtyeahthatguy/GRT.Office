@@ -1,5 +1,6 @@
 /** Application wiring. */
 
+import { comparePdfs } from './compare.js';
 import { DocumentModel } from './document-model.js';
 import { Viewer } from './viewer.js';
 import { Thumbnails } from './thumbnails.js';
@@ -16,7 +17,7 @@ import { openPalette, isPaletteOpen } from './core/palette.js';
 import { printPreview, isPrintPreviewOpen } from './core/print.js';
 import { PAGE_SIZES } from './core/editor/model.js';
 import { pageRenderer, printablePages } from './printing.js';
-import { escapeHtml } from './core/panel.js';
+import { escapeHtml, showChoice } from './core/panel.js';
 import { readPackage, writePackage } from './core/package.js';
 import { withPassword, passwordFields, wirePasswordFields, passwordFrom } from './core/protection.js';
 import {
@@ -218,6 +219,19 @@ function updatePageIndicator() {
     `Page ${viewer.currentPage + 1} of ${model.visibleCount}${suffix}`;
 }
 
+// A click on the page number asks for a page, as LibreOffice's status bar does.
+ui.pageIndicator.addEventListener('click', () => guard('Go to page', goToPage));
+ui.pageIndicator.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); guard('Go to page', goToPage); }
+});
+
+// Ctrl and the wheel zoom, as in every viewer; the plain wheel still scrolls.
+ui.pages.addEventListener('wheel', (event) => {
+  if (!(event.ctrlKey || event.metaKey) || !model) return;
+  event.preventDefault();
+  guard('Zoom', () => zoomBy(event.deltaY < 0 ? 1.1 : 1 / 1.1));
+}, { passive: false });
+
 viewer.onPageChange = (viewIndex) => {
   thumbs.setCurrent(viewIndex);
   updatePageIndicator();
@@ -329,6 +343,43 @@ function cropPages() {
 }
 
 // Zoom
+
+/** Shows a page by its number, as Ctrl+G does in LibreOffice. */
+async function goToPage() {
+  if (!model) return;
+  const count = model.visibleCount;
+  const form = `<div class="form-grid">
+      <label for="goto-page">Page (1 to ${count})</label>
+      <input id="goto-page" type="number" data-field="page" min="1" max="${count}" step="1" value="${viewer.currentPage + 1}" />
+    </div>`;
+  if (!(await showPanel('Go to page', form, 'Go'))) return;
+  const page = Math.round(readFields().page);
+  if (!Number.isFinite(page) || page < 1 || page > count) {
+    toast(`There is no page ${page}; this document has ${count}`);
+    return;
+  }
+  viewer.scrollToPage(page - 1);
+}
+
+/** Moves to another page: by a step, or to the first or the last. */
+function turnPage(to) {
+  if (!model) return;
+  const last = model.visibleCount - 1;
+  const target = to === 'first' ? 0 : to === 'last' ? last : Math.max(0, Math.min(last, viewer.currentPage + to));
+  viewer.scrollToPage(target);
+}
+
+// Zoom steps wait for the page to be drawn, so a fast wheel does not queue a long line of them.
+let zooming = false;
+async function zoomBy(factor) {
+  if (!model || zooming) return;
+  zooming = true;
+  try {
+    await setZoom(Math.max(0.25, Math.min(6, viewer.scale * factor)));
+  } finally {
+    zooming = false;
+  }
+}
 
 async function setZoom(scale) {
   await viewer.setScale(scale, model);
@@ -651,6 +702,38 @@ async function printDocument() {
   }
 }
 
+/** Compares the PDF open with another, page by page: words gained and lost, and how much of each drawing differs. */
+async function compareWithPdf() {
+  const path = await pickPdfToOpen('Compare with another PDF');
+  if (!path) return;
+  const other = await readFileBytes(path);
+  toast('Comparing…');
+  const { pages, truncated } = await comparePdfs(model.originalBytes, other);
+  const differing = pages.filter((p) => p.only || p.added || p.removed || p.drawn > 0.002);
+  const context = (list) => {
+    // Each change with a few words around it, the rest left out.
+    const keep = new Set();
+    list.forEach((w, i) => { if (w.kind !== 'same') for (let k = i - 4; k <= i + 4; k += 1) keep.add(k); });
+    let html = '';
+    let gap = false;
+    list.forEach((w, i) => {
+      if (!keep.has(i)) { gap = true; return; }
+      if (gap && html) html += ' … ';
+      gap = false;
+      const word = escapeHtml(w.word);
+      html += w.kind === 'added' ? ` <ins>${word}</ins>` : w.kind === 'removed' ? ` <del>${word}</del>` : ` ${word}`;
+    });
+    return html;
+  };
+  const rows = differing.slice(0, 200).map((p) => `<div class="compare-page"><strong>Page ${p.number}</strong>: ${
+    p.only === 'first' ? 'only in this PDF' : p.only === 'second' ? `only in ${escapeHtml(baseName(path))}`
+      : `${p.added} word(s) added, ${p.removed} taken away${p.drawn > 0.002 ? `, ${(p.drawn * 100).toFixed(1)}% of the drawing differs` : ''}`}
+    ${p.words && (p.added || p.removed) ? `<p class="compare-words">${context(p.words)}</p>` : ''}</div>`).join('');
+  await showChoice('Compare PDFs', differing.length
+    ? `<p>${pages.length - differing.length} page(s) the same, ${differing.length} different${truncated ? '; only the first 2000 pages were compared' : ''}.</p><div class="compare-list">${rows}</div>`
+    : `<p>The ${pages.length} page(s) are the same, in their words and their drawing.</p>`, [{ id: 'ok', label: 'Close', primary: true }]);
+}
+
 function commands() {
   const entry = (label, hint, run) => ({ id: label, label, hint, run });
   const needsDoc = (label, hint, run) => entry(label, hint, () => {
@@ -672,6 +755,7 @@ function commands() {
     needsDoc('Extract selected pages…', '', () => extract()),
     needsDoc('Save a smaller copy…', 'Compress', () => saveSmaller()),
     needsDoc('Fingerprint', '', () => showFingerprint()),
+    needsDoc('Compare with another PDF…', 'Compare', () => guard('Compare', compareWithPdf)),
     needsDoc('Print…', 'Ctrl+P', () => guard('Print', printDocument)),
 
     needsDoc('Rotate left', '', () => rotate(-90)),
@@ -687,7 +771,12 @@ function commands() {
     needsDoc('Watermark and page numbers…', '', () => editStamp()),
     needsDoc('Metadata to write…', '', () => editMetadata()),
 
-    needsDoc('Fit page width', '', () => zoomToFit()),
+    needsDoc('Go to page…', 'Ctrl+G', () => guard('Go to page', goToPage)),
+    needsDoc('First page', 'Home', () => turnPage('first')),
+    needsDoc('Last page', 'End', () => turnPage('last')),
+    needsDoc('Zoom in', 'Ctrl++', () => guard('Zoom', () => zoomBy(1.25))),
+    needsDoc('Zoom out', 'Ctrl+-', () => guard('Zoom', () => zoomBy(1 / 1.25))),
+    needsDoc('Fit page width', 'Ctrl+0', () => setZoom(viewer.fitWidth(model))),
     needsDoc('Actual size', '', () => setZoom(1)),
     needsDoc('Undo', 'Ctrl+Z', () => step(-1)),
     needsDoc('Redo', 'Ctrl+Y', () => step(1)),
@@ -761,6 +850,21 @@ document.addEventListener('keydown', (event) => {
   } else if (ctrl && event.key === ',') {
     event.preventDefault();
     openSettings();
+  } else if (ctrl && event.key.toLowerCase() === 'g') {
+    event.preventDefault();
+    guard('Go to page', goToPage);
+  } else if (ctrl && (event.key === '+' || event.key === '=') && model) {
+    event.preventDefault();
+    guard('Zoom', () => zoomBy(1.25));
+  } else if (ctrl && event.key === '-' && model) {
+    event.preventDefault();
+    guard('Zoom', () => zoomBy(1 / 1.25));
+  } else if (ctrl && event.key === '0' && model) {
+    event.preventDefault();
+    guard('Zoom', () => setZoom(viewer.fitWidth(model)));
+  } else if (!typing && !ctrl && model && ['PageDown', 'PageUp', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault();
+    turnPage({ PageDown: 1, PageUp: -1, Home: 'first', End: 'last' }[event.key]);
   } else if (ctrl && event.key.toLowerCase() === 'z' && !typing) {
     event.preventDefault();
     step(event.shiftKey ? 1 : -1);

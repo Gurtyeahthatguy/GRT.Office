@@ -53,6 +53,7 @@ export class Interaction {
     this.onBeginGesture = () => {};    // about to change the model.
     this.onEditText = () => {};
     this.onSelectionChange = () => {};
+    this.newRouting = () => 'orthogonal';   // the shape a new connector takes.
 
     svg.addEventListener('mousedown', (e) => this.down(e));
     window.addEventListener('mousemove', (e) => this.move(e));
@@ -128,6 +129,7 @@ export class Interaction {
         kind: 'reroute',
         id,
         before: this.model.snapshot(),
+        origin: point,
         moved: false,
       };
       this.onChange();
@@ -213,6 +215,8 @@ export class Interaction {
       }
 
       case 'reroute': {
+        // A click is not a bend: the pointer has to travel first.
+        if (!this.gesture.moved && Math.hypot(point.x - this.gesture.origin.x, point.y - this.gesture.origin.y) < DRAG_THRESHOLD * 2) return;
         // One waypoint, placed where the pointer is.
         this.model.setWaypoints(this.gesture.id, [
           { x: this.snap(point.x), y: this.snap(point.y) },
@@ -272,6 +276,7 @@ export class Interaction {
             to: toId,
             fromPort: gesture.fromPort,
             toPort: dropped.port ?? 'auto',
+            routing: this.newRouting(),
           });
           this.onCommit(before);
         }

@@ -316,8 +316,40 @@ describe('the library as a whole', () => {
 
   it('contains nothing that could reach a network', () => {
     // Excel's WEBSERVICE has no equivalent here, by principle.
-    for (const name of Object.keys(FUNCTIONS)) {
+    // ENCODEURL only turns text into the form a link takes; it opens nothing.
+    for (const name of Object.keys(FUNCTIONS).filter((n) => n !== 'ENCODEURL')) {
       expect(name).not.toMatch(/WEB|HTTP|URL|SERVICE|FETCH/);
     }
+  });
+});
+
+describe('bonds whose first period is odd, which LibreOffice does not work out', () => {
+  it('give the prices and yields of Excel\'s own examples', () => {
+    expect(run('=ODDFPRICE(DATE(2008,11,11),DATE(2021,3,1),DATE(2008,10,15),DATE(2009,3,1),0.0785,0.0625,100,2,1)')).toBeCloseTo(113.597717474079, 6);
+    expect(run('=ODDFYIELD(DATE(2008,11,11),DATE(2021,3,1),DATE(2008,10,15),DATE(2009,3,1),0.0575,84.5,100,2,0)')).toBeCloseTo(0.0772455, 6);
+    expect(run('=ODDFPRICE(DATE(2008,11,11),DATE(2021,3,1),DATE(2009,3,1),DATE(2008,10,15),0.0785,0.0625,100,2,1)')).toBe('#NUM!');
+  });
+});
+
+describe('functions that could leak or hang', () => {
+  it('refuse a regular expression that can backtrack for ever, quickly', () => {
+    const started = Date.now();
+    expect(run(`=REGEX("${'a'.repeat(40)}!","(a+)+$")`)).toBe('#VALUE!');
+    expect(run('=REGEX("aaa","(a*)*")')).toBe('#VALUE!');
+    expect(run('=REGEX("abab","(ab)\\1")')).toBe('#VALUE!');
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(run('=REGEX("abc123","[0-9]+")')).toBe('123');
+  });
+
+  it('never tell where the file is or what computer it is on', () => {
+    expect(run('=CELL("filename")')).not.toMatch(/[/\\]/);
+    expect(run('=INFO("directory")')).toBe('#NUM!');
+    expect(run('=INFO("system")')).toBe('GRT');
+    expect(run('=WEBSERVICE("http://example.org")')).toBe('#NAME?');
+  });
+
+  it('keep what they build within bounds', () => {
+    expect(run('=REPT("x",2000000)')).toBe('#VALUE!');
+    expect(run('=LEN(REPT("ab",1000))')).toBe(2000);
   });
 });

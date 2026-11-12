@@ -117,8 +117,9 @@ scripts are served through links, so a reload picks up an edit.
 | Key | Does |
 |---|---|
 | `M` `W` `D` `A` | month, week, day, agenda |
-| `T` | today |
-| `←` `→` | back, forward |
+| `T` or `Home` | today |
+| `←` `→`, `Page Up` `Page Down` | back, forward |
+| `Ctrl+G` | go to a date; a click on the title does the same |
 | `Ctrl+N` | new event |
 | `Ctrl+S` | save |
 | `Ctrl+F` | search |

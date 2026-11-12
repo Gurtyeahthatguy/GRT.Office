@@ -1,6 +1,6 @@
 /** PDF metadata stripping. */
 
-import { PDFName, PDFDocument } from '../../vendor/pdf-lib.esm.js';
+import { PDFName } from '../../vendor/pdf-lib.esm.js';
 
 /** Full list of /Info fields defined by the PDF specification. */
 const INFO_FIELDS = [

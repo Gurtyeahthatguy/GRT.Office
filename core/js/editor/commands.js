@@ -5,8 +5,9 @@ import {
 } from './model.js';
 import {
   point, collapsed, normalise, containersInRange, isCollapsed, lengthOf,
-  backward, endOfPrevious,
+  endOfPrevious,
 } from './selection.js';
+import { changeCase, stepSize } from '../text-case.js';
 
 /**
  * Inserts text at a collapsed selection, or over a range.
@@ -262,6 +263,9 @@ export function splitBlock(model, selection) {
 }
 
 /** Applies or toggles a mark across the selection. */
+/** Marks that are one choice with another, as in LibreOffice: turning one on turns its partner off. */
+export const PARTNER_MARKS = { sup: 'sub', sub: 'sup', underline: 'double', double: 'underline' };
+
 export function applyFormat(model, selection, mark, value = null) {
   if (isCollapsed(selection)) return selection;
 
@@ -274,7 +278,8 @@ export function applyFormat(model, selection, mark, value = null) {
 
   for (const container of containers) {
     if (container.from === container.to) continue;
-    const runs = model.runsOf(container.blockId, container.itemIndex);
+    let runs = model.runsOf(container.blockId, container.itemIndex);
+    if (decided && PARTNER_MARKS[mark]) runs = formatRuns(runs, container.from, container.to, PARTNER_MARKS[mark], false);
     model.setRuns(
       container.blockId,
       formatRuns(runs, container.from, container.to, mark, decided),
@@ -299,7 +304,25 @@ export function hasFormat(model, selection, mark) {
 export function setBlockKind(model, selection, kind, options = {}) {
   const touched = blocksInRange(model, selection);
   for (const id of touched) model.setBlockKind(id, kind, options);
-  return selection;
+  if (kind !== 'list' || touched.length < 2) return selection;
+  // Paragraphs made a list together become one list, not a list each, so it counts on and its items move among themselves.
+  const moved = new Map();
+  let into = null;
+  for (const id of touched) {
+    const block = model.block(id);
+    const previous = model.blocks[model.indexOf(id) - 1];
+    if (into && previous === into && block?.kind === 'list' && block.listType === into.listType) {
+      moved.set(id, { id: into.id, offset: into.items.length });
+      into.items.push(...block.items);
+      model.removeBlock(id);
+    } else into = block?.kind === 'list' ? block : null;
+  }
+  const map = (p) => {
+    const to = moved.get(p.blockId);
+    return to ? point(to.id, p.offset, to.offset + (p.itemIndex ?? 0)) : p;
+  };
+  model.dirty = true;
+  return { anchor: map(selection.anchor), focus: map(selection.focus) };
 }
 
 export function setBlockStyle(model, selection, style) {
@@ -399,4 +422,52 @@ export function insertRuns(model, selection, runs) {
     where.offset + runsLength(added),
     where.itemIndex,
   ));
+}
+
+/**
+ * Changes the case of the selected text, each run keeping its formatting; a change that alters
+ * the length, such as ß to SS, is made run by run.
+ * @returns {Object} the selection afterwards, covering the changed text
+ */
+export function transformCase(model, selection, mode) {
+  if (isCollapsed(selection)) return selection;
+  const { start, end } = normalise(selection, model);
+  let endOffset = end.offset;
+  for (const container of containersInRange(selection, model)) {
+    if (container.from === container.to) continue;
+    const runs = model.runsOf(container.blockId, container.itemIndex);
+    const [before, rest] = splitRuns(runs, container.from);
+    const [middle, after] = splitRuns(rest, container.to - container.from);
+    const text = middle.map((run) => (run.object ? '' : run.text)).join('');
+    const whole = changeCase(text, mode);
+    let changed;
+    if (whole.length === text.length) {
+      let at = 0;
+      changed = middle.map((run) => {
+        if (run.object) return run;
+        const piece = whole.slice(at, at + run.text.length);
+        at += run.text.length;
+        return { ...run, text: piece };
+      });
+    } else changed = middle.map((run) => (run.object ? run : { ...run, text: changeCase(run.text, mode) }));
+    const grown = runsLength(changed) - runsLength(middle);
+    model.setRuns(container.blockId, normaliseRuns([...before, ...changed, ...after]), container.itemIndex);
+    if (container.blockId === end.blockId && (container.itemIndex ?? null) === (end.itemIndex ?? null)) endOffset += grown;
+  }
+  return { anchor: start, focus: { ...end, offset: endOffset } };
+}
+
+/** Steps the size of the selected text up or down LibreOffice's list of sizes. */
+export function resizeText(model, selection, direction, sizeOfStyle = () => 11) {
+  if (isCollapsed(selection)) return selection;
+  for (const container of containersInRange(selection, model)) {
+    if (container.from === container.to) continue;
+    const runs = model.runsOf(container.blockId, container.itemIndex);
+    const [before, rest] = splitRuns(runs, container.from);
+    const [middle, after] = splitRuns(rest, container.to - container.from);
+    const base = sizeOfStyle(model.block(container.blockId));
+    const changed = middle.map((run) => ({ ...run, size: stepSize(run.size ?? base, direction) }));
+    model.setRuns(container.blockId, normaliseRuns([...before, ...changed, ...after]), container.itemIndex);
+  }
+  return selection;
 }

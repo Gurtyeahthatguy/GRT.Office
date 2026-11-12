@@ -1,14 +1,12 @@
 /** PDF, Markdown, HTML and plain text. */
 
 import { runsText, pageDimensions, slotFor } from './core/editor/model.js';
-import { paginate } from './pagination.js';
 
 const escapeHtml = (value) => String(value ?? '')
   .replace(/[<>&"']/g, (c) => ({
     '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;',
   }[c]));
 
-const PT = 96 / 72;
 const MM_TO_PT = 72 / 25.4;
 
 // Markdown

@@ -1,0 +1,1 @@
+opencc-js 1.4.2, dist/esm/full.js, from registry.npmjs.org (sha512 integrity checked), MIT; its dictionary data Apache-2.0.

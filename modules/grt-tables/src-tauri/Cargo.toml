@@ -1,6 +1,6 @@
 [package]
 name = "grt-tables"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local database with tables, relations, queries and forms"
 authors = ["GRT Project"]
 license = "MIT"
@@ -24,7 +24,7 @@ percent-encoding = "2"
 # working file.
 grt-container = { path = "../../../core/grt-container" }
 # The shared backend, for printing.
-grt-app = { path = "../../../core/grt-app" }
+grt-app = { path = "../../../core/grt-app", features = ["everywhere"] }
 
 # THE ENGINE. : this is the one module whose hard part is not written here.
 rusqlite = { version = "0.40", features = ["bundled", "hooks"] }

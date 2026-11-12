@@ -152,6 +152,9 @@ scripts are served through links, so a reload picks up an edit.
 | `Ctrl+S` / `Ctrl+Shift+S` | save / save as |
 | `Ctrl+F` | search |
 | `Ctrl+Z` / `Ctrl+Y` | undo / redo |
+| `Ctrl+G` | go to a page; a click on the page number does the same |
+| `Page Up` `Page Down`, `Home` `End` | previous or next page, first or last |
+| `Ctrl++` / `Ctrl+-` / `Ctrl+0` | zoom in / out / fit the width; `Ctrl` and the wheel zoom too |
 | `Del` | delete the selected pages |
 | `Ctrl+K` | command palette: every command, with fuzzy search |
 | `Ctrl+,` | settings |

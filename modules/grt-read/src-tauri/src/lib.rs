@@ -183,6 +183,7 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(grt_app::setup)
         .manage(grt_app::CloseGuard::default())
         .manage(grt_app::Recovery::default())
         .on_window_event(grt_app::on_window_event)

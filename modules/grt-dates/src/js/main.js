@@ -124,6 +124,8 @@ async function loadCalendars() {
         name: parsed.name || found.name,
         path: found.path,
         entries: parsed.entries,
+        timezones: parsed.timezones,
+        kept: parsed.kept,
       });
       calendar.visible = !settings.hiddenCalendars.includes(calendar.name);
       if (parsed.unsupported.length > 0) {
@@ -147,13 +149,11 @@ async function openCalendarFile(path) {
   try {
     const parsed = await io.readCalendar(path);
     const name = parsed.name || path.split(/[/\\]/).pop().replace(/\.ics$/i, '');
-    addCalendar(model, { name, path, entries: parsed.entries });
-    if (parsed.unsupported.length > 0) {
-      await io.notify(
-        `Opened. These parts were kept in the file but are not shown: ${parsed.unsupported.join(', ')}.`,
-        'Calendar opened',
-      );
-    }
+    addCalendar(model, { name, path, entries: parsed.entries, timezones: parsed.timezones, kept: parsed.kept });
+    const notes = [];
+    if (parsed.unsupported.length > 0) notes.push(`These parts were kept in the file but are not shown: ${parsed.unsupported.join(', ')}.`);
+    if (parsed.dropped > 0) notes.push(`${parsed.dropped} ${parsed.dropped === 1 ? 'entry is' : 'entries are'} dated outside the years 1 to 9999, kept in the file but not shown.`);
+    if (notes.length > 0) await io.notify(`Opened. ${notes.join(' ')}`, 'Calendar opened');
   } catch (error) {
     await io.notify(`Cannot open that calendar.\n\n${error}`, 'Open failed');
   }
@@ -289,6 +289,19 @@ function step(direction) {
   else if (model.view === 'week') model.cursor = addDays(model.cursor, 7 * direction);
   else if (model.view === 'day') model.cursor = addDays(model.cursor, direction);
   else model.cursor = addDays(model.cursor, 30 * direction);
+  refresh();
+}
+
+/** Shows the view at a date typed in, as Ctrl+G asks. */
+async function goToDate() {
+  const form = `<label>Date<input type="date" data-field="date" value="${escapeHtml(model.cursor)}" required></label>`;
+  if (!(await showPanel('Go to date', form, 'Go'))) return;
+  const { date } = readFields();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? '')) {
+    toast('Choose a date first');
+    return;
+  }
+  model.cursor = date;
   refresh();
 }
 
@@ -597,6 +610,11 @@ function wire() {
     button.onclick = () => setView(button.dataset.view);
   }
 
+  // A click on the title asks for a date, as the page number does in the other programs.
+  el('view-title').onclick = () => goToDate();
+  el('view-title').onkeydown = (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); goToDate(); }
+  };
   el('search').oninput = (event) => {
     model.search = event.target.value;
     refresh();
@@ -715,11 +733,15 @@ function onKey(event) {
   if (control && event.key === 's') { event.preventDefault(); el('btn-save').click(); return; }
   if (control && event.key === 'f') { event.preventDefault(); el('search').focus(); return; }
   if (control && event.key === 'p') { event.preventDefault(); printCalendar(); return; }
+  if (control && event.key === 'g') { event.preventDefault(); goToDate(); return; }
   if (control) return;
 
   const keys = {
     ArrowLeft: () => step(-1),
     ArrowRight: () => step(1),
+    PageUp: () => step(-1),
+    PageDown: () => step(1),
+    Home: () => { model.cursor = today(); refresh(); },
     t: () => { model.cursor = today(); refresh(); },
     m: () => setView('month'),
     w: () => setView('week'),
@@ -739,6 +761,7 @@ function commands() {
     { label: 'Open calendar', run: () => el('btn-open').click() },
     { label: 'Save', run: () => el('btn-save').click() },
     { label: 'Go to today', run: () => { model.cursor = today(); refresh(); } },
+    { label: 'Go to date…', run: () => goToDate() },
     { label: 'Month view', run: () => setView('month') },
     { label: 'Week view', run: () => setView('week') },
     { label: 'Day view', run: () => setView('day') },

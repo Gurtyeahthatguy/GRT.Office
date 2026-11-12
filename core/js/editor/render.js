@@ -181,6 +181,9 @@ export class Renderer {
         li.dataset.block = block.id;
         li.dataset.item = String(index);
         li.style.marginLeft = `${item.level * 24}px`;
+        if (item.unnumbered) li.style.listStyleType = 'none';
+        // The browser counts on from the value an item is given.
+        if (item.restart && block.listType === 'number') li.value = 1;
         li.append(...runElements(item.runs));
         return li;
       }));
@@ -371,6 +374,23 @@ function objectElement(run) {
     case 'seq':
       shown.textContent = String(fields?.seqs.get(object.id)?.number ?? '#');
       break;
+    case 'merge':
+      shown.className = 'merge-field';
+      shown.textContent = `«${object.name}»`;
+      break;
+    case 'cite':
+      // A citation shows its short name, as Writer's do; what it cites is in its tip.
+      shown.textContent = `[${object.key}]`;
+      shown.title = [object.author, object.title, object.year].filter(Boolean).join(', ');
+      break;
+    case 'comment':
+      // The comment's mark in the text; its words are in the margin beside the page.
+      holder.dataset.comment = object.id;
+      if (object.done && !(object.replies ?? []).some((r) => !r.done)) holder.classList.add('comment-done');
+      shown.className = 'comment-anchor';
+      shown.textContent = '💬';
+      shown.title = object.text;
+      break;
     case 'ref':
       if (object.show === 'page') {
         shown.className = 'page-of';
@@ -403,6 +423,14 @@ function runElement(run) {
   if (run.sup) node = wrap('sup', node);
   if (run.strike) node = wrap('s', node);
   if (run.underline) node = wrap('u', node);
+  // The effects LibreOffice calls font effects, each a class the stylesheet draws.
+  for (const effect of ['double', 'overline', 'shadow', 'outline', 'smallcaps']) {
+    if (!run[effect]) continue;
+    const span = document.createElement('span');
+    span.className = `effect-${effect}`;
+    span.append(node);
+    node = span;
+  }
   if (run.italic) node = wrap('em', node);
   if (run.bold) node = wrap('strong', node);
 
@@ -424,11 +452,45 @@ function runElement(run) {
     node = span;
   }
 
+  // The language tells the browser how to hyphenate and quote; text not to be checked is not.
+  if (run.lang) {
+    const span = document.createElement('span');
+    span.lang = run.lang;
+    if (run.lang === 'zxx') span.spellcheck = false;
+    span.append(node);
+    node = span;
+  }
+
   if (run.color || run.highlight || run.size) {
     const span = document.createElement('span');
     if (run.color) span.style.color = run.color;
     if (run.highlight) span.style.backgroundColor = run.highlight;
     if (run.size) span.style.fontSize = `${run.size * PT}px`;
+    span.append(node);
+    node = span;
+  }
+
+  // Text to be covered in a redacted copy shows black, still readable to its author on hover.
+  if (run.redact) {
+    const span = document.createElement('span');
+    span.className = 'redacted';
+    span.append(node);
+    node = span;
+  }
+
+  // Review: a change shows as put in or taken out, and the text a comment is about is marked.
+  if (run.ins || run.del || run.cmt) {
+    const span = document.createElement('span');
+    const classes = [];
+    if (run.ins) classes.push('change-ins');
+    if (run.del) classes.push('change-del');
+    if (run.cmt) {
+      classes.push('comment-range');
+      span.dataset.comment = run.cmt;
+    }
+    span.className = classes.join(' ');
+    if (run.ins || run.del) span.dataset.change = String(run.ins ?? run.del);
+    if (run.chgnote) span.title = run.chgnote;
     span.append(node);
     node = span;
   }

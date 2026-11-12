@@ -41,7 +41,10 @@ const staged = stageFrontend();
 // Relative to tauri.conf.json, as Tauri embeds the value and an absolute path would carry the user's name.
 const frontend = staged ? ['--config', JSON.stringify({ build: { frontendDist: relative(resolve(process.cwd(), 'src-tauri'), staged) } })] : [];
 const run = spawnSync(process.execPath, [cli, 'build', ...frontend, ...args, ...extra], { stdio: 'inherit', env });
-if (run.status === 0) repackDebs();
+if (run.status === 0) {
+  repackDebs();
+  slimAppImages();
+}
 process.exit(run.status ?? 1);
 
 /**
@@ -78,6 +81,70 @@ function stageFrontend() {
 }
 
 /** The .deb packages just made, packed again with xz: a fifth smaller than the gzip Tauri uses, and dpkg reads both. */
+/**
+ * Each AppImage made lighter: it uses the WebKitGTK and GTK the system has, as the packages do, instead of a copy of
+ * its own, which weighs some 80 MB. It is packed again with the runtime and the appimagetool the bundler already
+ * fetched, so this step uses no network.
+ */
+function slimAppImages() {
+  const folder = resolve(process.cwd(), 'src-tauri/target/release/bundle/appimage');
+  if (!existsSync(folder)) return;
+  const plugin = resolve(home, '.cache/tauri/linuxdeploy-plugin-appimage.AppImage');
+  for (const name of readdirSync(folder).filter((n) => n.endsWith('.AppImage'))) {
+    const file = join(folder, name);
+    if (statSync(file).mtimeMs < started || !existsSync(plugin)) continue;
+    // On disk beside the build, since /tmp may be too small for an unpacked AppImage.
+    const work = resolve(process.cwd(), 'src-tauri/target/appimage-slim');
+    rmSync(work, { recursive: true, force: true });
+    try {
+      spawnSync('mkdir', ['-p', work]);
+      const run = (command, args, options = {}) => spawnSync(command, args, { cwd: work, stdio: 'ignore', ...options }).status === 0;
+      if (!run(file, ['--appimage-extract'])) continue;
+      renameSync(join(work, 'squashfs-root'), join(work, 'AppDir'));
+      const offset = Number(spawnSync(file, ['--appimage-offset'], { encoding: 'utf8' }).stdout.trim());
+      if (!(offset > 0)) continue;
+      writeFileSync(join(work, 'runtime'), readFileSync(file).subarray(0, offset));
+      cpSync(plugin, join(work, 'plugin.AppImage'));
+      spawnSync('chmod', ['+x', join(work, 'plugin.AppImage')]);
+      if (!run(join(work, 'plugin.AppImage'), ['--appimage-extract'])) continue;
+      renameSync(join(work, 'squashfs-root'), join(work, 'tools'));
+      const appdir = join(work, 'AppDir');
+      const binary = readdirSync(join(appdir, 'usr/bin'))[0];
+      // The libraries, the hooks that point GTK at them, and the launcher that sets them up all go.
+      for (const gone of ['usr/lib', 'usr/share/doc', 'usr/share/glib-2.0', 'apprun-hooks', 'AppRun', 'AppRun.wrapped']) rmSync(join(appdir, gone), { recursive: true, force: true });
+      writeFileSync(join(appdir, 'AppRun'), appRun(binary, name.replace(/_.*$/, '')), { mode: 0o755 });
+      const tool = join(work, 'tools/appimagetool-prefix/usr/bin');
+      const packed = `${file}.slim`;
+      const ok = spawnSync(join(tool, 'appimagetool'), ['--no-appstream', '--runtime-file', join(work, 'runtime'), appdir, packed], {
+        cwd: work, stdio: 'ignore', env: { ...process.env, ARCH: 'x86_64', PATH: `${tool}:${process.env.PATH}` },
+      }).status === 0;
+      if (ok) renameSync(packed, file);
+      else rmSync(packed, { force: true });
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  }
+}
+
+/** The AppImage's launcher: the program, with the system's WebKitGTK, and a plain word when there is none. */
+function appRun(binary, title) {
+  return `#!/bin/sh
+# ${title}: runs with the WebKitGTK the system has.
+here="$(dirname "$(readlink -f "$0")")"
+found=no
+for dir in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib /lib/x86_64-linux-gnu; do
+  [ -e "$dir/libwebkit2gtk-4.1.so.0" ] && found=yes && break
+done
+if [ "$found" = no ] && ! /sbin/ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4.1.so.0'; then
+  message="${title} needs WebKitGTK 4.1. On Debian and Ubuntu: sudo apt install libwebkit2gtk-4.1-0. On Fedora: sudo dnf install webkit2gtk4.1."
+  echo "$message" >&2
+  command -v notify-send >/dev/null 2>&1 && notify-send "${title}" "$message"
+  exit 1
+fi
+exec "$here/usr/bin/${binary}" "$@"
+`;
+}
+
 function repackDebs() {
   const folder = resolve(process.cwd(), 'src-tauri/target/release/bundle/deb');
   if (!existsSync(folder) || spawnSync('dpkg-deb', ['--version']).status !== 0) return;

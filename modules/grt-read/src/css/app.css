@@ -412,3 +412,13 @@ input[type="search"] {
 
 .pages.marking .page { cursor: crosshair; }
 .pages.marking .page canvas { pointer-events: none; }
+
+/* Comparing two PDFs. */
+.compare-list { max-height: 60vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+.compare-words { margin: 4px 0 0; line-height: 1.5; }
+.compare-words ins { background: rgba(46, 157, 71, 0.22); text-decoration: none; }
+.compare-words del { background: rgba(197, 34, 31, 0.18); }
+
+/* The page number opens Go to page. */
+.page-indicator { cursor: pointer; border-radius: 4px; padding: 0 4px; }
+.page-indicator:hover, .page-indicator:focus-visible { background: var(--surface-hover, rgba(37, 99, 235, 0.08)); color: var(--text, inherit); }

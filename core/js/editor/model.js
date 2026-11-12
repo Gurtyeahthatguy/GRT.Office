@@ -37,7 +37,7 @@ export function cellAt(block, row, col) {
 /** A table cleaned up: every row as wide as the widest, spans inside the table, the cells they cover marked. */
 export function normaliseTable(block) {
   const rows = (Array.isArray(block.rows) ? block.rows : []).slice(0, TABLE_LIMITS.rows);
-  const width = Math.max(1, Math.min(TABLE_LIMITS.cols, ...rows.map((r) => r?.cells?.length ?? 0)));
+  const width = Math.max(1, Math.min(TABLE_LIMITS.cols, Math.max(0, ...rows.map((r) => r?.cells?.length ?? 0))));
   block.rows = (rows.length ? rows : [{ cells: [] }]).map((row) => ({
     ...(row?.header ? { header: true } : {}),
     cells: Array.from({ length: width }, (_, c) => {
@@ -145,7 +145,7 @@ export const styleKey = (name, prefix = 'c') => `${prefix}-${String(name).toLowe
 export const ALIGNMENTS = ['left', 'center', 'right', 'justify'];
 
 /** Run attributes that are simply on or off. */
-export const MARKS = ['bold', 'italic', 'underline', 'strike', 'sup', 'sub'];
+export const MARKS = ['bold', 'italic', 'underline', 'strike', 'sup', 'sub', 'double', 'overline', 'shadow', 'outline', 'smallcaps'];
 
 /** Headers and footers: a slot is one line, `{page}` and `{pages}` filled in when drawn. */
 export const SLOT_ALIGNMENTS = ['left', 'center', 'right'];
@@ -248,7 +248,11 @@ const DEFAULT_STYLES = {
 /** The character an object in the text stands on: a note, a bookmark, a reference, a field. */
 export const OBJECT = '\uFFFC';
 
-export const OBJECT_TYPES = ['note', 'bookmark', 'ref', 'seq', 'field', 'index', 'math'];
+export const OBJECT_TYPES = ['note', 'bookmark', 'ref', 'seq', 'field', 'index', 'math', 'comment', 'cite', 'merge'];
+
+/** The kinds of source a citation names, as Writer's bibliography has them. */
+export const CITE_KINDS = ['book', 'article', 'website', 'thesis', 'report', 'misc'];
+export const CITE_FIELDS = ['author', 'title', 'year', 'publisher', 'url'];
 export const FIELDS = ['page', 'pages', 'date', 'time', 'chapter'];
 
 const word = (value, limit = 200) => (typeof value === 'string' ? value.slice(0, limit) : null);
@@ -281,6 +285,10 @@ export function normaliseObject(object) {
       return { type: 'math', ...(tex ? { tex } : {}), ...(mathml ? { mathml } : {}), ...(object.display ? { display: true } : {}) };
     }
     case 'index': return word(object.term) ? { type: 'index', term: word(object.term), ...(word(object.sub) ? { sub: word(object.sub) } : {}) } : null;
+    case 'comment': return normaliseComment(object);
+    case 'cite': return normaliseCite(object);
+    // A mail merge field: the column of the data whose value takes its place, record by record.
+    case 'merge': return word(object.name, 100)?.trim() ? { type: 'merge', name: word(object.name, 100).trim() } : null;
     default: return null;
   }
 }
@@ -310,8 +318,20 @@ export function normaliseRuns(runs) {
     if (run.color) clean.color = run.color;
     if (run.highlight) clean.highlight = run.highlight;
     if (run.size) clean.size = run.size;
+    const lang = cleanLang(run.lang);
+    if (lang) clean.lang = lang;
     const link = safeLink(run.link);
     if (link) clean.link = link;
+    // Tracked changes: text put in or taken out, with the id of its change and a note on it; and the comment a stretch belongs to.
+    const inserted = changeId(run.ins);
+    const deleted = changeId(run.del);
+    if (inserted) clean.ins = inserted;
+    if (deleted) clean.del = deleted;
+    if ((inserted || deleted) && typeof run.chgnote === 'string' && run.chgnote.trim()) clean.chgnote = run.chgnote.slice(0, 10_000);
+    const comment = changeId(run.cmt);
+    if (comment && comment !== true) clean.cmt = comment;
+    // A stretch marked to be covered in a redacted copy.
+    if (run.redact) clean.redact = true;
     if (object) {
       clean.object = object;
       out.push(clean);
@@ -338,7 +358,51 @@ export function sameFormatting(a, b) {
     && (a.link ?? null) === (b.link ?? null)
     && (a.cstyle ?? null) === (b.cstyle ?? null)
     && (a.highlight ?? null) === (b.highlight ?? null)
-    && (a.size ?? null) === (b.size ?? null);
+    && (a.size ?? null) === (b.size ?? null)
+    && (a.lang ?? null) === (b.lang ?? null)
+    && (a.ins ?? null) === (b.ins ?? null)
+    && (a.del ?? null) === (b.del ?? null)
+    && (a.chgnote ?? null) === (b.chgnote ?? null)
+    && (a.cmt ?? null) === (b.cmt ?? null)
+    && !!a.redact === !!b.redact;
+}
+
+/** A change's or a comment's id as runs carry it: a short word, or true for a change without one. */
+function changeId(value) {
+  if (value === true) return true;
+  return typeof value === 'string' && /^[\w.-]{1,40}$/.test(value) ? value : null;
+}
+
+/** A citation: the short name it shows, the kind of source, and what is known of it. */
+function normaliseCite(object) {
+  const key = typeof object.key === 'string' ? object.key.trim().replace(/[^\p{L}\p{N}_.:-]/gu, '').slice(0, 60) : '';
+  if (!key) return null;
+  const out = { type: 'cite', key, kind: CITE_KINDS.includes(object.kind) ? object.kind : 'book' };
+  for (const field of CITE_FIELDS) {
+    if (typeof object[field] === 'string' && object[field].trim()) out[field] = object[field].replaceAll(OBJECT, '').trim().slice(0, 500);
+  }
+  return out;
+}
+
+/** A comment's text and its replies, each with whether it is resolved; no names or dates. */
+function normaliseComment(object) {
+  const id = changeId(object.id);
+  if (!id || id === true) return null;
+  const text = (value) => (typeof value === 'string' ? value.replaceAll(OBJECT, '').slice(0, 100_000) : '');
+  const replies = (Array.isArray(object.replies) ? object.replies : []).slice(0, 200)
+    .map((reply, i) => ({ id: changeId(reply?.id) && reply.id !== true ? reply.id : `${id}-r${i + 1}`, text: text(reply?.text), ...(reply?.done ? { done: true } : {}) }))
+    .filter((reply) => reply.text.trim() !== '');
+  return { type: 'comment', id, text: text(object.text), ...(object.done ? { done: true } : {}), ...(replies.length ? { replies } : {}) };
+}
+
+/** A text's language as runs keep it: a tag such as it-IT or en, or zxx for text that is not checked. */
+export function cleanLang(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^([a-zA-Z]{2,3})(?:[-_]([a-zA-Z]{2}|\d{3}))?$/.exec(value.trim());
+  if (!match) return null;
+  const language = match[1].toLowerCase();
+  if (language === 'zxx') return 'zxx';
+  return match[2] ? `${language}-${match[2].toUpperCase()}` : language;
 }
 
 /** The plain text of a run list. */
@@ -421,6 +485,7 @@ export class DocumentModel {
     this.charStyles = {};
     this.blocks = [];
     this.fonts = [];
+    this.review = normaliseReview(null);
     this.path = null;
     this.dirty = false;
     // What this document calls itself in the container.
@@ -659,6 +724,7 @@ export class DocumentModel {
       blocks: structuredClone(this.blocks),
       ...(this.headingNumbers ? { headingNumbers: { ...this.headingNumbers } } : {}),
       ...(JSON.stringify(this.noteSettings) !== JSON.stringify(NOTE_DEFAULTS) ? { noteSettings: structuredClone(this.noteSettings) } : {}),
+      ...(this.review?.recording || this.review?.protect ? { review: { ...this.review } } : {}),
     };
   }
 
@@ -681,6 +747,7 @@ export class DocumentModel {
     this.blocks = Array.isArray(document.blocks) ? structuredClone(document.blocks) : [];
     this.headingNumbers = normaliseHeadingNumbers(document.headingNumbers);
     this.noteSettings = normaliseNoteSettings(document.noteSettings);
+    this.review = normaliseReview(document.review);
 
     // Missing fields are filled in rather than rejected.
     for (const block of this.blocks) {
@@ -701,6 +768,9 @@ export class DocumentModel {
         block.items = (block.items ?? []).map((item) => ({
           level: Math.max(0, Math.min(item.level ?? 0, 5)),
           runs: normaliseRuns(item.runs),
+          // An item shown without its number or bullet, and one numbering starts again from.
+          ...(item.unnumbered ? { unnumbered: true } : {}),
+          ...(item.restart ? { restart: true } : {}),
         }));
         if (block.items.length === 0) block.items = [{ level: 0, runs: [{ text: '' }] }];
       } else if (block.kind === 'chart') {
@@ -743,6 +813,7 @@ export class DocumentModel {
       blocks: structuredClone(this.blocks),
       headingNumbers: this.headingNumbers ? { ...this.headingNumbers } : null,
       noteSettings: structuredClone(this.noteSettings),
+      review: { ...this.review },
       dirty: this.dirty,
     };
   }
@@ -755,8 +826,17 @@ export class DocumentModel {
     this.blocks = structuredClone(snapshot.blocks);
     this.headingNumbers = snapshot.headingNumbers ? { ...snapshot.headingNumbers } : null;
     this.noteSettings = normaliseNoteSettings(snapshot.noteSettings);
+    this.review = normaliseReview(snapshot.review);
     this.dirty = snapshot.dirty;
   }
+}
+
+/** Whether changes are being recorded, and the hash that guards turning that off; never a name or a date. */
+function normaliseReview(review) {
+  return {
+    recording: Boolean(review?.recording),
+    protect: typeof review?.protect === 'string' && /^[A-Za-z0-9+/=]{20,100}$/.test(review.protect) ? review.protect : null,
+  };
 }
 
 /** The name GRT Paper knew this class by. */

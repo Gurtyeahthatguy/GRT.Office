@@ -66,16 +66,16 @@
         <div id="view-data" class="view">
           <div class="filter-bar">
             <select id="filter-column"><option value="">Any column</option></select>
-            <input id="filter-value" type="search" placeholder="Contains…" />
+            <input id="filter-value" type="search" placeholder="Contains…" title="Filter the rows (Ctrl+F)" />
             <span class="spacer"></span>
             <button id="btn-add-row">Add row</button>
             <button id="btn-delete-row">Delete row</button>
           </div>
           <div id="data-grid" class="data-grid"></div>
           <div class="pager">
-            <button id="btn-prev-page">Previous</button>
+            <button id="btn-prev-page" title="Previous page of rows (Page Up)">Previous</button>
             <span id="page-label" class="dim"></span>
-            <button id="btn-next-page">Next</button>
+            <button id="btn-next-page" title="Next page of rows (Page Down)">Next</button>
           </div>
         </div>
 
@@ -87,16 +87,16 @@
 
         <div id="view-form" class="view hidden">
           <div class="filter-bar">
-            <button id="btn-form-first" title="First record">⏮</button>
-            <button id="btn-form-prev" title="Previous record">◀</button>
+            <button id="btn-form-first" title="First record (Home)">⏮</button>
+            <button id="btn-form-prev" title="Previous record (Page Up)">◀</button>
             <span id="form-position" class="dim"></span>
-            <button id="btn-form-next" title="Next record">▶</button>
-            <button id="btn-form-last" title="Last record">⏭</button>
-            <input id="form-search" type="search" placeholder="Find a record…" />
+            <button id="btn-form-next" title="Next record (Page Down)">▶</button>
+            <button id="btn-form-last" title="Last record (End)">⏭</button>
+            <input id="form-search" type="search" placeholder="Find a record…" title="Find a record (Ctrl+F)" />
             <span class="spacer"></span>
             <button id="btn-form-new">New record</button>
             <button id="btn-form-delete">Delete record</button>
-            <button id="btn-form-save" class="primary">Save</button>
+            <button id="btn-form-save" class="primary" title="Save this record (Ctrl+S)">Save</button>
             <button id="btn-save-form" title="Keep this form, with its fields, in the database">Save form…</button>
           </div>
           <form id="form-fields" class="form-fields" onsubmit="return false"></form>

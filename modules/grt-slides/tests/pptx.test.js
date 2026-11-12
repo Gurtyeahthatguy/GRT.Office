@@ -107,8 +107,10 @@ describe('reading PowerPoint', () => {
     expect(body.size).toBe(Math.round(28 * 96 / 72));
     // accent1 at half its lightness.
     expect(body.color).toBe('#203864');
-    expect(body.content).toEqual([{ text: '• First point\n• ' }, { text: 'Second', bold: true }]);
-    expect(losses.lines()).toContain('Bulleted lists, kept as text with bullet characters');
+    // The master's bullets make a real list now, not characters in the text.
+    expect(body.content).toEqual([{ text: 'First point\n' }, { text: 'Second', bold: true }]);
+    expect(body.paras).toEqual([{ level: 0, list: 'bullet' }, { level: 0, list: 'bullet' }]);
+    expect(losses.lines().join()).not.toMatch(/Bulleted/);
   });
 
   it('reads shapes, lines, groups, pictures, tables and backgrounds', () => {

@@ -13,6 +13,7 @@ import {
   currentRegion, looksLikeHeader, sortPermutation, filteredRows, duplicateRows, splitText, seriesValues, groupBreaks,
 } from './data.js';
 import { computePivot, readSource } from './pivot.js';
+import { seekGoal, solveModel } from './whatif.js';
 
 export class SheetController {
   /**
@@ -27,7 +28,7 @@ export class SheetController {
 
     /** The cell the keyboard acts on. */
     /** How the sheet is shown, not saved with it: formulas instead of results, grid lines, the active row and column, values by kind. */
-    this.view = { formulas: false, gridlines: true, crosshair: false, values: false };
+    this.view = { formulas: false, gridlines: true, crosshair: false, values: false, comments: false };
     this.active = { row: 0, col: 0 };
     /**
      * The other corner of the selected block; equal to `active` when single.
@@ -226,7 +227,7 @@ export class SheetController {
     }
 
     this.record(() => {
-      if (parsed.kind === 'blank') this.engine.clear(this.sheetId, row, col);
+      if (parsed.kind === 'blank') this.engine.clearContent(this.sheetId, row, col);
       else if (parsed.kind === 'formula') this.engine.setFormula(this.sheetId, row, col, parsed.value);
       else this.engine.setValue(this.sheetId, row, col, parsed.value);
 
@@ -242,8 +243,73 @@ export class SheetController {
     const { top, bottom, left, right } = this.selection;
     this.record(() => {
       for (let row = top; row <= bottom; row += 1) {
-        for (let col = left; col <= right; col += 1) this.engine.clear(this.sheetId, row, col);
+        for (let col = left; col <= right; col += 1) this.engine.clearContent(this.sheetId, row, col);
       }
+    });
+  }
+
+  // Comments
+
+  noteAt(row, col) {
+    const note = this.sheet.cell(row, col)?.n;
+    return typeof note === 'string' && note !== '' ? note : null;
+  }
+
+  /** Gives the active cell a comment; empty text takes it away. */
+  setNote(text, { row = this.active.row, col = this.active.col } = {}) {
+    const clean = String(text ?? '').slice(0, 100_000);
+    this.record(() => {
+      this.sheet.set(row, col, { n: clean.trim() === '' ? null : clean });
+      this.model.dirty = true;
+    });
+  }
+
+  /** Takes the comments off every selected cell. */
+  deleteNotes() {
+    const { top, bottom, left, right } = this.selection;
+    this.record(() => {
+      for (const [at, cell] of [...this.sheet.cells]) {
+        const [row, col] = at.split(',').map(Number);
+        if (cell.n && row >= top && row <= bottom && col >= left && col <= right) this.sheet.set(row, col, { n: null });
+      }
+      this.model.dirty = true;
+    });
+  }
+
+  linkAt(row, col) {
+    const link = this.sheet.cell(row, col)?.l;
+    return typeof link === 'string' && link !== '' ? link : null;
+  }
+
+  /** Gives the active cell a link and, when given, the text it shows; an empty address takes the link away. */
+  setLink(href, text = null, { row = this.active.row, col = this.active.col } = {}) {
+    this.record(() => {
+      const shown = text ?? this.sheet.valueAt(row, col);
+      if (text !== null && text !== '' && !this.sheet.formulaAt(row, col)) this.engine.setValue(this.sheetId, row, col, text);
+      else if ((shown === null || shown === '') && href) this.engine.setValue(this.sheetId, row, col, href);
+      this.sheet.set(row, col, { l: href ? String(href).trim() : null });
+      this.model.dirty = true;
+    });
+  }
+
+  /** Marks the selected cells to be covered in a redacted copy, or uncovers them when all are. */
+  toggleRedact() {
+    const { top, bottom, left, right } = this.selection;
+    let all = true;
+    for (let row = top; row <= bottom && all; row += 1) for (let col = left; col <= right; col += 1) if (!this.sheet.cell(row, col)?.rd) { all = false; break; }
+    this.record(() => {
+      for (let row = top; row <= bottom; row += 1) for (let col = left; col <= right; col += 1) this.sheet.set(row, col, { rd: !all });
+      this.model.dirty = true;
+    });
+  }
+
+  /** Shows the active cell's comment all the time, or only when the pointer is on the cell. */
+  setNoteShown(shown) {
+    const { row, col } = this.active;
+    if (!this.noteAt(row, col)) return;
+    this.record(() => {
+      this.sheet.set(row, col, { ns: shown });
+      this.model.dirty = true;
     });
   }
 
@@ -337,7 +403,107 @@ export class SheetController {
     for (let row = top; row <= bottom && all; row += 1) {
       for (let col = left; col <= right && all; col += 1) all = Boolean(this.styleAt(row, col)[field]);
     }
-    this.formatCells((look) => ({ ...look, [field]: !all }));
+    // Single and double underline are one choice, as in Calc.
+    const other = { underline: 'double', double: 'underline' }[field];
+    this.formatCells((look) => ({ ...look, [field]: !all, ...(other && !all ? { [other]: false } : {}) }));
+  }
+
+  /**
+   * Goal Seek: the value of the variable cell that makes the formula cell give the target.
+   * The cells are left as they were; keepValue() writes the answer.
+   */
+  goalSeek({ formula, variable, target }) {
+    if (!this.sheet.formulaAt(formula.row, formula.col)) return { error: 'The formula cell holds no formula' };
+    if (this.sheet.formulaAt(variable.row, variable.col)) return { error: 'The variable cell must hold a value, not a formula' };
+    const before = this.sheet.valueAt(variable.row, variable.col);
+    const start = typeof before === 'number' ? before : 0;
+    const dirty = this.model.dirty;
+    const read = (x) => {
+      this.engine.setValues(this.sheetId, [{ ...variable, value: x }]);
+      return this.sheet.valueAt(formula.row, formula.col);
+    };
+    try {
+      return seekGoal(read, start, target);
+    } finally {
+      this.putBack([{ ...variable, value: before }], dirty);
+    }
+  }
+
+  /**
+   * Solver: tries values in the variable cells, then puts back what was there.
+   * @param {{objective: {row: number, col: number}, goal: string, target?: number, variables: {row: number, col: number}[],
+   *   constraints: {cell: {row: number, col: number}, op: string, rhs: number}[], nonNegative?: boolean, integer?: boolean,
+   *   engine?: string, seconds?: number}} spec
+   */
+  solve(spec) {
+    const { objective, variables, constraints } = spec;
+    if (variables.length === 0) return { error: 'Name the cells Solver may change' };
+    if (variables.length > 200) return { error: 'Solver changes at most 200 cells' };
+    if (constraints.length > 500) return { error: 'Solver takes at most 500 limiting conditions' };
+    if (variables.some((v) => this.sheet.formulaAt(v.row, v.col))) return { error: 'The cells Solver changes must hold values, not formulas' };
+    const index = (cell) => variables.findIndex((v) => v.row === cell.row && v.col === cell.col);
+    const integers = new Set(spec.integer ? variables.map((_, j) => j) : []);
+    const binaries = new Set();
+    const limits = [];
+    const sides = [];
+    for (const k of constraints) {
+      if (k.op === 'int' || k.op === 'bin') {
+        const j = index(k.cell);
+        if (j < 0) return { error: 'Integer and binary conditions go on the cells Solver changes' };
+        (k.op === 'int' ? integers : binaries).add(j);
+        continue;
+      }
+      if (!Number.isFinite(k.rhs)) return { error: 'Each condition needs a number to compare with' };
+      limits.push({ index: sides.length, op: k.op, rhs: k.rhs });
+      sides.push(k.cell);
+    }
+    const before = variables.map((v) => ({ ...v, value: this.sheet.valueAt(v.row, v.col) }));
+    const dirty = this.model.dirty;
+    const number = (row, col) => {
+      const value = this.sheet.valueAt(row, col);
+      return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    };
+    const evaluate = (x) => {
+      this.engine.setValues(this.sheetId, variables.map((v, j) => ({ ...v, value: x[j] })));
+      return { objective: number(objective.row, objective.col), lhs: sides.map((c) => number(c.row, c.col)) };
+    };
+    try {
+      const result = solveModel({
+        start: before.map((b) => (typeof b.value === 'number' ? b.value : 0)),
+        evaluate, constraints: limits, goal: spec.goal, target: spec.target,
+        integers, binaries, nonNegative: !!spec.nonNegative, engine: spec.engine ?? 'auto', seconds: spec.seconds ?? 10,
+      });
+      return { ...result, variables };
+    } finally {
+      this.putBack(before, dirty);
+    }
+  }
+
+  /** Writes the values a search found, as one step to undo. */
+  keepValues(cells) {
+    this.record(() => this.engine.setValues(this.sheetId, cells));
+  }
+
+  /** Puts trial cells back as they were, without a step to undo. */
+  putBack(cells, dirty) {
+    this.engine.setValues(this.sheetId, cells);
+    this.model.dirty = dirty;
+    this.looks = null;
+  }
+
+  /** Changes the case of the text in the selected cells; numbers and formulas stay as they are. */
+  changeTextCase(change) {
+    const { top, bottom, left, right } = this.selection;
+    this.record(() => {
+      for (let row = top; row <= bottom; row += 1) {
+        for (let col = left; col <= right; col += 1) {
+          const cell = this.sheet.cell(row, col);
+          if (!cell || cell.f || typeof cell.v !== 'string' || /^#[A-Z/0!?]+[!?A]?$/.test(cell.v)) continue;
+          const next = change(cell.v);
+          if (next !== cell.v) this.engine.setValue(this.sheetId, row, col, next);
+        }
+      }
+    });
   }
 
   /** The look of a cell, from its style. */
@@ -621,7 +787,7 @@ export class SheetController {
 
             if (cell.f) {
               const moved = this.engine.translateFormula(cell.f, rowDelta, colDelta);
-              this.engine.setFormula(this.sheetId, row, col, moved);
+              this.engine.setFormula(this.sheetId, row, col, moved, !!cell.i);
             } else {
               this.engine.setValue(this.sheetId, row, col, cell.v ?? null);
             }
@@ -670,7 +836,7 @@ export class SheetController {
               const from = { row: payload.origin.row + r, col: payload.origin.col + c };
               this.engine.setFormula(this.sheetId, row, col, transpose
                 ? this.engine.transposeFormula(cell.f, from, { row, col })
-                : this.engine.translateFormula(cell.f, row - from.row, col - from.col));
+                : this.engine.translateFormula(cell.f, row - from.row, col - from.col), !!cell.i);
             } else if (combine && typeof cell.v === 'number') {
               const here = this.sheet.valueAt(row, col);
               const base = typeof here === 'number' ? here : here === null || here === undefined || here === '' ? 0 : null;
@@ -717,7 +883,7 @@ export class SheetController {
   /** Like setCell, but without its own undo entry. */
   setCellQuietly(row, col, text) {
     const parsed = parseInput(text);
-    if (parsed.kind === 'blank') this.engine.clear(this.sheetId, row, col);
+    if (parsed.kind === 'blank') this.engine.clearContent(this.sheetId, row, col);
     else if (parsed.kind === 'formula') this.engine.setFormula(this.sheetId, row, col, parsed.value);
     else this.engine.setValue(this.sheetId, row, col, parsed.value);
   }
@@ -742,7 +908,7 @@ export class SheetController {
           : Array.from({ length: bottom - top }, (_, i) => [top + i, line]);
         for (const [row, col] of cells) {
           if (!source) this.engine.clear(this.sheetId, row, col);
-          else if (source.f) this.engine.setFormula(this.sheetId, row, col, this.engine.translateFormula(source.f, row - from[0], col - from[1]));
+          else if (source.f) this.engine.setFormula(this.sheetId, row, col, this.engine.translateFormula(source.f, row - from[0], col - from[1]), !!source.i);
           else this.engine.setValue(this.sheetId, row, col, source.v ?? null);
         }
       }
@@ -799,7 +965,7 @@ export class SheetController {
           if (!source) { this.engine.clear(this.sheetId, row, col); continue; }
           if (source.f) {
             const moved = this.engine.translateFormula(source.f, row - top, 0);
-            this.engine.setFormula(this.sheetId, row, col, moved);
+            this.engine.setFormula(this.sheetId, row, col, moved, !!source.i);
           } else if (step !== null) {
             this.engine.setValue(this.sheetId, row, col, source.v + step * (row - top));
           } else {

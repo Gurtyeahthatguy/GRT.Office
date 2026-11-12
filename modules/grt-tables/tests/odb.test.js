@@ -123,6 +123,19 @@ describe('a hostile .odb', () => {
     expect(database.losses.join()).toMatch(/loops/);
   });
 
+  it('refuses a number whose scale is a billion digits, quickly', () => {
+    const data = new Uint8Array(64);
+    const view = new DataView(data.buffer);
+    data[52] = 1;
+    view.setInt32(53, 1);
+    data[57] = 5;
+    view.setInt32(58, 1 << 30);
+    const started = Date.now();
+    const database = readOdb(pkg({ 'content.xml': CONTENT('sdbc:embedded:hsqldb'), 'database/script': 'CREATE CACHED TABLE "t"("d" DECIMAL(8,2))\nSET TABLE "t" INDEX\'32 0\'', 'database/data': data }));
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(database.losses.join()).toMatch(/scale/);
+  });
+
   it('reports a row that points outside the file', () => {
     const data = new Uint8Array(64);
     new DataView(data.buffer).setInt32(32 + 12, 1 << 30);
@@ -131,6 +144,12 @@ describe('a hostile .odb', () => {
 
   it('refuses a database that lives on a server', () => {
     expect(() => readOdb(pkg({ 'content.xml': CONTENT('sdbc:mysql:jdbc:example.org:3306/db') }))).toThrow(/server/);
+  });
+
+  it('refuses a Firebird column that has no type, with a reason', () => {
+    // A header, a table T, a column C without the attributes for its type and length, and the end.
+    const backup = new Uint8Array([0, 0, 3, 1, 1, 84, 0, 4, 1, 1, 67, 0, 10]);
+    expect(() => readOdb(pkg({ 'content.xml': CONTENT('sdbc:embedded:firebird'), 'database/firebird.fbk': backup }))).toThrow(/no type/);
   });
 
   it('refuses a Firebird backup that is cut short', () => {

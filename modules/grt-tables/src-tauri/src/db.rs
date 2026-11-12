@@ -342,6 +342,7 @@ fn column_names(connection: &Connection, table: &str) -> Result<Vec<String>, Str
 }
 
 /// One page of a table.
+#[allow(clippy::too_many_arguments)] // Each is one part of the page asked for; a struct would only name them twice.
 pub fn select_page(
     connection: &Connection,
     table: &str,
@@ -586,7 +587,6 @@ pub fn delete_row(connection: &Connection, table: &str, rowid: i64) -> Result<us
 /// Whether a statement changes anything.
 pub fn is_write(sql: &str) -> bool {
     let head = sql
-        .trim_start()
         .split_whitespace()
         .next()
         .unwrap_or("")

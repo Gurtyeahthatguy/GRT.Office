@@ -173,8 +173,39 @@ export async function writeSettings(settings) {
 export async function forgetSettings() {
   try {
     await invoke('forget_settings');
+    await invoke('everywhere_forget');
     return true;
   } catch {
     return false;
   }
+}
+
+// Earlier versions of notes, kept only for notebooks that ask for them.
+
+/** A path's key in the history: a hash, so no title or folder name is written there. */
+export async function historyKey(kind, path) {
+  const bytes = new TextEncoder().encode(`${kind}\0${path}`);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export async function historySave(keys, note, password = null, force = false) {
+  return invoke('history_save', { notebook: keys[0], note: keys[1], parts: toParts(note), password, force });
+}
+
+export async function historyList(keys) {
+  return invoke('history_list', { notebook: keys[0], note: keys[1] });
+}
+
+export async function historyRead(keys, id, password = null) {
+  const { parts } = await invoke('history_read', { notebook: keys[0], note: keys[1], id, password });
+  return fromParts(parts);
+}
+
+export async function historyMove(from, to) {
+  return invoke('history_move', { from, to });
+}
+
+export async function historyForget(notebookKey = null) {
+  return invoke('history_forget', { notebook: notebookKey });
 }

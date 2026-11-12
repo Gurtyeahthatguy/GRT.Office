@@ -1291,6 +1291,7 @@ dependencies = [
  "grt-container",
  "gtk",
  "percent-encoding",
+ "rusqlite",
  "serde_json",
  "tauri",
  "webkit2gtk",
@@ -1321,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "grt-tables"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "grt-app",
  "grt-container",

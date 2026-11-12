@@ -544,3 +544,20 @@ input[type="search"] {
 
 /* Cells chosen together with Shift+click. */
 #surface .cell-chosen { background: color-mix(in srgb, var(--accent) 22%, transparent) !important; }
+
+/* The comments beside the page: one card a thread, at the height of its mark. */
+.scroll { position: relative; }
+.comment-margin { position: absolute; width: 240px; z-index: 5; }
+.comment-margin[hidden] { display: none; }
+.comment-card { position: absolute; left: 0; width: 240px; box-sizing: border-box; background: #fff8d6; color: #222; border: 1px solid #e0cf7a; border-radius: 4px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18); }
+.comment-entry { padding: 6px 8px; border-top: 1px solid #efe2a4; }
+.comment-entry:first-child { border-top: 0; }
+.comment-entry.done .comment-text { color: #777; text-decoration: line-through; }
+.comment-entry.current { outline: 2px solid var(--accent); outline-offset: -2px; }
+.comment-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.comment-actions { display: flex; gap: 4px; margin-top: 4px; }
+.comment-actions button { font-size: 11px; padding: 1px 6px; }
+.change-list { display: flex; flex-direction: column; gap: 4px; max-height: 50vh; overflow: auto; }
+.change-row { display: flex; gap: 6px; align-items: baseline; }
+.change-kind { font-weight: 600; }
+.scroll.with-comments { padding-right: 270px; }

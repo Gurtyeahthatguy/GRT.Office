@@ -2,7 +2,7 @@
 
 import { tag, xmlDocument } from '../xml.js';
 import { formatLength, toMm } from '../units.js';
-import { pageDimensions, DEFAULT_PAGE, normaliseRunning, OBJECT, normaliseHeadingNumbers, normaliseNoteSettings } from '../editor/model.js';
+import { pageDimensions, DEFAULT_PAGE, normaliseRunning, normaliseHeadingNumbers, normaliseNoteSettings } from '../editor/model.js';
 
 /** Paper's number formats as OpenDocument writes them. */
 const ODF_NUMBER = { decimal: '1', 'lower-alpha': 'a', 'upper-alpha': 'A', 'lower-roman': 'i', 'upper-roman': 'I' };
@@ -56,6 +56,14 @@ export function writeOdt(document, images = new Map(), { flat = false } = {}) {
   return writer.write();
 }
 
+/** Paper's kinds of source as ODF names them. */
+const ODF_CITE = { book: 'book', article: 'article', website: 'www', thesis: 'phdthesis', report: 'techreport', misc: 'misc' };
+
+/** The namespaces review needs: Dublin Core for the date a change must carry, and LibreOffice's for comment threads. */
+const REVIEW_NAMESPACES = { 'xmlns:dc': 'http://purl.org/dc/elements/1.1/', 'xmlns:loext': 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0' };
+/** ODF wants a date on every change; GRT gives the same one to all, as LibreOffice does for changes without a date. */
+const NO_DATE = '1970-01-01T00:00:00';
+
 class TextWriter {
   constructor(document, images, flat) {
     this.doc = document;
@@ -77,6 +85,10 @@ class TextWriter {
 
   write() {
     this.fields = documentFields({ blocks: this.doc.blocks });
+    // A file written from the working document holds the covered text in full; only the redacted export leaves it out.
+    if (this.doc.blocks.some((block) => [...runListsOf(block)].some(({ runs }) => runs.some((run) => run.redact)))) {
+      this.losses.add('Text marked to be covered, written in full: File, Export Redacted makes a copy without it');
+    }
     // Headings a reference points at carry a bookmark for it, as LibreOffice marks them.
     this.headingTargets = new Set();
     for (const block of this.doc.blocks) {
@@ -85,15 +97,22 @@ class TextWriter {
       }
     }
     const sequences = [...new Set([...this.fields.seqs.values()].map((seq) => seq.name))];
+    // The text is written first, so the changes it records are known for the list that leads it.
+    this.regions = [];
+    this.openComment = null;
+    const sections = this.sections();
+    const recording = Boolean(this.doc.review?.recording);
     const body = [
+      this.regions.length || recording ? tag('text:tracked-changes', { 'text:track-changes': recording ? 'true' : 'false' }, this.regions) : null,
       sequences.length ? tag('text:sequence-decls', {}, sequences.map((name) => tag('text:sequence-decl', { 'text:display-outline-level': '0', 'text:name': name }))) : null,
-      ...this.sections(),
+      ...sections,
     ];
     const master = this.masterPage();
 
     if (this.flat) {
       const root = tag('office:document', {
         ...ROOT_NAMESPACES,
+        ...REVIEW_NAMESPACES,
         'office:version': ODF_VERSION,
         'office:mimetype': MIMETYPES.text,
       },
@@ -105,7 +124,7 @@ class TextWriter {
       return { text: xmlDocument(root), losses: this.losses };
     }
 
-    const content = tag('office:document-content', { ...ROOT_NAMESPACES, 'office:version': ODF_VERSION },
+    const content = tag('office:document-content', { ...ROOT_NAMESPACES, ...REVIEW_NAMESPACES, 'office:version': ODF_VERSION },
       this.fontFaces(),
       tag('office:automatic-styles', {}, this.automaticStyles()),
       tag('office:body', {}, tag('office:text', {}, body)));
@@ -354,13 +373,22 @@ class TextWriter {
     const props = {};
     if (run.bold) Object.assign(props, { 'fo:font-weight': 'bold', 'style:font-weight-asian': 'bold', 'style:font-weight-complex': 'bold' });
     if (run.italic) Object.assign(props, { 'fo:font-style': 'italic', 'style:font-style-asian': 'italic', 'style:font-style-complex': 'italic' });
-    if (run.underline) Object.assign(props, { 'style:text-underline-style': 'solid', 'style:text-underline-width': 'auto', 'style:text-underline-color': 'font-color' });
+    if (run.underline || run.double) Object.assign(props, { 'style:text-underline-style': 'solid', 'style:text-underline-width': 'auto', 'style:text-underline-color': 'font-color' });
+    if (run.double) props['style:text-underline-type'] = 'double';
     if (run.strike) Object.assign(props, { 'style:text-line-through-style': 'solid', 'style:text-line-through-type': 'single' });
+    if (run.overline) Object.assign(props, { 'style:text-overline-style': 'solid', 'style:text-overline-width': 'auto', 'style:text-overline-color': 'font-color' });
+    if (run.shadow) props['fo:text-shadow'] = '1pt 1pt';
+    if (run.outline) props['style:text-outline'] = 'true';
+    if (run.smallcaps) props['fo:font-variant'] = 'small-caps';
     if (run.sup) props['style:text-position'] = 'super 58%';
     else if (run.sub) props['style:text-position'] = 'sub 58%';
     if (run.color) props['fo:color'] = run.color;
     if (run.highlight) props['fo:background-color'] = run.highlight;
     if (run.size) Object.assign(props, { 'fo:font-size': pt(run.size), 'style:font-size-asian': pt(run.size), 'style:font-size-complex': pt(run.size) });
+    if (run.lang) {
+      const [language, country] = run.lang.split('-');
+      Object.assign(props, { 'fo:language': language, 'fo:country': country ?? 'none' });
+    }
     if (Object.keys(props).length === 0) return null;
     const key = JSON.stringify(props);
     if (!this.textStyles.has(key)) this.textStyles.set(key, { name: `T${this.textStyles.size + 1}`, props });
@@ -640,7 +668,7 @@ class TextWriter {
         this.noteCount = (this.noteCount ?? 0) + 1;
         return tag('text:note', { 'text:id': `ftn${this.noteCount}`, 'text:note-class': object.kind === 'end' ? 'endnote' : 'footnote' },
           tag('text:note-citation', object.mark ? { 'text:label': object.mark } : {}, label),
-          tag('text:note-body', {}, tag('text:p', { 'text:style-name': object.kind === 'end' ? 'Endnote' : 'Footnote' }, this.runs(object.runs))));
+          tag('text:note-body', {}, tag('text:p', { 'text:style-name': object.kind === 'end' ? 'Endnote' : 'Footnote' }, this.runs(object.runs, { comments: false }))));
       }
       case 'bookmark':
         return tag('text:bookmark', { 'text:name': object.name });
@@ -674,6 +702,25 @@ class TextWriter {
         if (object.field === 'date') return tag('text:date', {}, new Date().toISOString().slice(0, 10));
         if (object.field === 'time') return tag('text:time', {}, new Date().toTimeString().slice(0, 5));
         return tag('text:chapter', { 'text:display': 'name', 'text:outline-level': '1' }, '');
+      case 'merge':
+        return tag('text:database-display', { 'text:table-name': 'Data', 'text:table-type': 'table', 'text:column-name': object.name }, `<${object.name}>`);
+      case 'cite':
+        return tag('text:bibliography-mark', {
+          'text:identifier': object.key, 'text:bibliography-type': ODF_CITE[object.kind] ?? 'book',
+          'text:author': object.author ?? null, 'text:title': object.title ?? null, 'text:year': object.year ?? null,
+          'text:publisher': object.publisher ?? null, 'text:url': object.url ?? null,
+        }, `[${object.key}]`);
+      case 'comment': {
+        // A thread is the comment and, after it, each reply naming it as its parent; no names, no dates.
+        const name = `__Annotation__${object.id}`;
+        const paragraphs = (text) => String(text).split('\n').map((line) => tag('text:p', {}, this.runs([{ text: line }], { changes: false, comments: false })));
+        return [
+          tag('office:annotation', { 'office:name': name, 'loext:resolved': object.done ? 'true' : null }, paragraphs(object.text)),
+          ...(object.replies ?? []).map((reply) => tag('office:annotation', {
+            'office:name': `__Annotation__${reply.id}`, 'loext:parent-name': name, 'loext:resolved': reply.done ? 'true' : null,
+          }, paragraphs(reply.text))),
+        ];
+      }
       case 'index':
         return object.sub
           ? tag('text:alphabetical-index-mark', { 'text:string-value': object.sub, 'text:key1': object.term })
@@ -731,7 +778,8 @@ class TextWriter {
       }
       while (level < stack[stack.length - 1].level) stack.pop();
       const top = stack[stack.length - 1];
-      top.item = tag('text:list-item', {}, tag('text:p', { 'text:style-name': paragraphStyle }, this.runs(item.runs)));
+      top.item = tag(item.unnumbered ? 'text:list-header' : 'text:list-item', item.restart && !item.unnumbered ? { 'text:start-value': '1' } : {},
+        tag('text:p', { 'text:style-name': paragraphStyle }, this.runs(item.runs)));
       top.list.children.push(top.item);
     }
     return root;
@@ -780,11 +828,40 @@ class TextWriter {
   }
 
   /** Runs as spans, spaces ODF would collapse written as text:s. */
-  runs(runs, { keepNewlines = true } = {}) {
+  runs(list, { keepNewlines = true, changes = true, comments = true } = {}) {
+    const runs = list ?? [];
     const out = [];
     let afterSpace = true;
-    for (const run of runs ?? []) {
+    let insertion = null;
+    const closeInsertion = () => {
+      if (insertion) out.push(tag('text:change-end', { 'text:change-id': insertion.region }));
+      insertion = null;
+    };
+    for (let i = 0; i < runs.length; i += 1) {
+      const run = runs[i];
       if (!run.text) continue;
+      // The stretch a comment is about ends where its runs do.
+      if (comments && this.openComment && run.cmt !== this.openComment && !run.object) {
+        out.push(tag('office:annotation-end', { 'office:name': `__Annotation__${this.openComment}` }));
+        this.openComment = null;
+      }
+      if (comments && run.cmt && !this.openComment && !run.object) this.openComment = run.cmt;
+      if (changes) {
+        if (run.del) {
+          // Text taken out goes into the change's record; where it stood, a mark.
+          closeInsertion();
+          const group = [run];
+          while (runs[i + 1]?.del && runs[i + 1].del === run.del) group.push(runs[(i += 1)]);
+          const region = this.region('deletion', run.chgnote, tag('text:p', {}, this.runs(group.map(({ del: _d, chgnote: _n, cmt: _c, ...rest }) => rest), { changes: false, comments: false })));
+          out.push(tag('text:change', { 'text:change-id': region }));
+          continue;
+        }
+        if (run.ins && insertion?.id !== run.ins) {
+          closeInsertion();
+          insertion = { id: run.ins, region: this.region('insertion', run.chgnote) };
+          out.push(tag('text:change-start', { 'text:change-id': insertion.region }));
+        } else if (!run.ins) closeInsertion();
+      }
       if (run.object) {
         out.push(this.object(run));
         afterSpace = false;
@@ -828,7 +905,17 @@ class TextWriter {
       const span = run.cstyle && this.doc.charStyles?.[run.cstyle] ? tag('text:span', { 'text:style-name': `GRTC_${run.cstyle}` }, direct) : direct;
       out.push(run.link ? tag('text:a', { 'xlink:type': 'simple', 'xlink:href': run.link }, span) : span);
     }
+    closeInsertion();
     return out;
+  }
+
+  /** A recorded change for the list at the head of the text: what it is, a fixed date as the format asks, its note. */
+  region(kind, note, content = null) {
+    const id = `ct${this.regions.length + 1}`;
+    this.regions.push(tag('text:changed-region', { 'xml:id': id, 'text:id': id }, tag(`text:${kind}`, {},
+      tag('office:change-info', {}, tag('dc:date', {}, NO_DATE), note ? note.split('\n').map((line) => tag('text:p', {}, line)) : null),
+      content)));
+    return id;
   }
 }
 

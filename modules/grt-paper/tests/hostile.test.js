@@ -119,6 +119,18 @@ describe('sizes a file only claims', () => {
     await survives(() => readOds(odfPackage('spreadsheet', ODF('', repeated, 'spreadsheet'))));
   });
 
+  it('a workbook that names one sheet a thousand times reads it once', async () => {
+    const many = '<sheet name="S" sheetId="1" r:id="s1"/>'.repeat(1000);
+    const big = `<sheetData>${Array.from({ length: 2000 }, (_, r) => `<row r="${r + 1}"><c r="A${r + 1}"><v>${r}</v></c></row>`).join('')}</sheetData>`;
+    const files = xlsx(big);
+    const workbook = new TextDecoder().decode(files.entries.get('xl/workbook.xml')).replace(/<sheet [^>]*\/>/, many);
+    files.entries.set('xl/workbook.xml', new TextEncoder().encode(workbook));
+    let result = null;
+    expect(await survives(() => { result = readXlsx(files); })).toBe(null);
+    expect(result.document.sheets).toHaveLength(1);
+    expect(result.losses.lines().join()).toMatch(/already read/);
+  });
+
   it('a formula nested a hundred thousand times', async () => {
     const formula = `of:=${'('.repeat(100000)}1${')'.repeat(100000)}`;
     await survives(() => readOds(odfPackage('spreadsheet', ODF('', `<table:table><table:table-row><table:table-cell table:formula="${formula}"/></table:table-row></table:table>`, 'spreadsheet'))));

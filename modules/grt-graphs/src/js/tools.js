@@ -1,32 +1,9 @@
 /** Graphs' tools beyond drawing: nodes that show a value from Grid or Tables, a diagram from a table, the plan of a project, and the nodes' data as a table. */
 
-import { readPackage } from './core/package.js';
-import { readOds } from './core/formats/ods.js';
-import { readXlsx } from './core/formats/xlsx.js';
-import { parseCsv, sniff } from './core/csv.js';
-import { readSqlite, pickValue, sheetTables, cellValue, shownValue, AGGREGATES } from './sources.js';
+import { pickValue, cellValue, shownValue, AGGREGATES, SOURCE_FILTERS, readSource } from './core/sources.js';
 import { criticalPath, ganttSvg, deadlinesIcs } from './planning.js';
 
-export const SOURCE_FILTERS = [
-  { name: 'Spreadsheets and databases', extensions: ['ods', 'fods', 'xlsx', 'csv', 'sqlite', 'db', 'sqlite3'] },
-  { name: 'Spreadsheets', extensions: ['ods', 'fods', 'xlsx', 'csv'] },
-  { name: 'Tables databases', extensions: ['sqlite', 'db', 'sqlite3'] },
-];
-
-/** The tables a source file holds: sheets of a spreadsheet, or tables of a database. */
-export async function readSource(path, { readBytes, readText }) {
-  if (/\.(sqlite|sqlite3|db)$/i.test(path)) return { kind: 'database', ...readSqlite(await readBytes(path)) };
-  if (/\.csv$/i.test(path)) {
-    const text = await readText(path);
-    const rows = parseCsv(text, { separator: sniff(text).separator ?? ',' });
-    const cells = {};
-    rows.slice(0, 200000).forEach((row, r) => row.forEach((v, c) => { cells[`${r},${c}`] = { v: v !== '' && Number.isFinite(Number(v)) ? Number(v) : v }; }));
-    return { kind: 'sheet', tables: sheetTables({ sheets: [{ name: 'Sheet1', cells }] }), notes: [] };
-  }
-  const document = /\.fods$/i.test(path) ? readOds(await readText(path)).document
-    : /\.xlsx$/i.test(path) ? readXlsx(await readPackage(path)).document : readOds(await readPackage(path)).document;
-  return { kind: 'sheet', tables: sheetTables(document), notes: [] };
-}
+export { SOURCE_FILTERS, readSource };
 
 /** The value a live node shows, read again from its source. */
 export function liveValue(source, live) {

@@ -55,7 +55,7 @@ export function readOdg(source) {
 
   const pages = kids(body, NS.draw, 'page');
   if (pages.length > 1) losses.add('Pages after the first');
-  const reader = { styles, losses, nodes: [], edges: [], byName: new Map(), looks: new Map(), ids: 0 };
+  const reader = { styles, losses, nodes: [], edges: [], comments: [], byName: new Map(), looks: new Map(), ids: 0 };
   const connectors = [];
   if (pages[0]) collect(pages[0], reader, connectors);
   for (const connector of connectors) readConnector(connector, reader);
@@ -65,7 +65,7 @@ export function readOdg(source) {
   return {
     document: {
       version: 1, type: 'graphs', nodes: reader.nodes, edges: reader.edges,
-      styles: { ...DEFAULT_STYLES, ...graphStyles }, meta: { gridSize: 10, snapToGrid: true },
+      styles: { ...DEFAULT_STYLES, ...graphStyles }, meta: { gridSize: 10, snapToGrid: true, ...(reader.comments.length ? { comments: reader.comments } : {}) },
     },
     losses,
   };
@@ -77,10 +77,20 @@ const DEFAULT_STYLES = {
   warn: { fill: '#fff4e5', stroke: '#b26a00', strokeWidth: 2 },
 };
 
-function collect(container, reader, connectors) {
+const OFFICEOOO = 'http://openoffice.org/2009/office';
+
+function collect(container, reader, connectors, link = null) {
   for (const node of kids(container)) {
+    // A comment on the page: its place and its text; who wrote it and when are not kept.
+    if (node.namespaceURI === OFFICEOOO && node.localName === 'annotation') {
+      readAnnotation(node, reader);
+      continue;
+    }
     if (node.namespaceURI !== NS.draw) continue;
-    if (node.localName === 'g') {
+    if (node.localName === 'a') {
+      const href = node.getAttributeNS(NS.xlink, 'href');
+      collect(node, reader, connectors, href ? href.slice(0, 2048) : null);
+    } else if (node.localName === 'g') {
       reader.losses.add('Groups, kept as their shapes');
       collect(node, reader, connectors);
     } else if (node.localName === 'connector') {
@@ -88,9 +98,19 @@ function collect(container, reader, connectors) {
     } else if (node.localName === 'line') {
       reader.losses.add('Lines not joined to shapes');
     } else {
+      const before = reader.nodes.length;
       readShape(node, reader);
+      if (link && reader.nodes.length > before) reader.nodes[reader.nodes.length - 1].link = link;
     }
   }
+}
+
+function readAnnotation(node, reader) {
+  if (reader.comments.length >= 500) return;
+  if (kids(node).some((k) => k.localName === 'creator' || k.localName === 'date')) reader.losses.add('Names and dates on comments, left out');
+  const text = kids(node, NS.text, 'p').map((p) => p.textContent).join('\n').slice(0, 100_000);
+  if (text.trim() === '') return;
+  reader.comments.push({ id: `c${reader.comments.length + 1}`, x: Math.round(px(attr(node, NS.svg, 'x')) ?? 0), y: Math.round(px(attr(node, NS.svg, 'y')) ?? 0), text });
 }
 
 function readShape(element, reader) {
@@ -257,11 +277,16 @@ export function writeOdg(document, { flat = false } = {}) {
       'draw:textarea-vertical-align': 'middle', 'draw:auto-grow-height': 'false', 'draw:shadow': 'hidden',
       'fo:padding-top': '0.1cm', 'fo:padding-bottom': '0.1cm', 'fo:padding-left': '0.1cm', 'fo:padding-right': '0.1cm',
     })]);
-    return tag('draw:custom-shape', {
+    const shape = tag('draw:custom-shape', {
       'draw:style-name': graphic, 'draw:text-style-name': paragraph, 'xml:id': `shape${i + 1}`, 'draw:id': `shape${i + 1}`,
       'svg:x': cm(node.x + dx), 'svg:y': cm(node.y + dy), 'svg:width': cm(node.w), 'svg:height': cm(node.h),
     }, textOf(node.text), tag('draw:enhanced-geometry', { 'svg:viewBox': '0 0 21600 21600', 'draw:type': TYPES[node.shape] ?? 'rectangle' }));
+    // A node's link wraps it, as ODF links a shape.
+    return typeof node.link === 'string' && node.link !== '' ? tag('draw:a', { 'xlink:type': 'simple', 'xlink:href': node.link }, shape) : shape;
   });
+  const comments = (document.meta?.comments ?? []).filter((c) => typeof c?.text === 'string' && c.text !== '').map((c) => tag('officeooo:annotation', {
+    'svg:x': cm((c.x ?? 0) + dx), 'svg:y': cm((c.y ?? 0) + dy), 'svg:width': cm(160), 'svg:height': cm(80),
+  }, String(c.text).split('\n').map((line) => tag('text:p', {}, odfText(line)))));
   const index = new Map(nodes.map((node, i) => [node.id, i]));
   const connectorStyle = style('graphic', 'gr', [tag('style:graphic-properties', {
     'draw:stroke': 'solid', 'svg:stroke-color': '#333333', 'svg:stroke-width': cm(2),
@@ -285,7 +310,7 @@ export function writeOdg(document, { flat = false } = {}) {
     }, edge.label ? textOf(edge.label) : null);
   });
 
-  const namespaces = { ...ROOT_NAMESPACES, 'office:version': ODF_VERSION };
+  const namespaces = { ...ROOT_NAMESPACES, 'xmlns:officeooo': OFFICEOOO, 'office:version': ODF_VERSION };
   const markers = tag('office:styles', {},
     tag('draw:marker', { 'draw:name': 'Arrow', 'svg:viewBox': '0 0 20 30', 'svg:d': 'M10 0l-10 30h20z' }));
   const layout = tag('style:page-layout', { 'style:name': 'PM1' }, tag('style:page-layout-properties', {
@@ -294,7 +319,7 @@ export function writeOdg(document, { flat = false } = {}) {
   }));
   const masters = tag('office:master-styles', {}, tag('style:master-page', { 'style:name': 'Default', 'style:page-layout-name': 'PM1' }));
   const page = tag('office:body', {}, tag('office:drawing', {},
-    tag('draw:page', { 'draw:name': 'page1', 'draw:master-page-name': 'Default' }, shapes, connectors)));
+    tag('draw:page', { 'draw:name': 'page1', 'draw:master-page-name': 'Default' }, shapes, connectors, comments)));
 
   if (flat) {
     const root = tag('office:document', { ...namespaces, 'office:mimetype': MIMETYPES.graphics },

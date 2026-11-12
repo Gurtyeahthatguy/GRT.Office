@@ -14,6 +14,16 @@ tauri = { version = "2", features = [] }
 serde_json = "1"
 percent-encoding = "2"
 grt-container = { path = "../grt-container" }
+# Search everywhere's index, only in the programs that offer it.
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
+# Spelling, and the writing tools that read the same kind of dictionaries.
+spellbook = { version = "=0.4.2", optional = true }
+flate2 = { version = "1", optional = true }
+
+[features]
+everywhere = ["dep:rusqlite"]
+spelling = ["dep:spellbook", "dep:flate2"]
+writing-tools = ["dep:flate2"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"

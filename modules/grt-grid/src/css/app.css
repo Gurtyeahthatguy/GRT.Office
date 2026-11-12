@@ -267,21 +267,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .add-sheet { padding: 2px 8px; font-size: 12px; }
 .summary { font-variant-numeric: tabular-nums; }
 
-/* Status bar */
+/* The sheet tabs above the status bar, as in Calc. */
 
-.statusbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 12px;
-  font-size: 12px;
-  background: var(--bg-raised);
-  border-top: 1px solid var(--border);
-  color: var(--text-dim);
-  flex: 0 0 auto;
-}
-
-.statusbar .spacer { flex: 1; }
+.sheet-tabs-bar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; background: var(--bg); border-top: 1px solid var(--border); flex: 0 0 auto; }
 
 /* Saving is automatic, so the status bar says so. */
 .save-state { color: var(--text-dim); }
@@ -429,3 +417,11 @@ body.cloning .grid { cursor: copy; }
 .cell.value-number { color: #1f4fd1 !important; }
 .cell.value-formula { color: #13803a !important; }
 .cell.value-text { color: var(--text) !important; }
+
+/* Comments: a red corner on the cell, and a yellow box beside it when shown. */
+.cell.has-note { background-image: linear-gradient(225deg, #d93025 5px, transparent 5px); background-repeat: no-repeat; }
+.note-box { position: absolute; top: 0; left: 0; z-index: 6; max-width: 260px; padding: 4px 7px; background: #ffffe1; color: #222; border: 1px solid #b8b48a; border-radius: 2px; box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.25); font-size: 12px; line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none; }
+.note-box[hidden] { display: none; }
+.cell.has-link { color: var(--accent); text-decoration-line: underline; }
+.cell.redacted { background-color: #111 !important; color: #111 !important; }
+.cell.redacted:hover { color: #ddd !important; }

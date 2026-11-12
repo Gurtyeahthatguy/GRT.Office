@@ -104,6 +104,22 @@ describe('Formatting a selection', () => {
     expect(hasFormat(model, selection, 'bold')).toBe(true);
   });
 
+  it('turns superscript off when subscript goes on, and single underline off for double, as LibreOffice does', () => {
+    const model = twoParagraphs('H2O and more');
+    const selection = range('b1', 1, 'b1', 2);
+    applyFormat(model, selection, 'sup');
+    applyFormat(model, selection, 'sub');
+    expect(hasFormat(model, selection, 'sub')).toBe(true);
+    expect(hasFormat(model, selection, 'sup')).toBe(false);
+    applyFormat(model, selection, 'underline');
+    applyFormat(model, selection, 'double');
+    expect(hasFormat(model, selection, 'double')).toBe(true);
+    expect(hasFormat(model, selection, 'underline')).toBe(false);
+    // Turning one off leaves its partner as it was.
+    applyFormat(model, selection, 'double');
+    expect(hasFormat(model, selection, 'underline')).toBe(false);
+  });
+
   it('does nothing when the selection is a single point', () => {
     const model = twoParagraphs();
     const before = JSON.stringify(model.toJSON());

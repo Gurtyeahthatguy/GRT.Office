@@ -37,3 +37,9 @@ if (['modules/grt-paper', 'modules/grt-slides', 'modules/grt-notes'].includes(ta
   cpSync(join(repo, 'core', 'vendor-math'), vendor, { recursive: true, filter: (source) => !source.endsWith('VERSIONS.txt') });
   console.log(`vendor-math → ${target}/src/vendor`);
 }
+
+// The Chinese conversion tables go only to Paper, the program with Tools > Language.
+if (target.replace(/\/$/, '') === 'modules/grt-paper') {
+  cpSync(join(repo, 'core', 'vendor-lang'), vendor, { recursive: true, filter: (source) => !source.endsWith('VERSIONS.txt') });
+  console.log(`vendor-lang → ${target}/src/vendor`);
+}

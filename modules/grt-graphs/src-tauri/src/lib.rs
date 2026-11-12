@@ -223,11 +223,24 @@ fn write_grt(path: String, parts: serde_json::Value, password: Option<String>) -
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(grt_app::setup)
         .manage(grt_app::CloseGuard::default())
         .manage(grt_app::Recovery::default())
         .on_window_event(grt_app::on_window_event)
         .plugin(tauri_plugin_dialog::init())
+        .manage(grt_app::everywhere::Everywhere::default())
+        .manage(grt_app::spelling::Spelling::default())
         .invoke_handler(tauri::generate_handler![
+            grt_app::spelling::spell_check,
+            grt_app::spelling::spell_suggest,
+            grt_app::spelling::spell_languages,
+            grt_app::spelling::spell_added,
+            grt_app::spelling::spell_add,
+            grt_app::spelling::spell_remove,
+            grt_app::everywhere::everywhere_folder,
+            grt_app::everywhere::everywhere_search,
+            grt_app::everywhere::everywhere_search_locked,
+            grt_app::everywhere::everywhere_forget,
             grt_app::commands::set_close_guard,
             grt_app::commands::close_ack,
             grt_app::commands::close_window,

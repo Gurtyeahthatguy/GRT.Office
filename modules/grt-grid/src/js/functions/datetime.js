@@ -14,8 +14,8 @@ export function dayOf(serial) {
   return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(), weekday: date.getUTCDay() };
 }
 
-const isLeap = (year) => (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-const daysInMonth = (year, month) => new Date(Date.UTC(year, month, 0)).getUTCDate();
+export const isLeap = (year) => (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+export const daysInMonth = (year, month) => new Date(Date.UTC(year, month, 0)).getUTCDate();
 
 /** One argument as a date serial, refusing what is not one. */
 function serialArg(arg) {
@@ -183,7 +183,7 @@ function workday(start, days, weekend, holidays) {
 }
 
 /** Days between two dates in a 360-day year, the US way or the European one. */
-function days360(start, end, european) {
+export function days360(start, end, european) {
   const a = dayOf(start);
   const b = dayOf(end);
   let d1 = a.day;
@@ -201,7 +201,7 @@ function days360(start, end, european) {
 }
 
 /** The fraction of a year between two dates, by one of the five day-count bases. */
-function yearFrac(start, end, basis) {
+export function yearFrac(start, end, basis) {
   let a = Math.floor(start);
   let b = Math.floor(end);
   if (a > b) [a, b] = [b, a];

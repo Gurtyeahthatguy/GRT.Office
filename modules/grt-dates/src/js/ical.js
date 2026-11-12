@@ -149,6 +149,8 @@ export function parse(text) {
   let name = null;
 
   let current = null;
+  // The lines of the entry being read, so one that cannot be shown is still written back as it came.
+  let currentLines = [];
   let depth = [];
   // A component inside an entry, or a calendar-level one GRT does not show, is gathered whole.
   let block = null;
@@ -156,6 +158,7 @@ export function parse(text) {
   for (const line of lines) {
     const parsed = parseLine(line);
     if (!parsed) continue;
+    if (current) currentLines.push(line);
 
     if (block) {
       block.lines.push(line);
@@ -175,6 +178,7 @@ export function parse(text) {
 
       if ((component === 'VEVENT' || component === 'VTODO') && !current) {
         current = blankEntry(component === 'VEVENT' ? 'event' : 'task');
+        currentLines = [line];
       } else if (component !== 'VCALENDAR') {
         block = { component, depth: 1, lines: [line], properties: [parsed] };
       }
@@ -185,7 +189,7 @@ export function parse(text) {
       const component = parsed.value.toUpperCase();
       depth.pop();
       if ((component === 'VEVENT' || component === 'VTODO') && current) {
-        entries.push(current);
+        entries.push({ entry: current, lines: currentLines });
         current = null;
       }
       continue;
@@ -202,7 +206,29 @@ export function parse(text) {
 
   // Zones are known once the whole file is read, wherever its VTIMEZONEs sit.
   const resolver = zoneResolver(timezones);
-  return { name, entries: entries.map((entry) => finishEntry(entry, resolver)), unsupported: [...unsupported], timezones, kept };
+  // An entry dated outside the years 1 to 9999 cannot be shown, so it is kept as it came and counted.
+  const finished = [];
+  let dropped = 0;
+  for (const { entry, lines: raw } of entries) {
+    let done = null;
+    try {
+      done = finishEntry(entry, resolver);
+    } catch {
+      done = null;
+    }
+    if (done && [done.start, done.end, done.due].every(withinYears)) finished.push(done);
+    else {
+      dropped += 1;
+      kept.push(...raw);
+    }
+  }
+  return { name, entries: finished, unsupported: [...unsupported], timezones, kept, dropped };
+}
+
+function withinYears(point) {
+  if (!point) return true;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(point.date ?? '');
+  return !!match && +match[1] >= 1 && +match[2] >= 1 && +match[2] <= 12 && +match[3] >= 1 && +match[3] <= 31;
 }
 
 /** A component gathered whole: a time zone, a reminder, or something kept as it arrived. */

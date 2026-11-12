@@ -1,7 +1,7 @@
 /** A cell's look as Grid keeps it, and its borders in the words ODF and OOXML use. */
 
 /** The fields of a look that describe the cell; `name` and `parent` only say where it came from. */
-export const LOOK_FIELDS = ['bold', 'italic', 'underline', 'strike', 'color', 'font', 'size', 'bg', 'align', 'valign', 'wrap', 'indent', 'rotate', 'borders', 'format'];
+export const LOOK_FIELDS = ['bold', 'italic', 'underline', 'double', 'strike', 'overline', 'shadow', 'outline', 'color', 'font', 'size', 'bg', 'align', 'valign', 'wrap', 'indent', 'rotate', 'borders', 'format'];
 
 export const SIDES = ['top', 'right', 'bottom', 'left'];
 

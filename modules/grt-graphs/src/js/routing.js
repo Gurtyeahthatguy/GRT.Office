@@ -124,15 +124,64 @@ function stepOut(point, port, distance = STUB) {
   return { x: point.x + normal.x * distance, y: point.y + normal.y * distance };
 }
 
+/** The ports an edge actually uses, with 'auto' resolved. */
+export function edgePorts(edge, from, to) {
+  return resolveAutoPorts(from, to, edge.fromPort, edge.toPort);
+}
+
+/** A curve's two control points: each leaves its end the way the port faces, so a curve from the bottom starts downwards. */
+export function curveControls(a, b, ports = { fromPort: 'right', toPort: 'left' }) {
+  const grip = (port) => {
+    const n = portNormal(port);
+    const reach = Math.max((n.x ? Math.abs(b.x - a.x) : Math.abs(b.y - a.y)) / 2, 40);
+    return { x: n.x * reach, y: n.y * reach };
+  };
+  const out = grip(ports.fromPort);
+  const into = grip(ports.toPort);
+  return [{ x: a.x + out.x, y: a.y + out.y }, { x: b.x + into.x, y: b.y + into.y }];
+}
+
+/** Points along a curved connector, for outputs that draw only straight lines. */
+export function curvePoints(a, b, ports, steps = 16) {
+  const [c1, c2] = curveControls(a, b, ports);
+  return Array.from({ length: steps + 1 }, (_, i) => {
+    const t = i / steps;
+    const u = 1 - t;
+    return {
+      x: u * u * u * a.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * b.x,
+      y: u * u * u * a.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * b.y,
+    };
+  });
+}
+
+/** The points a connector is drawn through, a curve's included. */
+export function drawnPoints(points, routing, ports) {
+  return routing === 'curved' && points.length === 2 ? curvePoints(points[0], points[1], ports) : points;
+}
+
+/** Where a connector's label sits: halfway along it, by length. */
+export function labelPoint(points, routing, ports) {
+  const line = drawnPoints(points, routing, ports);
+  const lengths = line.slice(1).map((p, i) => Math.hypot(p.x - line[i].x, p.y - line[i].y));
+  let left = lengths.reduce((sum, n) => sum + n, 0) / 2;
+  for (let i = 0; i < lengths.length; i += 1) {
+    if (left <= lengths[i] && lengths[i] > 0) {
+      const t = left / lengths[i];
+      return { x: line[i].x + (line[i + 1].x - line[i].x) * t, y: line[i].y + (line[i + 1].y - line[i].y) * t };
+    }
+    left -= lengths[i];
+  }
+  return line[0];
+}
+
 /** An SVG path for the points, curved or straight as the edge asks. */
-export function pathData(points, routing) {
+export function pathData(points, routing, ports) {
   if (points.length < 2) return '';
 
   if (routing === 'curved' && points.length === 2) {
     const [a, b] = points;
-    // Horizontal control points give the S shape node editors use.
-    const grip = Math.max(Math.abs(b.x - a.x) / 2, 40);
-    return `M ${a.x} ${a.y} C ${a.x + grip} ${a.y}, ${b.x - grip} ${b.y}, ${b.x} ${b.y}`;
+    const [c1, c2] = curveControls(a, b, ports);
+    return `M ${round(a.x)} ${round(a.y)} C ${round(c1.x)} ${round(c1.y)}, ${round(c2.x)} ${round(c2.y)}, ${round(b.x)} ${round(b.y)}`;
   }
 
   return points

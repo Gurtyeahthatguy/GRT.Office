@@ -14,7 +14,8 @@ import { declareExternal } from './external.js';
 import { clearSpilled } from './spills.js';
 import { readXlsxPivots, writeXlsxPivots, REL_PIVOT_CACHE } from './xlsx-pivots.js';
 import { readXlsxCharts, writeXlsxCharts, REL_DRAWING } from './xlsx-charts.js';
-import { cleanLook, withoutDefaults, sameLook, borderFromXlsx, borderToXlsx, SIDES } from './cell-look.js';
+import { readXlsxComments, notesOf, commentsXml, vmlXml, REL_COMMENTS, REL_VML, COMMENTS_TYPE, VML_TYPE } from './xlsx-comments.js';
+import { cleanLook, sameLook, borderFromXlsx, borderToXlsx, SIDES } from './cell-look.js';
 
 const S = NS.s;
 const MAIN = 'application/vnd.openxmlformats-officedocument.spreadsheetml';
@@ -93,12 +94,19 @@ export function readXlsx(pkg) {
 
   const sheets = [];
   const charts = [];
+  // A part named by two sheets is read once, so a small file cannot make the reader parse one sheet many times.
+  const readParts = new Set();
   for (const [sheetIndex, sheet] of kids(kid(workbook.documentElement, S, 'sheets'), S, 'sheet').entries()) {
     const rel = rels.get(sheet.getAttributeNS(NS.r, 'id'));
     if (!rel || !relIs(rel.type, 'worksheet')) {
       losses.add('Chart sheets and dialog sheets');
       continue;
     }
+    if (readParts.has(rel.target)) {
+      losses.add('Sheets that name a part already read, left out');
+      continue;
+    }
+    readParts.add(rel.target);
     const doc = readPart(pkg, rel.target, `the sheet ${sheet.getAttribute('name')}`);
     if (!doc) continue;
     const read = readSheet(sheet.getAttribute('name') ?? `Sheet${sheets.length + 1}`, doc, reader);
@@ -107,6 +115,8 @@ export function readXlsx(pkg) {
     const tab = dig(doc.documentElement, 'sheetPr', 'tabColor')?.getAttribute('rgb') ?? '';
     if (/^[0-9a-f]{8}$/i.test(tab)) read.tab = `#${tab.slice(2).toLowerCase()}`;
     readXlsxPivots(pkg, rel.target, read, losses, pivotCaches);
+    readXlsxComments(pkg, rel.target, read.cells, losses);
+    readHyperlinks(pkg, rel.target, doc.documentElement, read.cells);
     charts.push(...readXlsxCharts(pkg, rel.target, doc.documentElement, read, sheets.length, losses)
       .map((chart, i) => ({ id: `chart-${charts.length + i + 1}`, ...chart })));
     sheets.push(read);
@@ -195,8 +205,11 @@ function readStyles(pkg, part, theme) {
   const fonts = kids(kid(root, S, 'fonts'), S, 'font').map((font) => ({
     bold: toggle(kid(font, S, 'b')),
     italic: toggle(kid(font, S, 'i')),
-    underline: !!kid(font, S, 'u') && kid(font, S, 'u').getAttribute('val') !== 'none',
+    underline: !!kid(font, S, 'u') && !['none', 'double', 'doubleAccounting'].includes(kid(font, S, 'u').getAttribute('val')),
+    double: ['double', 'doubleAccounting'].includes(kid(font, S, 'u')?.getAttribute('val')),
     strike: toggle(kid(font, S, 'strike')),
+    shadow: toggle(kid(font, S, 'shadow')),
+    outline: toggle(kid(font, S, 'outline')),
     color: colorOf(kid(font, S, 'color'), theme),
     size: Number(kid(font, S, 'sz')?.getAttribute('val')) || null,
     font: kid(font, S, 'name')?.getAttribute('val') ?? null,
@@ -316,7 +329,6 @@ function readSheet(name, doc, reader) {
     const area = readArea(merge.getAttribute('ref'));
     if (area) merges.push(area);
   }
-  if (kid(root, S, 'legacyDrawing')) losses.add('Comments on cells');
   if (kid(root, S, 'tableParts')) losses.add('Excel tables, kept as plain cells');
 
   const pane = dig(root, 'sheetViews', 'sheetView', 'pane');
@@ -615,6 +627,7 @@ function readCellElement(c, place, reader, shared) {
         const master = shared.get(index);
         out.f = shiftFormula(master.formula, place.row - master.row, place.col - master.col);
       }
+      if (out.f) out.i = 1;
     } else if (kind === 'array') {
       if (text) out.f = fromExcelFormula(text);
       const span = /^([A-Z]+\d+)(?::([A-Z]+\d+))?$/i.exec(f.getAttribute('ref') ?? '');
@@ -624,7 +637,9 @@ function readCellElement(c, place, reader, shared) {
     } else if (kind === 'dataTable') {
       reader.losses.add('What-if tables, kept as their values');
     } else if (text) {
+      // A formula that is not an array formula intersects as older Excel does; Excel 365 shows it with @.
       out.f = fromExcelFormula(text);
+      out.i = 1;
     }
   }
   if (style) out.s = style;
@@ -642,7 +657,7 @@ function lookOfXf(xf, reader) {
   const base = reader.styles.defaultFont;
   const look = {
     bold: xf.font.bold && !base.bold, italic: xf.font.italic && !base.italic,
-    underline: xf.font.underline, strike: xf.font.strike,
+    underline: xf.font.underline, strike: xf.font.strike, double: xf.font.double, shadow: xf.font.shadow, outline: xf.font.outline,
     color: xf.font.color && xf.font.color !== base.color && xf.font.color !== '#000000' ? xf.font.color : null,
     font: xf.font.font !== base.font ? xf.font.font : null,
     size: xf.font.size !== base.size ? xf.font.size : null,
@@ -711,6 +726,8 @@ export function writeXlsx(document) {
   const sheetRels = [];
   let drawings = 0;
   let chartCount = 0;
+  let commented = 0;
+  const noteParts = [];
   const sheetXml = sheets.map((sheet, i) => {
     const own = (document.charts ?? []).filter((chart) => (typeof chart.sheet === 'number' ? chart.sheet : Math.max(0, sheets.findIndex((s) => s.id === chart.sheet))) === i);
     const rels = (pivots.sheetRels.get(i) ?? []).map((rel, k) => ({ ...rel, id: `rId${k + 2}` }));
@@ -723,8 +740,17 @@ export function writeXlsx(document) {
       rels.unshift({ id: 'rId1', type: REL_DRAWING, target: drawingTarget });
       drawing = tag('drawing', { 'r:id': 'rId1' });
     }
+    rels.push(...hyperlinksXml(sheet).rels);
+    let legacy = null;
+    const notes = notesOf(sheet);
+    if (notes.length) {
+      commented += 1;
+      rels.push({ id: 'rIdNotes', type: REL_COMMENTS, target: `../comments${commented}.xml` }, { id: 'rIdNoteBoxes', type: REL_VML, target: `../drawings/vmlDrawing${commented}.vml` });
+      noteParts.push({ name: `xl/comments${commented}.xml`, data: commentsXml(notes), type: COMMENTS_TYPE }, { name: `xl/drawings/vmlDrawing${commented}.vml`, data: vmlXml(notes, commented) });
+      legacy = tag('legacyDrawing', { 'r:id': 'rIdNoteBoxes' });
+    }
     if (rels.length) sheetRels.push({ name: `xl/worksheets/_rels/sheet${i + 1}.xml.rels`, data: relsXml(rels) });
-    return writeSheet(sheet, styles, stringIndex, drawing);
+    return writeSheet(sheet, styles, stringIndex, drawing, legacy);
   });
   const workbookRels = [
     ...sheets.map((_, i) => ({ id: `rId${i + 1}`, type: REL.worksheet, target: `worksheets/sheet${i + 1}.xml` })),
@@ -751,9 +777,10 @@ export function writeXlsx(document) {
     ['xl/sharedStrings.xml', `${MAIN}.sharedStrings+xml`],
     ...chartParts.filter((part) => part.type).map((part) => [part.name, part.type]),
     ...pivots.parts.map((part) => [part.name, part.type]),
+    ...noteParts.filter((part) => part.type).map((part) => [part.name, part.type]),
   ];
   const entries = [
-    { name: '[Content_Types].xml', data: contentTypesXml({ rels: 'application/vnd.openxmlformats-package.relationships+xml', xml: 'application/xml' }, overrides) },
+    { name: '[Content_Types].xml', data: contentTypesXml({ rels: 'application/vnd.openxmlformats-package.relationships+xml', xml: 'application/xml', ...(noteParts.length ? { vml: VML_TYPE } : {}) }, overrides) },
     { name: '_rels/.rels', data: relsXml([{ id: 'rId1', type: REL.officeDocument, target: 'xl/workbook.xml' }]) },
     { name: 'xl/workbook.xml', data: workbook },
     { name: 'xl/_rels/workbook.xml.rels', data: relsXml(workbookRels) },
@@ -763,8 +790,11 @@ export function writeXlsx(document) {
     ...sheetRels,
     ...chartParts.map((part) => ({ name: part.name, data: part.rels ? relsXml(part.data) : part.data })),
     ...pivots.parts.map((part) => ({ name: part.name, data: part.data })),
+    ...noteParts.map((part) => ({ name: part.name, data: part.data })),
     ...pivots.parts.filter((part) => part.rels).map((part) => ({ name: part.name.replace(/([^/]+)$/, '_rels/$1.rels'), data: relsXml(part.rels) })),
   ];
+  if (styles.overlined) losses.add('Overlined text, which Excel cannot show, kept plain');
+  if (sheets.some((sheet) => Object.values(sheet.cells ?? {}).some((cell) => cell?.rd))) losses.add('Cells marked to be covered, written in full: File, Export As, Redacted Export makes a copy without them');
   return { entries, losses };
 }
 
@@ -832,8 +862,10 @@ class StyleTable {
 
   /** The parts of an xf record a look needs. */
   record(style) {
+    if (style.overline) this.overlined = true;
     const font = JSON.stringify(cleanLook({
       bold: style.bold, italic: style.italic, underline: style.underline, strike: style.strike,
+      double: style.double, shadow: style.shadow, outline: style.outline,
       color: style.color, font: style.font, size: style.size,
     }));
     const borders = JSON.stringify(cleanLook({ borders: style.borders }).borders ?? {});
@@ -879,7 +911,9 @@ class StyleTable {
         font.bold ? tag('b', {}) : null,
         font.italic ? tag('i', {}) : null,
         font.strike ? tag('strike', {}) : null,
-        font.underline ? tag('u', {}) : null,
+        font.outline ? tag('outline', {}) : null,
+        font.shadow ? tag('shadow', {}) : null,
+        font.double ? tag('u', { val: 'double' }) : font.underline ? tag('u', {}) : null,
         tag('sz', { val: String(font.size ?? 11) }),
         font.color ? tag('color', { rgb: argb(font.color) }) : null,
         tag('name', { val: font.font ?? 'Liberation Sans' }));
@@ -934,7 +968,7 @@ class StyleTable {
   }
 }
 
-function writeSheet(sheet, styles, stringIndex, drawing = null) {
+function writeSheet(sheet, styles, stringIndex, drawing = null, legacy = null) {
   const byRow = new Map();
   for (const [key, cell] of Object.entries(sheet.cells ?? {})) {
     const [row, col] = key.split(',').map(Number);
@@ -987,8 +1021,10 @@ function writeSheet(sheet, styles, stringIndex, drawing = null) {
     sheet.merges?.length ? tag('mergeCells', { count: String(sheet.merges.length) }, sheet.merges.map((m) => tag('mergeCell', { ref: areaRef(m) }))) : null,
     conditionsXml(sheet.conditions ?? [], styles),
     validationsXml(sheet.validations ?? []),
+    hyperlinksXml(sheet).xml,
     printXml(print),
-    drawing));
+    drawing,
+    legacy));
 }
 
 const pointXml = (point) => tag('cfvo', {
@@ -1040,6 +1076,48 @@ function conditionsXml(conditions, styles) {
 }
 
 const VALIDATION_TYPES_BACK = { whole: 'whole', decimal: 'decimal', list: 'list', date: 'date', time: 'time', length: 'textLength', custom: 'custom' };
+
+/** Links on cells: to a web address through a relationship, or to a place in the workbook. */
+function readHyperlinks(pkg, sheetPart, root, cells) {
+  const links = kids(kid(root, S, 'hyperlinks'), S, 'hyperlink');
+  if (links.length === 0) return;
+  const rels = relationships(pkg, sheetPart);
+  for (const link of links.slice(0, 65_530)) {
+    const area = readArea(link.getAttribute('ref') ?? '');
+    if (!area) continue;
+    const rel = rels.get(link.getAttributeNS(NS.r, 'id'));
+    const location = link.getAttribute('location');
+    const href = rel?.external ? rel.target : location ? `#${location}` : null;
+    if (!href) continue;
+    let count = 0;
+    for (let row = area.top; row <= area.bottom && count < 10_000; row += 1) {
+      for (let col = area.left; col <= area.right && count < 10_000; col += 1, count += 1) {
+        const at = `${row},${col}`;
+        if (cells[at]?.v !== undefined) cells[at] = { ...cells[at], l: href.slice(0, 2048) };
+      }
+    }
+  }
+}
+
+/** The hyperlinks element of a sheet, and the relationships its web addresses need. */
+function hyperlinksXml(sheet) {
+  const links = [];
+  const rels = [];
+  for (const [at, cell] of Object.entries(sheet.cells ?? {})) {
+    if (typeof cell?.l !== 'string' || cell.l === '') continue;
+    const [row, col] = at.split(',').map(Number);
+    const ref = `${columnLetters(col)}${row + 1}`;
+    if (cell.l.startsWith('#')) {
+      links.push({ row, col, xml: tag('hyperlink', { ref, location: cell.l.slice(1).replace(/^(.+)\.(\$?[A-Z]{1,3}\$?\d{1,7}(?::\$?[A-Z]{1,3}\$?\d{1,7})?)$/, '$1!$2'), display: null }) });
+    } else {
+      const id = `rIdLink${rels.length + 1}`;
+      rels.push({ id, type: REL.hyperlink, target: cell.l, external: true });
+      links.push({ row, col, xml: tag('hyperlink', { ref, 'r:id': id }) });
+    }
+  }
+  links.sort((a, b) => a.row - b.row || a.col - b.col);
+  return { xml: links.length ? tag('hyperlinks', {}, links.map((l) => l.xml)) : null, rels };
+}
 
 function validationsXml(validations) {
   if (validations.length === 0) return null;

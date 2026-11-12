@@ -1,5 +1,10 @@
 /** Wiring. */
 
+import * as tools from './notes-tools.js';
+import { searchEverywhere } from './core/everywhere.js';
+import { autocorrectOptions, applyToDocument } from './core/autocorrect-ui.js';
+import { createSpellChecker } from './core/spelling.js';
+import { createProofing } from './core/proofing-ui.js';
 import { makeBlock, runsText } from './core/editor/model.js';
 import { InputCapture } from './core/editor/input.js';
 import { EditorController } from './core/editor/controller.js';
@@ -58,6 +63,9 @@ let titleIndex = links.buildTitleIndex([]);
 
 let renderer = null;
 let saveState = 'idle';
+let titleBefore = { title: '', ours: false };
+/** Spelling and grammar, with GRT's own dictionaries; made once the editor exists. */
+let proofing = null;
 
 let toastTimer = null;
 function toast(message, isError = false) {
@@ -105,7 +113,16 @@ async function start() {
     resolveLink: (title) => links.resolve(title, titleIndex),
     embedContent: (target) => embeds.content(target),
   });
-  editor = new EditorController(surface(), renderer, { onChange: refreshAfterEdit, lineBreaks: true });
+  editor = new EditorController(surface(), renderer, { onChange: refreshAfterEdit, lineBreaks: true, autocorrect: () => settings.autocorrect });
+  proofing = createProofing({
+    editor, surface: surface(), toast,
+    model: () => note,
+    checker: createSpellChecker(),
+    language: () => settings.spelling?.language ?? 'en-US',
+    settings: () => settings.spelling ?? { auto: false, grammar: false },
+  });
+  // A right click on a word underlined offers what it could be.
+  surface().addEventListener('contextmenu', (event) => { proofing.contextMenu(event); });
 
   await loadArchive();
   await reindex();
@@ -180,6 +197,9 @@ async function rebuildCatalogue(pages) {
       path: page.path,
       title: row?.title || search.fallbackTitle(page),
       links: links.linksIn(row?.body ?? ''),
+      // The text and tags the index has, for mentions and previews; protected notes are not in it.
+      body: row?.body ?? '',
+      tags: String(row?.tags ?? '').split(/\s+/).filter(Boolean),
     };
   });
 
@@ -207,10 +227,13 @@ async function saveNow() {
   if (!notePath || !note.dirty) return true;
 
   const written = note;
+  const path = notePath;
+  const password = notePassword;
   const parts = JSON.stringify(toParts(written));
   showSaveState('saving');
   try {
-    await io.writeNote(notePath, written, notePassword);
+    await io.writeNote(path, written, password);
+    keepVersion(written, path, password);
     if (JSON.stringify(toParts(written)) === parts) written.dirty = false;
     showSaveState('saved');
     await indexCurrent();
@@ -248,8 +271,9 @@ async function indexCurrent() {
     }
     const row = catalogue.find((item) => item.path === notePath);
     const outgoing = links.linksInNote(note);
-    if (row) { row.title = note.title; row.links = outgoing; }
-    else catalogue.push({ path: notePath, title: note.title, links: outgoing });
+    const body = locks.isProtected(archive, notePath) ? '' : note.plainText();
+    if (row) Object.assign(row, { title: note.title, links: outgoing, body, tags: [...note.tags] });
+    else catalogue.push({ path: notePath, title: note.title, links: outgoing, body, tags: [...note.tags] });
     titleIndex = links.buildTitleIndex(catalogue);
   } catch (error) {
     console.warn(`Cannot index this note: ${error}`);
@@ -259,6 +283,7 @@ async function indexCurrent() {
 // Drawing
 
 function refresh() {
+  drawBookmarks();
   drawTree();
   drawHeader();
   drawBacklinks();
@@ -286,6 +311,8 @@ function drawTree() {
     node.style.setProperty('--depth', String(row.depth));
     node.classList.toggle('current', row.kind === 'note' && (row.path === notePath || row.path === basePath));
     if (row.base) node.classList.add('base');
+    // A note is dragged onto a notebook or a section to move it there.
+    if (row.kind === 'note' && !row.base && !runtime.ephemeral) node.draggable = true;
 
     if (row.kind !== 'note') {
       const twisty = document.createElement('span');
@@ -347,6 +374,32 @@ function drawBacklinks() {
     list.append(row);
   }
 
+  // Notes that name this one's title without linking it, each with a button to link it.
+  const mentions = notePath && note.title ? tools.unlinkedMentions(note.title, notePath, catalogue) : [];
+  if (mentions.length) {
+    const heading = document.createElement('h3');
+    heading.className = 'mentions-heading';
+    heading.textContent = 'Unlinked mentions';
+    list.append(heading);
+    for (const mention of mentions.slice(0, 50)) {
+      const row = document.createElement('div');
+      row.className = 'mention';
+      const open = document.createElement('button');
+      open.className = 'backlink';
+      open.dataset.path = mention.path;
+      open.textContent = mention.title || tree.baseName(mention.path);
+      const snippet = document.createElement('span');
+      snippet.className = 'result-snippet';
+      snippet.textContent = mention.snippet;
+      const link = document.createElement('button');
+      link.className = 'mention-link';
+      link.dataset.linkMention = mention.path;
+      link.textContent = 'Link';
+      row.append(open, snippet, link);
+      list.append(row);
+    }
+  }
+
   el('backlink-list').replaceChildren(list);
 }
 
@@ -362,6 +415,7 @@ function updateToolbar() {
 /** All of it is in editing.js. */
 
 function refreshAfterEdit({ typed = false } = {}) {
+  proofing?.schedule();
   updateToolbar();
   maybeComplete();
   autoSave({ typed });
@@ -450,9 +504,72 @@ async function openNote(path) {
   }
   notePath = path;
   notePassword = password;
+  rememberTitle();
   editor.attach(note);
   showSaveState('idle');
   refresh();
+}
+
+/** Remembers the title links reach this note by, until it is renamed; links that reached another note are not ours to change. */
+function rememberTitle() {
+  const title = note?.title ?? '';
+  titleBefore = { title, ours: !!title && links.resolve(title, titleIndex) === notePath && !links.isAmbiguous(title, titleIndex) };
+}
+
+/** Reads another note, lets `change` alter it and writes it back; false when it is locked, unchanged or unreadable. */
+async function editOtherNote(path, change) {
+  if (!path || path === notePath) return false;
+  const password = keys.get(archive, path) ?? null;
+  if (locks.isProtected(archive, path) && !password) return false;
+  const other = await io.readNote(path, password);
+  if (!change(other)) return false;
+  await io.writeNote(path, other, password);
+  const isProtected = locks.isProtected(archive, path);
+  if (!isProtected) {
+    await io.indexUpsert({ path, title: other.title, tags: other.tags.join(' '), body: other.plainText(), modified: Math.floor(Date.now() / 1000) });
+  }
+  const row = catalogue.find((item) => item.path === path);
+  if (row) Object.assign(row, { title: other.title, links: links.linksInNote(other), body: isProtected ? '' : other.plainText(), tags: [...other.tags] });
+  return true;
+}
+
+/** Every link to an old title made to name a new one, in every note it can open; returns how many notes changed and how many it could not open. */
+async function updateLinks(oldTitle, newTitle, { skip = null, inOpenNote = false } = {}) {
+  const old = oldTitle.trim().toLowerCase();
+  let changed = 0;
+  let closed = 0;
+  for (const row of [...catalogue]) {
+    if (row.path === notePath || row.path === skip) continue;
+    // A note in a closed protected notebook cannot be read; it is counted and left.
+    if (locks.isProtected(archive, row.path) && !keys.get(archive, row.path)) { closed += 1; continue; }
+    if (!(row.links ?? []).some((l) => l.toLowerCase() === old)) continue;
+    try {
+      if (await editOtherNote(row.path, (other) => tools.renameLinks(other, oldTitle, newTitle) > 0)) changed += 1;
+    } catch (error) {
+      console.warn(`Cannot update the links in ${row.path}: ${error}`);
+    }
+  }
+  if (inOpenNote && notePath && tools.renameLinks(note, oldTitle, newTitle) > 0) {
+    editor.attach(note);
+    autoSave();
+  }
+  titleIndex = links.buildTitleIndex(catalogue);
+  return { changed, closed };
+}
+
+/** After a rename, the links that reached this note by its old title follow it. */
+async function followRename(path, before, now) {
+  if (!path || now.trim().toLowerCase() === before.title.trim().toLowerCase()) return;
+  if (path === notePath) rememberTitle();
+  if (!before.title || !before.ours || !now.trim()) return;
+  // Another note that already has the new title would take the links; they are left, and it is said.
+  if (catalogue.some((row) => row.path !== path && row.title.trim().toLowerCase() === now.trim().toLowerCase())) {
+    toast(`Links were not changed: another note is already called "${now}"`, true);
+    return;
+  }
+  const { changed, closed } = await updateLinks(before.title, now, { skip: path, inOpenNote: path === notePath });
+  if (changed || closed) toast(`Links updated in ${changed} note(s)${closed ? `; ${closed} in locked notebooks not checked` : ''}`);
+  drawBacklinks();
 }
 
 /**
@@ -547,7 +664,7 @@ async function insertTemplate() {
   editor.handlers.insertBlocks(blocks);
 }
 
-async function newNote({ folder = null, title = '', body = null, markdown = null } = {}) {
+async function newNote({ folder = null, title = '', body = null, markdown = null, blocks = null } = {}) {
   const target = folder ?? currentFolder();
   if (!target) return;
 
@@ -566,6 +683,7 @@ async function newNote({ folder = null, title = '', body = null, markdown = null
     fresh.setRuns(fresh.blocks[0].id, [{ text: body }]);
   }
   if (markdown) fresh.blocks = fromMarkdownBlocks(markdown);
+  if (blocks?.length) fresh.blocks = structuredClone(blocks);
   fresh.dirty = true;
 
   let path;
@@ -577,6 +695,7 @@ async function newNote({ folder = null, title = '', body = null, markdown = null
   note = fresh;
   notePath = path;
   notePassword = password;
+  titleBefore = { title: '', ours: false };
   editor.attach(note);
 
   await saveNow();
@@ -612,6 +731,7 @@ async function syncFileName() {
   try {
     await io.renameEntry(notePath, wanted);
     await io.indexRemove(notePath);
+    await pathChanged(notePath, wanted);
     const row = catalogue.find((item) => item.path === notePath);
     if (row) row.path = wanted;
     notePath = wanted;
@@ -635,6 +755,7 @@ async function deleteNote(path) {
   try {
     await io.deleteEntry(path);
     await io.indexRemove(path);
+    await pathChanged(path, null);
   } catch (error) {
     await io.notify(`Cannot delete that note.\n\n${error}`, 'Delete failed');
     return;
@@ -689,7 +810,11 @@ async function deleteFolder(path) {
 
 let searchMode = 'text';
 
+/** Each search counts, so an older one that ends late never covers a newer one's results. */
+let searchRound = 0;
+
 async function runSearch() {
+  const round = ++searchRound;
   const query = el('search').value.trim();
   const panel = el('results');
 
@@ -705,8 +830,23 @@ async function runSearch() {
     const rows = await io.indexDump().catch(() => []);
     ({ hits, error } = search.searchByPattern(rows, query));
   } else {
-    hits = await io.indexSearch(query).catch(() => []);
+    // Operators narrow what the index finds by the text: tag:, path:, task:, [property:value].
+    const parsed = tools.parseQuery(query);
+    hits = parsed.text ? await io.indexSearch(parsed.text).catch(() => []) : catalogue.map((row) => ({ path: row.path, title: row.title, snippet: '' }));
+    if (tools.hasOperators(parsed)) {
+      const kept = [];
+      for (const hit of hits.slice(0, 2000)) {
+        const row = catalogue.find((item) => item.path === hit.path);
+        // Tags and paths are known from the catalogue; tasks and properties need the note itself.
+        const needsNote = parsed.tasks.length || parsed.properties.length;
+        const subject = needsNote ? await io.readNote(hit.path).catch(() => null) : { tags: row?.tags ?? [] };
+        if (subject && tools.meetsOperators(subject, hit.path, parsed)) kept.push(hit);
+        if (kept.length >= 200) break;
+      }
+      hits = kept;
+    }
   }
+  if (round !== searchRound) return;
 
   const list = document.createElement('div');
   list.className = 'result-list';
@@ -1078,6 +1218,8 @@ async function protectNotebook() {
     }
   }
   keys.set(notebook.path, password);
+  // Versions kept in the clear would outlive the seal.
+  await io.historyForget(await io.historyKey('notebook', notebook.path)).catch(() => {});
   await loadArchive();
   await reindex();
   await io.indexPurge().catch((error) => console.warn(`Cannot compact the index: ${error}`));
@@ -1106,6 +1248,8 @@ async function unprotectNotebook() {
   }
   await io.deleteEntry(tree.join(notebook.path, locks.MARKER));
   keys.drop(notebook.path);
+  // Versions sealed with the password taken off could not be read again.
+  await io.historyForget(await io.historyKey('notebook', notebook.path)).catch(() => {});
   if (notePath && locks.notebookOf(archive, notePath) === notebook) notePassword = null;
   await loadArchive();
   await reindex();
@@ -1178,7 +1322,15 @@ function wire() {
     autoSave({ typed: true });
     refresh();
   };
-  el('note-title').onblur = () => { syncFileName(); };
+  el('note-title').onblur = async () => {
+    // Taken now, since a click elsewhere may open another note while this one saves.
+    const path = notePath;
+    const before = titleBefore;
+    const now = note?.title ?? '';
+    await saveNow();
+    await followRename(path, before, now);
+    await syncFileName();
+  };
 
   el('note-tags').onchange = (event) => {
     note.setTags(parseTagInput(event.target.value));
@@ -1223,6 +1375,17 @@ function wire() {
   el('search-mode').onchange = (event) => { searchMode = event.target.value; runSearch(); };
 
   el('tree').addEventListener('click', onTreeClick);
+  el('bookmark-list').addEventListener('click', onResultClick);
+  surface().addEventListener('mouseover', onLinkHover);
+  surface().addEventListener('mouseout', (event) => {
+    if (event.target.closest?.('[data-action="open-link"]') && !event.relatedTarget?.closest?.('[data-action="open-link"]')) hidePreview();
+  });
+  surface().addEventListener('keydown', hidePreview);
+  surface().addEventListener('scroll', hidePreview, { passive: true });
+  el('tree').addEventListener('dragstart', onTreeDragStart);
+  el('tree').addEventListener('dragover', onTreeDragOver);
+  el('tree').addEventListener('drop', onTreeDrop);
+  el('tree').addEventListener('dragend', () => { for (const each of el('tree').querySelectorAll('.drop-target')) each.classList.remove('drop-target'); });
   el('results').addEventListener('click', onResultClick);
   el('backlink-list').addEventListener('click', onResultClick);
   el('completions').addEventListener('mousedown', onCompletionClick);
@@ -1249,6 +1412,98 @@ function wire() {
 function insertBlock(block, { enter = true } = {}) {
   editor.handlers.insertBlock(block, { enter });
   refresh();
+}
+
+const NOTE_DRAG = 'application/x-grt-note';
+
+function onTreeDragStart(event) {
+  const row = event.target.closest?.('.tree-row[data-kind="note"]');
+  if (!row) return;
+  event.dataTransfer.setData(NOTE_DRAG, row.dataset.path);
+  event.dataTransfer.effectAllowed = 'move';
+}
+
+function onTreeDragOver(event) {
+  const row = event.target.closest?.('.tree-row');
+  if (!row || row.dataset.kind === 'note' || !event.dataTransfer.types.includes(NOTE_DRAG)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  for (const each of el('tree').querySelectorAll('.drop-target')) if (each !== row) each.classList.remove('drop-target');
+  row.classList.add('drop-target');
+}
+
+function onTreeDrop(event) {
+  const row = event.target.closest?.('.tree-row');
+  for (const each of el('tree').querySelectorAll('.drop-target')) each.classList.remove('drop-target');
+  const path = event.dataTransfer.getData(NOTE_DRAG);
+  if (!row || row.dataset.kind === 'note' || !path) return;
+  event.preventDefault();
+  moveNote(path, row.dataset.path);
+}
+
+/** Moves a note into another notebook or section; text never leaves a protected notebook in the clear. */
+async function moveNote(path, folder) {
+  if (!path || !folder || tree.parentOf(path) === folder || runtime.ephemeral) return;
+  const fromNotebook = locks.notebookOf(archive, path);
+  const toNotebook = locks.notebookOf(archive, folder);
+  const fromProtected = !!fromNotebook?.protected;
+  const toProtected = !!toNotebook?.protected;
+  if (fromProtected && fromNotebook !== toNotebook) {
+    await io.notify('A note in a protected notebook stays in it. To take it out, remove the notebook\'s password first.', 'Cannot move');
+    return;
+  }
+  if (path === notePath) await saveNow();
+  const siblings = tree.allNotes(archive).filter((page) => tree.parentOf(page.path) === folder).map((page) => page.file);
+  const row = catalogue.find((item) => item.path === path);
+  let wanted;
+  try {
+    if (inVault()) {
+      wanted = tree.join(folder, tree.vaultFileName(tree.baseName(path).replace(/\.md$/i, ''), siblings));
+      await io.renameEntry(path, wanted);
+    } else if (toProtected && !fromProtected) {
+      // Into a protected notebook: written sealed under a name without the title, then the clear file goes.
+      const password = await passwordFor(folder);
+      if (!password) return;
+      const read = await io.readNote(path);
+      wanted = tree.join(folder, locks.lockedFileName(tree.nextOrder(siblings)));
+      await io.writeNote(wanted, read, password);
+      await io.deleteEntry(path);
+    } else {
+      const stem = tree.baseName(path).replace(/\.grt$/, '');
+      const { slug } = tree.parseNoteFile(stem);
+      wanted = tree.join(folder, toProtected ? locks.lockedFileName(tree.nextOrder(siblings)) : tree.noteFileName(tree.nextOrder(siblings), row?.title || slug || 'note'));
+      await io.renameEntry(path, wanted);
+    }
+  } catch (error) {
+    await io.notify(`Cannot move that note.\n\n${error}`, 'Move failed');
+    return;
+  }
+  await io.indexRemove(path).catch(() => {});
+  await pathChanged(path, wanted);
+  if (row) row.path = wanted;
+  if (path === notePath) {
+    notePath = wanted;
+    if (toProtected) notePassword = keys.get(archive, folder) ?? notePassword;
+  }
+  await loadArchive();
+  if (!toProtected) {
+    const moved = path === notePath ? note : await io.readNote(wanted).catch(() => null);
+    if (moved) await io.indexUpsert({ path: wanted, title: moved.title, tags: moved.tags.join(' '), body: moved.plainText(), modified: Math.floor(Date.now() / 1000) }).catch(() => {});
+  }
+  titleIndex = links.buildTitleIndex(catalogue);
+  refresh();
+  toast(`Moved to ${tree.baseName(folder)}`);
+}
+
+/** The keyboard way to move: the notebooks and sections, chosen from a list. */
+async function moveCurrentNote() {
+  if (!notePath) return;
+  const folders = tree.flatten(archive).filter((row) => row.kind !== 'note' && row.path !== tree.parentOf(notePath));
+  if (folders.length === 0) { toast('There is no other notebook to move it to'); return; }
+  const confirmed = await showPanel('Move to', `
+    <label>Notebook or section<select data-field="folder">${folders.map((f) => `<option value="${escapeHtml(f.path)}">${'  '.repeat(f.depth)}${escapeHtml(f.name)}</option>`).join('')}</select></label>`, 'Move');
+  if (!confirmed) return;
+  await moveNote(notePath, readFields().folder);
 }
 
 function onTreeClick(event) {
@@ -1318,9 +1573,271 @@ async function showFolderMenu(path, kind) {
 }
 
 function onResultClick(event) {
+  const mention = event.target.closest('[data-link-mention]');
+  if (mention) {
+    linkMention(mention.dataset.linkMention);
+    return;
+  }
   const row = event.target.closest('[data-path]');
   if (!row) return;
   openNote(row.dataset.path);
+}
+
+// Earlier versions of a note, for notebooks that keep them (decision 11).
+
+const historyOn = (path) => {
+  const notebook = locks.notebookOf(archive, path);
+  return !!notebook && !runtime.ephemeral && settings.historyNotebooks.includes(notebook.path);
+};
+
+async function historyKeys(path) {
+  const notebook = locks.notebookOf(archive, path);
+  return notebook ? [await io.historyKey('notebook', notebook.path), await io.historyKey('note', path)] : null;
+}
+
+async function keepVersion(written, path, password, force = false) {
+  if (!path || !historyOn(path)) return false;
+  try {
+    return await io.historySave(await historyKeys(path), written, password, force);
+  } catch (error) {
+    console.warn(`Cannot keep a version: ${error}`);
+    return false;
+  }
+}
+
+/** A note's file moved or went: its versions and bookmark follow it, or go with it. */
+async function pathChanged(from, to) {
+  if (settings.bookmarks.includes(from)) {
+    settings.bookmarks = to ? settings.bookmarks.map((p) => (p === from ? to : p)) : settings.bookmarks.filter((p) => p !== from);
+    settingsStore.save(settings);
+  }
+  if (!historyOn(from) || runtime.ephemeral) return;
+  try {
+    await io.historyMove(await historyKeys(from), to && historyOn(to) ? await historyKeys(to) : null);
+  } catch (error) {
+    console.warn(`Cannot move the versions: ${error}`);
+  }
+}
+
+async function toggleHistory() {
+  const notebook = locks.notebookOf(archive, notePath ?? currentFolder());
+  if (!notebook) { toast('Open a note in a notebook first'); return; }
+  if (runtime.ephemeral) { toast('Nothing is kept in ephemeral mode'); return; }
+  if (settings.historyNotebooks.includes(notebook.path)) {
+    const sure = await io.confirm(`Stop keeping versions of the notes in “${notebook.name}”?\n\nThe versions kept so far are deleted.`, 'Versions');
+    if (!sure) return;
+    settings.historyNotebooks = settings.historyNotebooks.filter((p) => p !== notebook.path);
+    await settingsStore.save(settings);
+    await io.historyForget(await io.historyKey('notebook', notebook.path)).catch((error) => toast(`Cannot delete the versions: ${error}`, true));
+    toast(`Versions of ${notebook.name} are no longer kept`);
+    return;
+  }
+  settings.historyNotebooks = [...settings.historyNotebooks, notebook.path];
+  await settingsStore.save(settings);
+  if (notePath) await keepVersion(note, notePath, notePassword, true);
+  toast(notebook.protected
+    ? `Versions of ${notebook.name} are kept, sealed with its password, at most one every five minutes`
+    : `Versions of ${notebook.name} are kept, at most one every five minutes`);
+}
+
+/** The versions of the note in front of you, to look at and bring back. */
+async function showVersions() {
+  if (!notePath) return;
+  if (!historyOn(notePath)) {
+    toast('This notebook keeps no versions; turn them on with "Keep versions of this notebook"');
+    return;
+  }
+  await saveNow();
+  const path = notePath;
+  const keysOf = await historyKeys(path);
+  const versions = await io.historyList(keysOf).catch(() => []);
+  if (versions.length === 0) { toast('No versions kept yet'); return; }
+  const when = (id) => new Date(Number(id)).toLocaleString();
+  const chosen = await showPanel('Versions of this note', `
+    <label>Version<select data-field="id">${versions.map((v) => `<option value="${escapeHtml(v.id)}">${escapeHtml(when(v.id))} · ${Math.max(1, Math.round(v.size / 1024))} KB</option>`).join('')}</select></label>
+    <p class="hint">A version is kept at most every five minutes while you write. Bringing one back keeps the text of now as a version first.</p>`, 'Show');
+  if (!chosen) return;
+  const { id } = readFields();
+  let version;
+  try {
+    version = await io.historyRead(keysOf, id, notePassword);
+  } catch (error) {
+    await io.notify(`Cannot read that version.\n\n${error}`, 'Versions');
+    return;
+  }
+  const text = version.plainText();
+  const restore = await showPanel(`Version of ${when(id)}`, `
+    <p><strong>${escapeHtml(version.title || 'Untitled')}</strong></p>
+    <div class="version-text">${escapeHtml(text.slice(0, 20000))}${text.length > 20000 ? '…' : ''}</div>`, 'Bring back');
+  if (!restore || path !== notePath) return;
+  await keepVersion(note, notePath, notePassword, true);
+  note.title = version.title;
+  note.tags = [...version.tags];
+  note.properties = structuredClone(version.properties);
+  note.blocks = version.blocks;
+  note.dirty = true;
+  editor.attach(note);
+  await saveNow();
+  refresh();
+  toast(`Brought back the version of ${when(id)}`);
+}
+
+async function forgetAllVersions() {
+  const sure = await io.confirm('Delete every version kept of every note?\n\nThe notes themselves stay as they are.', 'Versions');
+  if (!sure) return;
+  try {
+    await io.historyForget();
+    toast('Every version kept was deleted');
+  } catch (error) {
+    toast(`Cannot delete the versions: ${error}`, true);
+  }
+}
+
+// Bookmarks.
+
+function drawBookmarks() {
+  const known = settings.bookmarks.filter((path) => catalogue.some((row) => row.path === path));
+  el('bookmarks').classList.toggle('hidden', known.length === 0);
+  const list = document.createElement('div');
+  for (const path of known) {
+    const row = document.createElement('button');
+    row.className = 'backlink';
+    row.dataset.path = path;
+    row.textContent = catalogue.find((item) => item.path === path)?.title || tree.baseName(path);
+    list.append(row);
+  }
+  el('bookmark-list').replaceChildren(list);
+}
+
+function toggleBookmark() {
+  if (!notePath) return;
+  const marked = settings.bookmarks.includes(notePath);
+  settings.bookmarks = marked ? settings.bookmarks.filter((p) => p !== notePath) : [...settings.bookmarks, notePath];
+  settingsStore.save(settings);
+  drawBookmarks();
+  toast(marked ? 'Bookmark removed' : 'Bookmarked');
+}
+
+// A link's note, shown while the pointer rests on it.
+
+let previewTimer = null;
+let previewFor = null;
+
+function hidePreview() {
+  clearTimeout(previewTimer);
+  previewFor = null;
+  el('link-preview').classList.add('hidden');
+}
+
+function onLinkHover(event) {
+  const link = event.target.closest?.('[data-action="open-link"]');
+  if (!link || link === previewFor) return;
+  hidePreview();
+  previewFor = link;
+  previewTimer = setTimeout(() => showPreview(link), 400);
+}
+
+async function showPreview(link) {
+  const title = link.dataset.title;
+  const path = links.resolve(title, titleIndex);
+  const row = path ? catalogue.find((item) => item.path === path) : null;
+  let text = row?.body ?? '';
+  // A note in an open protected notebook is read for the moment; one in a closed notebook shows nothing.
+  if (path && !text && locks.isProtected(archive, path) && keys.get(archive, path)) {
+    text = await io.readNote(path, keys.get(archive, path)).then((n) => n.plainText()).catch(() => '');
+  }
+  if (previewFor !== link) return;
+  const box = el('link-preview');
+  const heading = document.createElement('strong');
+  heading.textContent = row?.title || title;
+  const body = document.createElement('p');
+  body.textContent = path
+    ? (locks.isProtected(archive, path) && !keys.get(archive, path) ? 'In a locked notebook.' : (text.slice(0, 600) + (text.length > 600 ? '…' : '')) || 'Empty note.')
+    : 'No note with this title yet.';
+  box.replaceChildren(heading, body);
+  const at = link.getBoundingClientRect();
+  box.classList.remove('hidden');
+  const width = box.offsetWidth;
+  box.style.left = `${Math.max(8, Math.min(at.left, window.innerWidth - width - 8))}px`;
+  box.style.top = at.bottom + box.offsetHeight + 12 < window.innerHeight ? `${at.bottom + 6}px` : `${Math.max(8, at.top - box.offsetHeight - 6)}px`;
+}
+
+/** Turns the first mention of this note's title in another note into a link. */
+async function linkMention(path) {
+  try {
+    const done = await editOtherNote(path, (other) => tools.linkFirstMention(other, note.title));
+    toast(done ? 'Linked' : 'That mention is no longer there');
+  } catch (error) {
+    toast(`Cannot link that mention: ${error}`, true);
+  }
+  titleIndex = links.buildTitleIndex(catalogue);
+  drawBacklinks();
+}
+
+/** Puts this note at the end of another, makes links to it point there, and removes it. */
+async function mergeNote() {
+  if (!notePath) return;
+  await saveNow();
+  // Text never leaves a protected notebook for another place, nor comes in from outside it.
+  const home = locks.notebookOf(archive, notePath);
+  const sameShelter = (path) => locks.isProtected(archive, path)
+    ? locks.isProtected(archive, notePath) && locks.notebookOf(archive, path) === home && !!keys.get(archive, path)
+    : !locks.isProtected(archive, notePath);
+  const others = catalogue.filter((row) => row.path !== notePath && sameShelter(row.path))
+    .sort((a, b) => a.title.localeCompare(b.title));
+  if (others.length === 0) { toast('There is no other note to merge into'); return; }
+  const confirmed = await showPanel('Merge into another note', `
+    <label>Merge "${escapeHtml(note.title || 'this note')}" into<select data-field="path">${others.slice(0, 5000).map((row) => `<option value="${escapeHtml(row.path)}">${escapeHtml(row.title || tree.baseName(row.path))}</option>`).join('')}</select></label>
+    <p class="hint">This note's text goes at the end of the other under a heading with its title, links to it are made to point there, and this note's file is deleted.</p>`, 'Merge');
+  if (!confirmed) return;
+  const { path: target } = readFields();
+  if (!target || target === notePath) return;
+  const source = note;
+  const sourcePath = notePath;
+  try {
+    if (!(await editOtherNote(target, (other) => { tools.mergeInto(other, source); return true; }))) throw new Error('the note could not be opened');
+  } catch (error) {
+    await io.notify(`Cannot merge these notes.\n\n${error}`, 'Merge failed');
+    return;
+  }
+  const targetTitle = catalogue.find((row) => row.path === target)?.title ?? '';
+  if (source.title && targetTitle) await updateLinks(source.title, targetTitle, { skip: sourcePath });
+  try {
+    await io.deleteEntry(sourcePath);
+    await io.indexRemove(sourcePath);
+    await pathChanged(sourcePath, null);
+  } catch (error) {
+    toast(`Merged, but this note's file could not be deleted: ${error}`, true);
+  }
+  catalogue = catalogue.filter((row) => row.path !== sourcePath);
+  titleIndex = links.buildTitleIndex(catalogue);
+  note.dirty = false;
+  notePath = null;
+  await loadArchive();
+  await openNote(target);
+  toast(`Merged into ${targetTitle || tree.baseName(target)}`);
+}
+
+/** Moves everything from the paragraph with the caret on into a new note, and leaves a link to it here. */
+async function splitNote() {
+  if (!notePath) return;
+  editor.readSelection();
+  const at = note.blocks.findIndex((block) => block.id === editor.selection?.anchor?.blockId);
+  if (at <= 0) { toast('Put the caret in the paragraph the new note should start with, below the first'); return; }
+  const first = note.blocks[at];
+  const firstText = runsText(first.runs ?? []).trim();
+  const title = (first.kind === 'heading' && firstText) ? firstText.slice(0, 200) : `${note.title || 'Note'} (part 2)`;
+  const moved = tools.splitAt(note, at);
+  if (!moved) return;
+  // The heading that named the part becomes the new note's title rather than its first line.
+  const blocks = first.kind === 'heading' && firstText && moved.length > 1 ? moved.slice(1) : moved;
+  const link = makeBlock('paragraph');
+  link.runs = [{ text: `[[${title}]]` }];
+  note.blocks.push(link);
+  editor.attach(note);
+  await saveNow();
+  await newNote({ folder: tree.parentOf(notePath), title, blocks });
+  toast(`Split into ${title}`);
 }
 
 /** The open list of link completions answers the arrows, Enter, Tab and Escape before the text does. */
@@ -1385,6 +1902,7 @@ function onSurfaceClick(event) {
 
 function onKey(event) {
   if (isDialogOpen() || isPaletteOpen() || isPrintPreviewOpen()) return;
+  if (event.key === 'F7' && !event.ctrlKey && !event.altKey && !event.shiftKey) { event.preventDefault(); proofing?.spellingDialog(); return; }
   const control = event.ctrlKey || event.metaKey;
   if (!control) return;
 
@@ -1404,7 +1922,57 @@ function commands() {
     entry('Quick note', 'Ctrl+Shift+N', () => quickNote()),
     entry('New notebook', '', () => newFolder(null)),
     entry('Search', 'Ctrl+F', () => el('search').focus()),
+    { ...entry(settings.autocorrect?.options.whileTyping ? 'AutoCorrect while typing: turn off' : 'AutoCorrect while typing: turn on', '', async () => {
+      settings.autocorrect.options.whileTyping = !settings.autocorrect.options.whileTyping;
+      await settingsStore.save(settings);
+      toast(settings.autocorrect.options.whileTyping ? 'AutoCorrect while typing is on' : 'AutoCorrect while typing is off');
+    }), aliases: ['AutoCorrect', 'Smart quotes'] },
+    { ...entry('AutoCorrect options…', '', async () => {
+      const next = await autocorrectOptions(settings.autocorrect);
+      if (!next) return;
+      settings.autocorrect = next;
+      await settingsStore.save(settings);
+    }), aliases: ['Replacement table'] },
+    { ...entry('Apply AutoCorrect to this note', '', () => {
+      if (!notePath) return;
+      editor.readSelection();
+      let result = { changed: 0 };
+      editor.edit(() => {
+        result = applyToDocument(note, editor.selection, settings.autocorrect);
+        return editor.selection;
+      });
+      toast(result.changed ? `${result.changed} paragraph(s) corrected` : 'Nothing to correct');
+    }), aliases: ['Apply AutoCorrect'] },
+    { ...entry('Spelling…', 'F7', () => proofing?.spellingDialog()), aliases: ['Spellcheck', 'Check spelling', 'Grammar'] },
+    { ...entry(settings.spelling?.auto ? 'Automatic spell checking: turn off' : 'Automatic spell checking: turn on', '', async () => {
+      settings.spelling = { ...settings.spelling, auto: !settings.spelling.auto };
+      await settingsStore.save(settings);
+      proofing?.schedule(0);
+    }), aliases: ['Spell check as you type'] },
+    { ...entry(settings.spelling?.grammar ? 'Grammar checking: turn off' : 'Grammar checking: turn on', '', async () => {
+      settings.spelling = { ...settings.spelling, grammar: !settings.spelling.grammar };
+      await settingsStore.save(settings);
+      proofing?.schedule(0);
+    }), aliases: ['Check grammar'] },
+    { ...entry(settings.spelling?.language === 'it-IT' ? 'Spelling language: switch to English' : 'Spelling language: switch to Italian', '', async () => {
+      settings.spelling = { ...settings.spelling, language: settings.spelling.language === 'it-IT' ? 'en-US' : 'it-IT' };
+      await settingsStore.save(settings);
+      proofing?.schedule(0);
+    }), aliases: ['Language', 'Dictionary language'] },
+    { ...entry('Search Everywhere…', '', () => searchEverywhere({
+      kind: 'notes',
+      // A note opens here when it belongs to the archive in front of you.
+      open: (path) => (catalogue.some((row) => row.path === path) ? openNote(path) : toast('That note is not in the archive open here')),
+      toast,
+    })), aliases: ['Search in files', 'Find in folder', 'Search all documents'] },
     entry('Delete this note', '', () => notePath && deleteNote(notePath)),
+    { ...entry(settings.bookmarks.includes(notePath) ? 'Remove the bookmark of this note' : 'Bookmark this note', '', () => toggleBookmark()), aliases: ['Bookmark', 'Bookmarks'] },
+    { ...entry('Versions of this note…', '', () => showVersions()), aliases: ['Version history', 'File recovery', 'History'] },
+    { ...entry(settings.historyNotebooks.includes(locks.notebookOf(archive, notePath ?? '')?.path) ? 'Stop keeping versions of this notebook' : 'Keep versions of this notebook', '', () => toggleHistory()), aliases: ['Version history'] },
+    entry('Delete the versions of every note…', '', () => forgetAllVersions()),
+    { ...entry('Move this note to…', '', () => moveCurrentNote()), aliases: ['Move note', 'Move file to another folder'] },
+    { ...entry('Merge this note into another…', '', () => mergeNote()), aliases: ['Merge notes', 'Note composer'] },
+    { ...entry('Split this note from the caret on', '', () => splitNote()), aliases: ['Split note', 'Extract to a new note'] },
     entry('Export this note…', '', () => exportNote()),
     entry('Print this note…', 'Ctrl+P', () => printNote()),
     entry('Properties of this note…', '', () => editProperties()),

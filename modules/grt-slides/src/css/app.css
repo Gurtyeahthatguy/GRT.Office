@@ -605,3 +605,10 @@ input[type="color"] {
 .thumb.hidden-slide .thumb-frame { opacity: 0.4; }
 .workspace.sorter #stage, .workspace.sorter #notes-panel { display: none; }
 .workspace.sorter .thumbnails { flex: 1; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 16px; padding: 16px; max-width: none; overflow-y: auto; }
+
+/* A paragraph being edited: its bullet or number drawn before it, outside the text. */
+.editing .para { position: relative; }
+.editing .para[data-label]::before { content: attr(data-label); position: absolute; margin-left: -28px; }
+.el.table td.cell-chosen { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.comment-mark { position: absolute; width: 44px; height: 36px; box-sizing: border-box; background: #ffe066; border: 2px solid #b8a000; border-radius: 4px; pointer-events: auto; cursor: pointer; }
+.redacted, td.redacted { background-color: #111 !important; color: #111 !important; }

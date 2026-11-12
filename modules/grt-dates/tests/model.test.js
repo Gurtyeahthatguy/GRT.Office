@@ -238,3 +238,15 @@ describe('naming a calendar file', () => {
     expect(fileNameFor(model, 'Work')).toBe('Work 2.ics');
   });
 });
+
+describe('a rule that runs past the year 9999', () => {
+  it('does not stop the other entries from showing', () => {
+    const model = createModel();
+    addCalendar(model, { name: 'C', entries: [
+      { ...createEvent({ summary: 'Huge', date: '2026-01-05', time: '09:00' }), rrule: 'FREQ=DAILY;INTERVAL=1000000000' },
+      createEvent({ summary: 'Plain', date: '2026-01-06', time: '10:00' }),
+    ] });
+    const rows = occurrencesBetween(model, '2026-01-01', '2026-01-31');
+    expect(rows.map((r) => r.entry.summary)).toEqual(['Huge', 'Plain']);
+  });
+});

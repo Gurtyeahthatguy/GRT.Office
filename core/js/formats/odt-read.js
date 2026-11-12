@@ -19,7 +19,7 @@ import { declareExternal } from './external.js';
 
 const PT_PER_MM = 72 / 25.4;
 const PX_PER_MM = 96 / 25.4;
-const MARKS = ['bold', 'italic', 'underline', 'strike', 'sup', 'sub'];
+const MARKS = ['bold', 'italic', 'underline', 'strike', 'sup', 'sub', 'double', 'overline', 'shadow', 'outline', 'smallcaps'];
 const PAPER_STYLES = ['body', 'h1', 'h2', 'h3', 'h4', 'quote', 'code', 'title', 'subtitle', 'hr'];
 /** LibreOffice's paragraph styles that are Paper's own styles of plain paragraphs. */
 const PLAIN_STYLES = { Title: 'title', Subtitle: 'subtitle', Horizontal_20_Line: 'hr' };
@@ -68,6 +68,7 @@ class TextReader {
   read(content) {
     const body = kid(kid(content.documentElement, NS.office, 'body'), NS.office, 'text');
     if (!body) throw new Error('This document has no text body');
+    this.prepareReview(body);
     this.walkBlocks(body, { listLevel: -1 });
 
     if (this.notes.length > 0) {
@@ -155,7 +156,7 @@ class TextReader {
           this.walkBlocks(node, context);
           return;
         case 'tracked-changes':
-          this.losses.add('Tracked changes, shown as if accepted');
+          // Read before the text, in prepareReview.
           return;
         case 'sequence-decls': case 'variable-decls': case 'user-field-decls':
         case 'dde-connection-decls': case 'soft-page-break': case 'bookmark':
@@ -281,12 +282,18 @@ class TextReader {
     const emit = (text, look, object = null) => {
       const run = { text };
       if (object) run.object = object;
+      if (this.openIns) {
+        run.ins = this.openIns.id;
+        if (this.openIns.note) run.chgnote = this.openIns.note;
+      }
+      if (this.openComment && !object) run.cmt = this.openComment;
       if (state.link) run.link = state.link;
       if (state.cstyle) run.cstyle = state.cstyle;
       for (const mark of MARKS) if (look[mark] && !baseline[mark]) run[mark] = true;
       if (look.color && look.color !== baseline.color && look.color !== '#000000') run.color = look.color;
       if (look.highlight && look.highlight !== baseline.highlight) run.highlight = look.highlight;
       if (look.size && baseline.size && Math.abs(look.size - baseline.size) > 0.1) run.size = look.size;
+      if (look.lang && look.lang !== baseline.lang) run.lang = look.lang;
       if (look.font && baseline.font && look.font !== baseline.font
         && fontKind(look.font, look.generic) !== fontKind(baseline.font, baseline.generic)) {
         this.losses.add('Fonts that differ from the paragraph’s, shown in its font');
@@ -364,6 +371,23 @@ class TextReader {
               else emit(OBJECT, look, { type: 'bookmark', name });
               continue;
             }
+            case 'database-display': {
+              const name = attr(child, NS.text, 'column-name');
+              if (name) emit(OBJECT, look, { type: 'merge', name });
+              state.lastSpace = false;
+              continue;
+            }
+            case 'bibliography-mark': {
+              // A citation keeps what it cites; what it showed is drawn again from its short name.
+              const raw = attr(child, NS.text, 'identifier') ?? '';
+              const key = /"([^"]+)"/.exec(raw)?.[1] ?? raw;
+              const type = attr(child, NS.text, 'bibliography-type');
+              const kind = { book: 'book', article: 'article', www: 'website', phdthesis: 'thesis', mastersthesis: 'thesis', techreport: 'report' }[type] ?? 'misc';
+              const fields = Object.fromEntries(['author', 'title', 'year', 'publisher', 'url'].map((f) => [f, attr(child, NS.text, f)]).filter(([, v]) => v));
+              emit(OBJECT, look, { type: 'cite', key: key.trim(), kind, ...fields });
+              state.lastSpace = false;
+              continue;
+            }
             case 'alphabetical-index-mark': {
               const value = attr(child, NS.text, 'string-value');
               const key = attr(child, NS.text, 'key1');
@@ -377,8 +401,33 @@ class TextReader {
               else this.losses.add('Index entries marked over a stretch of text, kept as their text');
               continue;
             }
+            case 'change-start': {
+              const region = this.changeRegions.get(attr(child, NS.text, 'change-id'));
+              if (region?.kind === 'insertion') this.openIns = region;
+              continue;
+            }
+            case 'change-end':
+              if (this.openIns?.region === attr(child, NS.text, 'change-id')) this.openIns = null;
+              continue;
+            case 'change': {
+              // Text taken out stands where it was, marked, so it can be looked at and put back.
+              const region = this.changeRegions.get(attr(child, NS.text, 'change-id'));
+              if (region?.kind !== 'deletion') continue;
+              const before = this.openIns;
+              this.openIns = null;
+              region.paragraphs.forEach((p, i) => {
+                if (i > 0) emit('\n', look);
+                const from = current().runs.length;
+                walk(p, props);
+                for (const run of current().runs.slice(from)) {
+                  run.del = region.id;
+                  if (region.note) run.chgnote = region.note;
+                }
+              });
+              this.openIns = before;
+              continue;
+            }
             case 'soft-page-break': case 'bookmark-end': case 'reference-mark-end':
-            case 'change': case 'change-start': case 'change-end':
             case 'alphabetical-index-mark-end':
             case 'toc-mark': case 'toc-mark-start': case 'toc-mark-end':
               continue;
@@ -439,10 +488,21 @@ class TextReader {
           continue;
         }
         if (child.namespaceURI === NS.office && child.localName === 'annotation') {
-          this.losses.add('Comments');
+          // A reply is part of its thread, put with the comment it answers.
+          const found = this.annotations.get(child);
+          if (!found || found.parent) continue;
+          emit(OBJECT, look, found.object);
+          if (found.name && this.annotationEnds.has(found.name)) {
+            this.openComment = found.object.id;
+            this.openCommentName = found.name;
+          }
+          state.lastSpace = false;
           continue;
         }
-        if (child.namespaceURI === NS.office && child.localName === 'annotation-end') continue;
+        if (child.namespaceURI === NS.office && child.localName === 'annotation-end') {
+          if (attr(child, NS.office, 'name') === this.openCommentName) this.openComment = null;
+          continue;
+        }
         if (child.namespaceURI === NS.draw) {
           this.losses.add('Drawings and embedded objects');
           continue;
@@ -453,6 +513,67 @@ class TextReader {
 
     walk(node, paragraphProps);
     return segments;
+  }
+
+  /**
+   * The changes the text records, and its comments with their replies, read before the text that marks them.
+   * Who made them and when are not kept.
+   */
+  prepareReview(body) {
+    this.changeRegions = new Map();
+    this.openIns = null;
+    this.openComment = null;
+    this.openCommentName = null;
+    const tracked = kid(body, NS.text, 'tracked-changes');
+    const fresh = (prefix) => `${prefix}${this.changeRegions.size + 1}`;
+    for (const region of kids(tracked, NS.text, 'changed-region').slice(0, 20_000)) {
+      const id = attr(region, NS.text, 'id') ?? attr(region, 'http://www.w3.org/XML/1998/namespace', 'id');
+      const change = kids(region).find((k) => k.namespaceURI === NS.text);
+      if (!id || !change) continue;
+      const info = kid(change, NS.office, 'change-info');
+      if (kids(info).some((k) => k.localName === 'creator' && k.textContent.trim())) this.losses.add('Names and dates on changes and comments, left out');
+      const note = kids(info, NS.text, 'p').map((p) => p.textContent).join('\n').slice(0, 10_000) || null;
+      if (change.localName === 'format-change') {
+        this.losses.add('Recorded changes of formatting, shown as made');
+        continue;
+      }
+      if (!['insertion', 'deletion'].includes(change.localName)) continue;
+      this.changeRegions.set(id, {
+        kind: change.localName, region: id, id: fresh(change.localName === 'insertion' ? 'i' : 'd'), note,
+        paragraphs: change.localName === 'deletion' ? kids(change).filter((k) => k.namespaceURI === NS.text && ['p', 'h'].includes(k.localName)).slice(0, 1000) : [],
+      });
+      if (change.localName === 'deletion' && kids(change).some((k) => k.namespaceURI === NS.table || k.localName === 'list')) this.losses.add('Deleted tables and lists, kept as their text');
+    }
+
+    // Comments: every one by its name, replies put with the comment they answer.
+    this.annotations = new Map();
+    this.annotationEnds = new Set([...body.getElementsByTagNameNS(NS.office, 'annotation-end')].map((e) => attr(e, NS.office, 'name')).filter(Boolean));
+    const byName = new Map();
+    const all = [...body.getElementsByTagNameNS(NS.office, 'annotation')].slice(0, 5000);
+    all.forEach((element, i) => {
+      if (kids(element).some((k) => (k.localName === 'creator' && k.textContent.trim()) || (k.localName === 'date' && !/^(0000|1970)/.test(k.textContent)))) {
+        this.losses.add('Names and dates on changes and comments, left out');
+      }
+      const name = attr(element, NS.office, 'name');
+      const text = kids(element, NS.text, 'p').map((p) => p.textContent).join('\n').slice(0, 100_000);
+      const done = attr(element, NS.loext, 'resolved') === 'true';
+      const parent = attr(element, NS.loext, 'parent-name');
+      const object = { type: 'comment', id: `k${i + 1}`, text, ...(done ? { done: true } : {}) };
+      const found = { name, parent, object };
+      this.annotations.set(element, found);
+      if (name) byName.set(name, found);
+    });
+    for (const found of this.annotations.values()) {
+      if (!found.parent) continue;
+      // A reply to a reply goes with the thread's first comment.
+      let root = byName.get(found.parent);
+      for (let hops = 0; root?.parent && hops < 50; hops += 1) root = byName.get(root.parent);
+      if (!root || root === found) {
+        found.parent = null;
+        continue;
+      }
+      root.object.replies = [...(root.object.replies ?? []), { id: found.object.id, text: found.object.text, ...(found.object.done ? { done: true } : {}) }];
+    }
   }
 
   /** Text without formatting, for notes. */
@@ -505,7 +626,10 @@ class TextReader {
         }
         else if (type !== current.listType) this.losses.add('Lists mixing bullets and numbers, shown with one kind');
         if (entry.level > 5) this.losses.add('Lists nested deeper than six levels, flattened');
-        current.items.push({ level: Math.min(entry.level, 5), runs: normaliseRuns(runs) });
+        current.items.push({
+          level: Math.min(entry.level, 5), runs: normaliseRuns(runs),
+          ...(entry.unnumbered ? { unnumbered: true } : {}), ...(entry.restart && current.items.length ? { restart: true } : {}),
+        });
       }
       if (extras.length > 0) {
         this.losses.add('Tables and pictures inside lists, which end the list there');
@@ -525,7 +649,12 @@ class TextReader {
         if (paragraphs.length === 0) return;
         const first = attr(paragraphs[0], NS.text, 'style-name');
         const own = this.styles.chain('paragraph', first).find((s) => s.listStyle)?.listStyle;
-        entries.push({ kind: 'item', level, listStyle: own || listStyle, paragraphs });
+        // A list header is an entry without a number; a start value of 1 starts the count again.
+        entries.push({
+          kind: 'item', level, listStyle: own || listStyle, paragraphs,
+          unnumbered: is(item, NS.text, 'list-header'),
+          restart: attr(item, NS.text, 'start-value') === '1' && entries.some((e) => e.kind === 'item'),
+        });
         paragraphs = [];
       };
       for (const child of kids(item)) {

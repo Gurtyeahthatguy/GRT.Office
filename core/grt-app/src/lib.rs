@@ -2,6 +2,14 @@
 
 pub mod close;
 pub mod commands;
+#[cfg(feature = "everywhere")]
+pub mod everywhere;
+#[cfg(any(feature = "spelling", feature = "writing-tools"))]
+mod gz;
+#[cfg(feature = "spelling")]
+pub mod spelling;
+#[cfg(feature = "writing-tools")]
+pub mod wordtools;
 pub mod package;
 pub mod print;
 pub mod recovery;
@@ -18,6 +26,25 @@ pub const CLOSE_REQUESTED: &str = "grt://close-requested";
 
 /// The document window; other windows, such as a presenter view, close freely.
 const MAIN: &str = "main";
+
+/// Run once at start-up by every program: GTK keeps no list of recently used files for it,
+/// since GRT leaves no recents; the file chooser and the print-to-file printer would add to it.
+pub fn setup<R: Runtime>(_app: &mut tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
+    forget_recent_files();
+    Ok(())
+}
+
+/// Turns GTK's list of recently used files off for this process.
+pub fn forget_recent_files() {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::*;
+        if let Some(settings) = gtk::Settings::default() {
+            settings.set_gtk_recent_files_enabled(false);
+            settings.set_gtk_recent_files_max_age(0);
+        }
+    }
+}
 
 /// Whether the program was started with `--ephemeral`.
 pub fn is_ephemeral() -> bool {

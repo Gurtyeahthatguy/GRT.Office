@@ -490,9 +490,15 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(grt_app::setup)
         .manage(Open::default())
         .plugin(tauri_plugin_dialog::init())
+        .manage(grt_app::everywhere::Everywhere::default())
         .invoke_handler(tauri::generate_handler![
+            grt_app::everywhere::everywhere_folder,
+            grt_app::everywhere::everywhere_search,
+            grt_app::everywhere::everywhere_search_locked,
+            grt_app::everywhere::everywhere_forget,
             create_database,
             open_database,
             unlock_database,

@@ -344,3 +344,20 @@ describe('reading a whole file', () => {
     expect(parse('BEGIN:VCALENDAR\r\nEND:VCALENDAR').entries).toEqual([]);
   });
 });
+
+describe('entries dated beyond what a calendar can hold', () => {
+  it('are kept as they came and counted, and the rest opens', () => {
+    const text = ['BEGIN:VCALENDAR', 'VERSION:2.0',
+      'BEGIN:VEVENT', 'UID:far', 'DTSTART:99991231T120000Z', 'DURATION:P999999999D', 'SUMMARY:Far', 'END:VEVENT',
+      'BEGIN:VEVENT', 'UID:zero', 'DTSTART:00000000T000000', 'SUMMARY:Zero', 'END:VEVENT',
+      'BEGIN:VEVENT', 'UID:ok', 'DTSTART:20260105T090000Z', 'SUMMARY:Fine', 'END:VEVENT',
+      'END:VCALENDAR'].join('\r\n');
+    const parsed = parse(text);
+    expect(parsed.entries.map((e) => e.uid)).toEqual(['ok']);
+    expect(parsed.dropped).toBe(2);
+    const written = serialise(parsed);
+    expect(written).toMatch(/UID:far\r\nDTSTART:99991231T120000Z\r\nDURATION:P999999999D/);
+    expect(written).toMatch(/UID:zero/);
+    expect(parse(written).entries.map((e) => e.uid)).toEqual(['ok']);
+  });
+});

@@ -1,13 +1,20 @@
 /** The library. */
 
 import {
-  ERROR, isError, isBlank, toNumber, toText, toBoolean, compare, collectNumbers, Matrix,
+  ERROR, isError, isBlank, toNumber, toText, toBoolean, compare, collectNumbers, typedNumber, Matrix,
 } from '../engine/values.js';
 import { criterion } from './criteria.js';
+import { formatValue } from '../format.js';
 import { DATETIME } from './datetime.js';
 import { LOOKUP } from './lookup.js';
 import { ARRAYS } from './arrays.js';
 import { STATISTICS } from './statistics.js';
+import { MATHS } from './maths.js';
+import { FINANCIAL } from './financial.js';
+import { PRICING } from './pricing.js';
+import { TEXT as TEXTS } from './text.js';
+import { INFORMATION } from './information.js';
+import { DATABASE } from './database.js';
 
 /** Functions that must be recomputed on every pass, whatever changed. */
 export const VOLATILE = new Set(['RAND', 'RANDBETWEEN', 'TODAY', 'NOW']);
@@ -23,10 +30,30 @@ const firstError = (args) => {
 /** Every value the arguments carry, ranges flattened. */
 const spread = (args) => args.flatMap((arg) => (arg.values ?? [arg.value]));
 
-/** Numbers from the arguments, applying the range rule from values.js. */
+/** Numbers from the arguments: the range rule for cells, and typed values read as numbers, as Calc does. */
 function numbersOf(args) {
-  const collected = collectNumbers(spread(args));
-  return collected;
+  const out = [];
+  for (const arg of args) {
+    if (arg.missing) continue;
+    if (arg.matrix || arg.reference) {
+      const found = collectNumbers(arg.values ?? []);
+      if (isError(found)) return found;
+      out.push(...found);
+    } else {
+      const n = typedNumber(arg.value);
+      if (isError(n)) return n;
+      out.push(n);
+    }
+  }
+  return out;
+}
+
+/** The numbers of the arguments handed to `use`, or the first error among them. */
+function withNumbers(args, use) {
+  const error = firstError(args);
+  if (error) return error;
+  const numbers = numbersOf(args);
+  return isError(numbers) ? numbers : use(numbers);
 }
 
 /** A single number from one argument, refusing text as specifies. */
@@ -45,8 +72,8 @@ const round = (value, digits) => {
 
 export const FUNCTIONS = {
   /** Maths. */
-  SUM: (args) => firstError(args) ?? sumOf(numbersOf(args)),
-  PRODUCT: (args) => firstError(args) ?? numbersOf(args).reduce((a, b) => a * b, 1),
+  SUM: (args) => withNumbers(args, sumOf),
+  PRODUCT: (args) => withNumbers(args, (numbers) => numbers.reduce((a, b) => a * b, 1)),
   ABS: (args) => oneNumber(args, Math.abs),
   SIGN: (args) => oneNumber(args, Math.sign),
   SQRT: (args) => oneNumber(args, (n) => (n < 0 ? ERROR.num : Math.sqrt(n))),
@@ -74,31 +101,23 @@ export const FUNCTIONS = {
   )),
 
   /** Statistics. */
-  AVERAGE: (args) => {
-    const error = firstError(args);
-    if (error) return error;
-    const numbers = numbersOf(args);
-    return numbers.length === 0 ? ERROR.div0 : sumOf(numbers) / numbers.length;
-  },
-  COUNT: (args) => (firstError(args) ?? numbersOf(args).length),
+  AVERAGE: (args) => withNumbers(args, (numbers) => (numbers.length === 0 ? ERROR.div0 : sumOf(numbers) / numbers.length)),
+  // COUNT reads typed text that is a number, where the others refuse it; text in cells it skips, as they do.
+  COUNT: (args) => firstError(args) ?? args.reduce((count, arg) => {
+    if (arg.missing) return count;
+    if (arg.matrix || arg.reference) return count + collectNumbers(arg.values ?? []).length;
+    return count + (isError(toNumber(arg.value)) ? 0 : 1);
+  }, 0),
   COUNTA: (args) => (firstError(args) ?? spread(args).filter((v) => !isBlank(v)).length),
   COUNTBLANK: (args) => (firstError(args) ?? spread(args).filter(isBlank).length),
-  MIN: (args) => {
-    const error = firstError(args);
-    if (error) return error;
-    const numbers = numbersOf(args);
-    return numbers.length === 0 ? 0 : Math.min(...numbers);
-  },
-  MAX: (args) => {
-    const error = firstError(args);
-    if (error) return error;
-    const numbers = numbersOf(args);
-    return numbers.length === 0 ? 0 : Math.max(...numbers);
-  },
+  MIN: (args) => withNumbers(args, (numbers) => (numbers.length === 0 ? 0 : Math.min(...numbers))),
+  MAX: (args) => withNumbers(args, (numbers) => (numbers.length === 0 ? 0 : Math.max(...numbers))),
   MEDIAN: (args) => {
     const error = firstError(args);
     if (error) return error;
-    const sorted = numbersOf(args).sort((a, b) => a - b);
+    const found = numbersOf(args);
+    if (isError(found)) return found;
+    const sorted = found.sort((a, b) => a - b);
     if (sorted.length === 0) return ERROR.num;
     const middle = Math.floor(sorted.length / 2);
     return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
@@ -107,6 +126,7 @@ export const FUNCTIONS = {
     const error = firstError(args);
     if (error) return error;
     const numbers = numbersOf(args);
+    if (isError(numbers)) return numbers;
     if (numbers.length < 2) return ERROR.div0;
     const mean = sumOf(numbers) / numbers.length;
     const variance = sumOf(numbers.map((n) => (n - mean) ** 2)) / (numbers.length - 1);
@@ -171,7 +191,7 @@ export const FUNCTIONS = {
   },
   UPPER: (args) => mapText(args, (t) => t.toUpperCase()),
   LOWER: (args) => mapText(args, (t) => t.toLowerCase()),
-  PROPER: (args) => mapText(args, (t) => t.replace(/\b\w/g, (c) => c.toUpperCase())),
+  PROPER: (args) => mapText(args, (t) => t.toLowerCase().replace(/(^|[^\p{L}\p{N}])(\p{L})/gu, (_, before, c) => before + c.toUpperCase())),
   TRIM: (args) => mapText(args, (t) => t.trim().replace(/\s+/g, ' ')),
   SUBSTITUTE: (args) => {
     const text = toText(args[0]?.value);
@@ -179,7 +199,16 @@ export const FUNCTIONS = {
     const replace = toText(args[2]?.value);
     if (isError(text) || isError(find) || isError(replace)) return ERROR.value;
     if (find === '') return text;
-    return text.split(find).join(replace);
+    if (args[3] === undefined || args[3].missing) return text.split(find).join(replace);
+    // Only the instance-th occurrence, counted from 1.
+    const instance = Math.trunc(numberOf(args[3]));
+    if (isError(instance) || instance < 1) return ERROR.value;
+    let at = -1;
+    for (let i = 0; i < instance; i += 1) {
+      at = text.indexOf(find, at + 1);
+      if (at === -1) return text;
+    }
+    return text.slice(0, at) + replace + text.slice(at + find.length);
   },
   FIND: (args) => {
     const needle = toText(args[0]?.value);
@@ -191,7 +220,20 @@ export const FUNCTIONS = {
   },
   EXACT: (args) => toText(args[0]?.value) === toText(args[1]?.value),
   VALUE: (args) => toNumber(args[0]?.value),
-  TEXT: (args) => toText(args[0]?.value),
+  TEXT: (args) => {
+    const value = args[0]?.value;
+    if (isError(value)) return value;
+    if (args[1] === undefined) return toText(value);
+    const pattern = toText(args[1].value);
+    if (isError(pattern)) return pattern;
+    // A number shown as the format says; text goes through @ and is otherwise kept.
+    if (typeof value === 'number') return formatValue(value, pattern);
+    if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+    const text = isBlank(value) ? '' : String(value);
+    const parsed = text.trim() !== '' ? Number(text) : NaN;
+    if (Number.isFinite(parsed)) return formatValue(parsed, pattern);
+    return pattern.includes('@') ? pattern.replace(/"([^"]*)"/g, '$1').replace('@', text) : text;
+  },
 
   /** Days since 1899-12-30, the serial every spreadsheet uses. */
   TODAY: () => dateSerial(new Date()),
@@ -209,7 +251,14 @@ export const FUNCTIONS = {
   YEAR: (args) => datePart(args, (d) => d.getFullYear()),
   MONTH: (args) => datePart(args, (d) => d.getMonth() + 1),
   DAY: (args) => datePart(args, (d) => d.getDate()),
-  WEEKDAY: (args) => datePart(args, (d) => d.getDay() + 1),
+  WEEKDAY: (args) => {
+    const type = args[1] === undefined || args[1].missing ? 1 : Math.trunc(numberOf(args[1]));
+    // Where each kind of week starts, and from what number it counts.
+    const KINDS = { 1: [0, 1], 2: [1, 1], 3: [1, 0], 11: [1, 1], 12: [2, 1], 13: [3, 1], 14: [4, 1], 15: [5, 1], 16: [6, 1], 17: [0, 1] };
+    const kind = KINDS[type];
+    if (!kind) return ERROR.num;
+    return datePart(args, (d) => ((d.getDay() - kind[0] + 7) % 7) + kind[1]);
+  },
   DAYS: (args) => twoNumbers(args, (a, b) => Math.round(a - b)),
 
   /** Lookup. */
@@ -306,12 +355,24 @@ function everyBoolean(args, apply) {
   return booleans.length === 0 ? ERROR.value : apply(booleans);
 }
 
+/** How many value-against-condition tests one COUNTIF may make when given a block of conditions. */
+const CONDITION_WORK = 20_000_000;
+
 /** The shape shared by COUNTIF, SUMIF and AVERAGEIF. */
 function conditional(args, finish) {
   const error = firstError([args[0]].filter(Boolean));
   if (error) return error;
 
   const values = args[0]?.values ?? [args[0]?.value ?? null];
+  // A block of conditions gives a block of answers, one per condition, as Excel 365 does.
+  const conditions = args[1]?.matrix;
+  if (conditions && conditions.rows * conditions.cols > 1) {
+    if (conditions.rows * conditions.cols * values.length > CONDITION_WORK) return ERROR.num;
+    return Matrix.of(conditions.rows, conditions.cols, (r, c) => {
+      const value = conditions.data[r][c] ?? null;
+      return conditional([args[0], { value, values: [value], matrix: null }, ...args.slice(2)], finish);
+    });
+  }
   const test = criterion(args[1]?.value);
   if (isError(test)) return test;
 
@@ -380,7 +441,7 @@ function datePart(args, apply) {
 export { dateSerial, fromSerial };
 
 // The families kept in their own files join the library; a name defined here is not replaced.
-for (const family of [DATETIME, LOOKUP, ARRAYS, STATISTICS]) {
+for (const family of [DATETIME, LOOKUP, ARRAYS, STATISTICS, MATHS, FINANCIAL, PRICING, TEXTS, INFORMATION, DATABASE]) {
   for (const [name, implementation] of Object.entries(family)) {
     if (!(name in FUNCTIONS)) FUNCTIONS[name] = implementation;
   }

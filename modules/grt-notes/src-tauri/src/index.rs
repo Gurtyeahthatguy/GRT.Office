@@ -93,7 +93,9 @@ pub fn state(connection: &Connection) -> Result<Vec<(String, i64)>, String> {
         .map_err(|e| format!("Cannot read the index: {e}"))?;
 
     let rows = statement
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
         .map_err(|e| format!("Cannot read the index: {e}"))?;
 
     let mut out = Vec::new();
@@ -169,13 +171,15 @@ pub fn search(connection: &Connection, query: &str, limit: i64) -> Result<Vec<Hi
 }
 
 /// Every note's text, for the regular-expression search asks for.
-pub fn dump(connection: &Connection) -> Result<Vec<(String, String, String)>, String> {
+pub fn dump(connection: &Connection) -> Result<Vec<(String, String, String, String)>, String> {
     let mut statement = connection
-        .prepare("SELECT path, title, body FROM notes")
+        .prepare("SELECT path, title, body, tags FROM notes")
         .map_err(|e| format!("Cannot read the index: {e}"))?;
 
     let rows = statement
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
         .map_err(|e| format!("Cannot read the index: {e}"))?;
 
     let mut out = Vec::new();

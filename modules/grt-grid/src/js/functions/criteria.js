@@ -3,7 +3,7 @@
 import { isError, compare } from '../engine/values.js';
 
 /** A text pattern with `*`, `?` and `~`, as LibreOffice and Excel read them, to a regular expression. */
-function wildcard(text) {
+export function wildcard(text) {
   let out = '';
   for (let i = 0; i < text.length; i += 1) {
     const c = text[i];

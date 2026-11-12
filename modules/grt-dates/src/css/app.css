@@ -186,6 +186,16 @@ main {
   align-self: flex-start;
 }
 
+/* The ISO week number, small in the corner of each row's first day. */
+.day-cell { position: relative; }
+.week-number {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
 .is-today .day-number {
   background: var(--accent);
   color: #fff;
@@ -518,3 +528,7 @@ main {
 .print-entry-where { color: #666; margin-left: auto; }
 .print-agenda-date { font-size: 10.5pt; margin: 8pt 0 2pt; border-bottom: 0.5pt solid #bbb; }
 .print-agenda .print-entry { font-size: 10pt; }
+
+/* The title opens Go to date. */
+#view-title { cursor: pointer; border-radius: 4px; }
+#view-title:hover, #view-title:focus-visible { background: color-mix(in srgb, var(--accent) 10%, transparent); }

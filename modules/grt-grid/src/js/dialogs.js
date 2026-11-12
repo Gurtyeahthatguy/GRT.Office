@@ -1,7 +1,7 @@
 /** The dialogs of the Data, Format and Sheet commands: each asks, then hands the answer to the controller. */
 
 import { showPanel, showChoice, readFields, escapeHtml } from './core/panel.js';
-import { columnName, a1 } from './references.js';
+import { columnName, a1, parseRef, parseRange } from './references.js';
 import { shownText } from './data.js';
 import { formatValue } from './format.js';
 import { applyLook } from './grid.js';
@@ -661,4 +661,175 @@ export async function pivotDialog(sheet, existing = null) {
     return sheet.createPivot(pivot, { sheetId: sheet.sheetId, ...corner });
   }
   return sheet.createPivot(pivot);
+}
+
+// Comments
+
+export async function commentDialog(sheet) {
+  const { row, col } = sheet.active;
+  const before = sheet.noteAt(row, col) ?? '';
+  const confirmed = await showPanel(before ? `Edit comment on ${a1(row, col)}` : `Comment on ${a1(row, col)}`, `
+    <textarea id="note-text" data-field="text" rows="6" maxlength="100000" style="width: 100%; box-sizing: border-box">${escapeHtml(before)}</textarea>
+    <p class="hint">GRT keeps no name or date with a comment.</p>`, 'OK');
+  if (!confirmed) return;
+  const text = readFields().text ?? '';
+  if (text !== before) sheet.setNote(text, { row, col });
+}
+
+// Links
+
+export async function hyperlinkDialog(sheet) {
+  const { row, col } = sheet.active;
+  const href = sheet.linkAt(row, col) ?? '';
+  const shown = sheet.sheet.valueAt(row, col);
+  const formula = Boolean(sheet.sheet.formulaAt(row, col));
+  const confirmed = await showPanel('Hyperlink', `
+    <div class="form-grid">
+      <label for="hl-href">URL</label><input id="hl-href" data-field="href" value="${escapeHtml(href)}" placeholder="https://… or #Sheet1.A1" />
+      <label for="hl-text">Text</label><input id="hl-text" data-field="text" value="${escapeHtml(shown ?? '')}"${formula ? ' disabled' : ''} />
+    </div>
+    <p class="hint">Ctrl and a click on the cell shows where the link goes. GRT opens no web page itself.</p>`, 'OK');
+  if (!confirmed) return;
+  const f = readFields();
+  const clean = String(f.href ?? '').trim();
+  const text = formula ? null : String(f.text ?? '');
+  sheet.setLink(clean, text === String(shown ?? '') ? null : text);
+}
+
+// Goal Seek and Solver
+
+/** Cells named as A1, A1:B3 or several of those split by ; or , on the active sheet; null when one is not a cell. */
+export function readCells(text) {
+  const out = [];
+  for (const part of String(text ?? '').split(/[;,]/).map((p) => p.trim()).filter(Boolean)) {
+    const range = parseRange(part);
+    const single = range ? null : parseRef(part);
+    if (!range && !single) return null;
+    const from = range ? range.from : single;
+    const to = range ? range.to : single;
+    for (let row = Math.min(from.row, to.row); row <= Math.max(from.row, to.row); row += 1) {
+      for (let col = Math.min(from.col, to.col); col <= Math.max(from.col, to.col); col += 1) {
+        if (out.length >= 10_000) return null;
+        out.push({ row, col });
+      }
+    }
+  }
+  return out;
+}
+
+const shownNumber = (x) => (Number.isFinite(x) ? String(Number(x.toPrecision(15))) : String(x));
+
+export async function goalSeekDialog(sheet, toast) {
+  const last = sheet.goalSeekSpec ?? {};
+  const confirmed = await showPanel('Goal seek', `
+    <div class="form-grid">
+      <label for="gs-formula">Formula cell</label><input id="gs-formula" data-field="formula" value="${escapeHtml(last.formula ?? a1(sheet.active.row, sheet.active.col))}" />
+      <label for="gs-target">Target value</label><input id="gs-target" data-field="target" value="${escapeHtml(last.target ?? '')}" />
+      <label for="gs-variable">Variable cell</label><input id="gs-variable" data-field="variable" value="${escapeHtml(last.variable ?? '')}" />
+    </div>`, 'OK');
+  if (!confirmed) return;
+  const f = readFields();
+  sheet.goalSeekSpec = f;
+  const formula = parseRef(f.formula);
+  const variable = parseRef(f.variable);
+  const target = Number(String(f.target).trim().replace(',', '.'));
+  if (!formula || !variable) return toast('Name the formula cell and the variable cell, as A1');
+  if (String(f.target).trim() === '' || !Number.isFinite(target)) return toast('The target value must be a number');
+  const result = sheet.goalSeek({ formula, variable, target });
+  if (result.error) return toast(result.error);
+  const text = result.found
+    ? `<p>Goal Seek succeeded. Result: ${escapeHtml(shownNumber(result.x))}</p><p>Insert the result into the variable cell?</p>`
+    : `<p>Goal Seek failed.</p><p>Insert the closest value (${escapeHtml(shownNumber(result.x))}) into the variable cell?</p>`;
+  const answer = await showChoice('Goal seek', text, [{ id: 'no', label: 'No' }, { id: 'yes', label: 'Yes', primary: true }]);
+  if (answer === 'yes') sheet.keepValues([{ ...variable, value: result.x }]);
+}
+
+const CONDITIONS = [['<=', '<='], ['=', '='], ['>=', '=>'], ['int', 'Integer'], ['bin', 'Binary']];
+const SOLVER_ROWS = 6;
+
+export async function solverDialog(sheet, toast) {
+  const last = sheet.solverSpec ?? {
+    objective: a1(sheet.active.row, sheet.active.col), goal: 'max', target: '', variables: '', engine: 'auto', nonNegative: true, integer: false, seconds: 10, rows: [],
+  };
+  const row = (i) => {
+    const r = last.rows[i] ?? { cell: '', op: '<=', value: '' };
+    return `<div class="row">
+      <label>Cell reference<input data-field="cell${i}" value="${escapeHtml(r.cell)}" /></label>
+      <label>Operator<select data-field="op${i}">${CONDITIONS.map(([id, label]) => option(id, label, r.op)).join('')}</select></label>
+      <label>Value<input data-field="value${i}" value="${escapeHtml(r.value)}" /></label>
+    </div>`;
+  };
+  const confirmed = await showPanel('Solver', `
+    <div class="form-grid">
+      <label for="sv-objective">Target cell</label><input id="sv-objective" data-field="objective" value="${escapeHtml(last.objective)}" />
+      <label for="sv-goal">Optimize result to</label><select id="sv-goal" data-field="goal">${option('max', 'Maximum', last.goal)}${option('min', 'Minimum', last.goal)}${option('value', 'Value of', last.goal)}</select>
+      <label for="sv-target">Value of</label><input id="sv-target" data-field="target" value="${escapeHtml(last.target)}" />
+      <label for="sv-variables">By changing cells</label><input id="sv-variables" data-field="variables" value="${escapeHtml(last.variables)}" />
+    </div>
+    <h3>Limiting conditions</h3>
+    ${Array.from({ length: SOLVER_ROWS }, (_, i) => row(i)).join('')}
+    <h3>Options</h3>
+    <div class="form-grid">
+      <label for="sv-engine">Method</label><select id="sv-engine" data-field="engine">${option('auto', 'Linear when the model is, else evolutionary', last.engine)}${option('linear', 'Linear only', last.engine)}${option('nonlinear', 'Evolutionary', last.engine)}</select>
+      <label for="sv-seconds">Time limit, seconds</label><input id="sv-seconds" type="number" min="1" max="3600" data-field="seconds" value="${escapeHtml(last.seconds)}" />
+    </div>
+    <div class="setting"><span class="label">Assume variables as non-negative</span><input type="checkbox" data-field="nonNegative"${last.nonNegative ? ' checked' : ''} /></div>
+    <div class="setting"><span class="label">Assume variables as integers</span><input type="checkbox" data-field="integer"${last.integer ? ' checked' : ''} /></div>`, 'Solve');
+  if (!confirmed) return;
+  const f = readFields();
+  const spec = {
+    objective: f.objective, goal: f.goal, target: f.target, variables: f.variables, engine: f.engine,
+    nonNegative: !!f.nonNegative, integer: !!f.integer, seconds: Number(f.seconds) || 10,
+    rows: Array.from({ length: SOLVER_ROWS }, (_, i) => ({ cell: f[`cell${i}`] ?? '', op: f[`op${i}`] ?? '<=', value: f[`value${i}`] ?? '' })),
+  };
+  sheet.solverSpec = spec;
+  const objective = parseRef(spec.objective);
+  if (!objective) return toast('Name the target cell, as A1');
+  const variables = readCells(spec.variables);
+  if (!variables || variables.length === 0) return toast('Name the cells to change, as A1:B3');
+  const target = Number(String(spec.target).trim().replace(',', '.'));
+  if (spec.goal === 'value' && (String(spec.target).trim() === '' || !Number.isFinite(target))) return toast('Value of needs a number');
+  const constraints = [];
+  for (const r of spec.rows) {
+    if (String(r.cell).trim() === '') continue;
+    const cells = readCells(r.cell);
+    if (!cells) return toast(`${r.cell} is not a cell`);
+    if (r.op === 'int' || r.op === 'bin') {
+      for (const cell of cells) constraints.push({ cell, op: r.op });
+      continue;
+    }
+    // The right side: a number, one cell, or as many cells as the left.
+    const number = Number(String(r.value).trim().replace(',', '.'));
+    const sides = String(r.value).trim() !== '' && Number.isFinite(number) ? null : readCells(r.value);
+    if (!sides && !(String(r.value).trim() !== '' && Number.isFinite(number))) return toast(`The condition on ${r.cell} needs a number or a cell`);
+    if (sides && sides.length !== 1 && sides.length !== cells.length) return toast(`The two sides of the condition on ${r.cell} differ in size`);
+    cells.forEach((cell, k) => {
+      const side = sides?.[sides.length === 1 ? 0 : k];
+      const rhs = side ? sheet.sheet.valueAt(side.row, side.col) : number;
+      constraints.push({ cell, op: r.op, rhs: typeof rhs === 'number' ? rhs : NaN });
+    });
+  }
+  toast('Solving…');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const result = sheet.solve({ objective, goal: spec.goal, target, variables, constraints, nonNegative: spec.nonNegative, integer: spec.integer, engine: spec.engine, seconds: spec.seconds });
+  if (result.error) return toast(result.error);
+  const reasons = {
+    infeasible: 'No values keep every limiting condition.',
+    unbounded: 'The model is unbounded: the target can grow without end.',
+    'not-linear': 'The model is not linear. Choose the evolutionary method.',
+    'not-reached': 'No values found give the target value.',
+    limit: 'The time limit was reached before an answer.',
+  };
+  if (!result.x || result.status === 'not-linear') {
+    await showChoice('Solver', `<p>${escapeHtml(reasons[result.status] ?? 'Solving failed.')}</p>`, [{ id: 'ok', label: 'OK', primary: true }]);
+    return;
+  }
+  const finished = result.status === 'optimal' ? 'Solving successfully finished.' : reasons[result.status] ?? 'Solving stopped.';
+  const answer = await showChoice('Solver', `
+    <p>${escapeHtml(finished)}</p>
+    <p>Result: ${escapeHtml(shownNumber(result.objective))}</p>
+    <p>Do you want to keep the result or do you want to restore previous values?</p>`, [
+    { id: 'restore', label: 'Restore Previous' }, { id: 'keep', label: 'Keep Result', primary: true },
+  ]);
+  if (answer === 'keep') sheet.keepValues(result.variables.map((cell, j) => ({ ...cell, value: result.x[j] })));
 }

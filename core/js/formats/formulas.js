@@ -28,7 +28,9 @@ const MICROSOFT = new Set(['CONCAT', 'IFS', 'MAXIFS', 'MINIFS', 'SWITCH', 'TEXTJ
   'XMATCH', 'FILTER', 'SORT', 'SORTBY', 'UNIQUE', 'SEQUENCE', 'RANDARRAY', 'LET', 'FORECAST.LINEAR',
   'NETWORKDAYS.INTL', 'WORKDAY.INTL', 'CHOOSECOLS', 'CHOOSEROWS', 'DROP', 'EXPAND', 'HSTACK', 'VSTACK',
   'TAKE', 'TEXTSPLIT', 'TOCOL', 'TOROW', 'WRAPCOLS', 'WRAPROWS', 'MODE.SNGL', 'PERCENTILE.INC',
-  'QUARTILE.INC', 'RANK.EQ', 'STDEV.P', 'STDEV.S', 'VAR.P', 'VAR.S']);
+  'QUARTILE.INC', 'RANK.EQ', 'STDEV.P', 'STDEV.S', 'VAR.P', 'VAR.S', 'AGGREGATE', 'CEILING.MATH', 'CEILING.PRECISE',
+  'FLOOR.MATH', 'FLOOR.PRECISE', 'ISO.CEILING', 'BAHTTEXT', 'ENCODEURL', 'FILTERXML', 'TEXTAFTER', 'TEXTBEFORE',
+  'WEBSERVICE', 'PERCENTILE.EXC', 'QUARTILE.EXC']);
 
 /** Functions LibreOffice writes under a name of its own, as its oracle showed on 1 November 2026. */
 const LIBREOFFICE = {
@@ -37,6 +39,25 @@ const LIBREOFFICE = {
   WEEKSINYEAR: 'ORG.OPENOFFICE.WEEKSINYEAR', YEARS: 'ORG.OPENOFFICE.YEARS', ERRORTYPE: 'ORG.OPENOFFICE.ERRORTYPE',
   STYLE: 'ORG.OPENOFFICE.STYLE', WEEKNUM_OOO: 'ORG.LIBREOFFICE.WEEKNUM_OOO', FOURIER: 'ORG.LIBREOFFICE.FOURIER',
   NETWORKDAYS_EXCEL2003: 'NETWORKDAYS', WEEKNUM_EXCEL2003: 'WEEKNUM',
+  COLOR: 'ORG.LIBREOFFICE.COLOR', 'RAND.NV': 'ORG.LIBREOFFICE.RAND.NV', 'RANDBETWEEN.NV': 'ORG.LIBREOFFICE.RANDBETWEEN.NV',
+  RAWSUBTRACT: 'ORG.LIBREOFFICE.RAWSUBTRACT', ROUNDSIG: 'ORG.LIBREOFFICE.ROUNDSIG', REGEX: 'ORG.LIBREOFFICE.REGEX',
+  ROT13: 'ORG.OPENOFFICE.ROT13', CURRENT: 'ORG.OPENOFFICE.CURRENT', CONVERT_OOO: 'ORG.OPENOFFICE.CONVERT',
+  'CEILING.XCL': 'COM.MICROSOFT.CEILING', 'FLOOR.XCL': 'COM.MICROSOFT.FLOOR', GCD_EXCEL2003: 'GCD', LCM_EXCEL2003: 'LCM',
+  CUMIPMT_ADD: 'CUMIPMT', CUMPRINC_ADD: 'CUMPRINC', EFFECT_ADD: 'EFFECT', NOMINAL_ADD: 'NOMINAL',
+  ISEVEN_ADD: 'ISEVEN', ISODD_ADD: 'ISODD',
+  OPT_BARRIER: 'COM.SUN.STAR.SHEET.ADDIN.PRICINGFUNCTIONS.GETOPTBARRIER',
+  OPT_PROB_HIT: 'COM.SUN.STAR.SHEET.ADDIN.PRICINGFUNCTIONS.GETOPTPROBHIT',
+  OPT_PROB_INMONEY: 'COM.SUN.STAR.SHEET.ADDIN.PRICINGFUNCTIONS.GETOPTPROBINMONEY',
+  OPT_TOUCH: 'COM.SUN.STAR.SHEET.ADDIN.PRICINGFUNCTIONS.GETOPTTOUCH',
+};
+
+/** Names in an ODF file that are not Grid's name with a prefix taken off. */
+const FROM_LIBREOFFICE = {
+  'COM.MICROSOFT.CEILING': 'CEILING.XCL', 'COM.MICROSOFT.FLOOR': 'FLOOR.XCL', 'ORG.OPENOFFICE.CONVERT': 'CONVERT_OOO',
+  'COM.SUN.STAR.SHEET.ADDIN.PRICINGFUNCTIONS.GETOPTBARRIER': 'OPT_BARRIER',
+  'COM.SUN.STAR.SHEET.ADDIN.PRICINGFUNCTIONS.GETOPTPROBHIT': 'OPT_PROB_HIT',
+  'COM.SUN.STAR.SHEET.ADDIN.PRICINGFUNCTIONS.GETOPTPROBINMONEY': 'OPT_PROB_INMONEY',
+  'COM.SUN.STAR.SHEET.ADDIN.PRICINGFUNCTIONS.GETOPTTOUCH': 'OPT_TOUCH',
 };
 
 /** A sheet name as a reference writes it: quoted when it has to be. */
@@ -82,9 +103,9 @@ function scanExcel(text, visit) {
         continue;
       }
     }
-    const symbol = visit({ kind: 'char', char: c, braces });
-    out += symbol ?? c;
-    i += 1;
+    const symbol = visit({ kind: 'char', char: c, text: rest, braces });
+    out += typeof symbol === 'object' && symbol ? symbol.out : symbol ?? c;
+    i += typeof symbol === 'object' && symbol ? symbol.length : 1;
   }
   return out;
 }
@@ -160,6 +181,13 @@ export function fromOpenFormula(text) {
       i = j;
       continue;
     }
+    // An error written as it is, such as #REF! or #N/A, keeps its `!` and `/`.
+    const error = c === '#' ? /^#(?:REF!|N\/A|DIV\/0!|VALUE!|NAME\?|NUM!|NULL!)/i.exec(body.slice(i)) : null;
+    if (error) {
+      out += error[0].toUpperCase();
+      i += error[0].length - 1;
+      continue;
+    }
     if (c === '{') braces += 1;
     if (c === '}') braces -= 1;
     if (c === ';') out += ',';
@@ -173,6 +201,8 @@ export function fromOpenFormula(text) {
     } else out += c;
   }
   // Microsoft's own functions, by their plain names.
+  out = out.replace(/\b((?:COM|ORG)\.[A-Z][A-Z0-9._]*)\s*\(/gi,
+    (whole, name) => (FROM_LIBREOFFICE[name.toUpperCase()] ? `${FROM_LIBREOFFICE[name.toUpperCase()]}(` : whole));
   out = out.replace(/\b(?:COM\.MICROSOFT|ORG\.OPENOFFICE|ORG\.LIBREOFFICE)\.([A-Z][A-Z0-9._]*)\s*\(/gi, '$1(');
   return { formula: `=${out}`, problems };
 }
@@ -241,6 +271,8 @@ export function toOpenFormula(formula) {
       }
       return null;
     }
+    // A reference that was lost is written as LibreOffice writes it.
+    if (piece.char === '#' && /^#REF!/i.test(piece.text)) return { out: '[#REF!]', length: 5 };
     // Columns of an array constant are split by `;` there, and rows by `|`.
     if (piece.char === ',') return ';';
     if (piece.char === ';') return piece.braces > 0 ? '|' : ';';
@@ -253,8 +285,16 @@ export function toOpenFormula(formula) {
 
 /** `_xlfn.CONCAT(A1,B1)` to `=CONCAT(A1,B1)`. */
 export function fromExcelFormula(text) {
-  return `=${String(text).replace(/\b(?:_xl(?:fn|ws)\.)+(?=[A-Za-z])/g, '')}`;
+  const plain = String(text).replace(/\b(?:_xl(?:fn|ws)\.)+(?=[A-Za-z])/g, '');
+  // Excel's CEILING and FLOOR round as Calc's .XCL versions do, not as Calc's own.
+  return `=${plain.replace(/(^|[^\w.])(CEILING|FLOOR)\s*\(/gi, (_, before, name) => `${before}${name.toUpperCase()}.XCL(`)}`;
 }
+
+/** Grid's names that Excel knows under another. */
+const TO_EXCEL = {
+  'CEILING.XCL': 'CEILING', 'FLOOR.XCL': 'FLOOR', GCD_EXCEL2003: 'GCD', LCM_EXCEL2003: 'LCM', CUMIPMT_ADD: 'CUMIPMT',
+  CUMPRINC_ADD: 'CUMPRINC', EFFECT_ADD: 'EFFECT', NOMINAL_ADD: 'NOMINAL', ISEVEN_ADD: 'ISEVEN', ISODD_ADD: 'ISODD',
+};
 
 /** `=CONCAT(A1;B1)` to `_xlfn.CONCAT(A1,B1)`, as Excel stores it. */
 export function toExcelFormula(formula) {
@@ -268,6 +308,9 @@ export function toExcelFormula(formula) {
         const prefix = WORKSHEET.has(name.toUpperCase()) ? '_xlfn._xlws.' : '_xlfn.';
         return { out: `${prefix}${name.toUpperCase()}`, length: name.length };
       }
+      if (name && piece.text[name.length] === '(' && TO_EXCEL[name.toUpperCase()]) return { out: TO_EXCEL[name.toUpperCase()], length: name.length };
+      // Calc's own CEILING and FLOOR, which take a mode, are Excel's .MATH ones, as LibreOffice writes them.
+      if (name && piece.text[name.length] === '(' && /^(CEILING|FLOOR)$/i.test(name)) return { out: `_xlfn.${name.toUpperCase()}.MATH`, length: name.length };
       if (name) return { out: name, length: name.length };
       return null;
     }

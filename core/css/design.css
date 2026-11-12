@@ -256,3 +256,92 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 
 /* A heading's number, drawn before it and not part of its text. */
 .block.heading[data-number]::before { content: attr(data-number) "\2002"; }
+
+/* Font effects in text: double underline, overline, shadow, outline and small capitals. */
+.effect-double { text-decoration-line: underline; text-decoration-style: double; }
+.effect-overline { text-decoration-line: overline; }
+u .effect-overline, .effect-overline u { text-decoration-line: underline overline; }
+.effect-shadow { text-shadow: 0.06em 0.06em 0 rgba(0, 0, 0, 0.35); }
+.effect-outline { -webkit-text-stroke: 0.04em currentColor; -webkit-text-fill-color: transparent; }
+.effect-smallcaps { font-variant: small-caps; }
+
+/* Special characters: a grid of buttons, one character each. */
+.char-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(2.2rem, 1fr)); gap: 2px; max-height: 16rem; overflow-y: auto; margin-top: 0.5rem; }
+.char-cell { font-size: 1.15rem; padding: 0.25rem 0; border: 1px solid var(--border); background: var(--bg-raised); color: var(--text); border-radius: 3px; cursor: pointer; }
+.char-cell:hover, .char-cell:focus { background: var(--bg-sunken); border-color: var(--accent); }
+
+/* Where a link goes, shown before anything is done with it. */
+.link-target code { display: block; padding: 6px 8px; background: var(--bg-sunken, rgba(127, 127, 127, 0.12)); border-radius: 4px; overflow-wrap: anywhere; user-select: all; }
+.link-refused { color: var(--danger, #c5221f); font-weight: 600; }
+
+/* The find bar, at the foot of the window as in LibreOffice. */
+.grt-findbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 900; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bg-raised, #f4f4f4); border-top: 1px solid var(--border, #ccc); font-size: 13px; }
+.grt-findbar[hidden] { display: none; }
+.grt-findbar .find-text { flex: 0 1 280px; min-width: 120px; }
+.grt-findbar label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.grt-findbar .find-count { flex: 1; color: var(--text-dim, #666); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+::highlight(grt-find) { background-color: #ffd54a; color: #000; }
+.text-link { color: var(--link, #1a5fb4); text-decoration-line: underline; }
+
+/* Review: changes recorded in the text, and comments, as LibreOffice shows them. */
+.change-ins { color: #b5179e; text-decoration: underline; text-decoration-color: #b5179e; }
+.change-del { color: #b5179e; text-decoration: line-through; text-decoration-color: #b5179e; }
+.hide-changes .change-del { display: none; }
+.hide-changes .change-ins { color: inherit; text-decoration: none; }
+.comment-range { background: rgba(255, 213, 74, 0.35); }
+.comment-anchor { font-size: 0.8em; cursor: pointer; user-select: none; }
+.hide-comments .comment-anchor, .hide-comments .comment-range { background: none; }
+.hide-comments .object-comment .comment-anchor { display: none; }
+.hide-resolved .comment-done .comment-anchor { display: none; }
+.redacted { background: #111; color: #111; border-radius: 1px; }
+.redacted:hover { color: #ddd; }
+.merge-field { background: rgba(127, 127, 127, 0.18); border-radius: 2px; padding: 0 2px; }
+
+/* Search everywhere. */
+.everywhere-folder { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.everywhere-folder .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; }
+.everywhere-list { max-height: 40vh; overflow-y: auto; display: grid; gap: 4px; margin: 6px 0; }
+.everywhere-hit { display: block; text-align: left; width: 100%; padding: 6px 8px; }
+.everywhere-snippet, .everywhere-path { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.everywhere-snippet mark { background: var(--accent); color: var(--bg); border-radius: 2px; padding: 0 1px; }
+.everywhere-locked { border-top: 1px solid var(--border); padding-top: 6px; display: grid; gap: 6px; }
+
+/* Customize. */
+.customize-list { max-height: 45vh; }
+.customize-row { display: flex; justify-content: space-between; gap: 8px; text-align: left; width: 100%; padding: 4px 8px; }
+.customize-row.chosen { outline: 2px solid var(--accent); outline-offset: -2px; }
+.customize-keys { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; margin-top: 8px; }
+
+/* Spelling and grammar. */
+::highlight(grt-spelling) { text-decoration: underline wavy #d32f2f; text-decoration-thickness: 1px; }
+::highlight(grt-grammar) { text-decoration: underline wavy #1e66d0; text-decoration-thickness: 1px; }
+.spelling-context { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.spelling-context mark { background: rgba(211, 47, 47, 0.18); color: inherit; }
+
+/* Toolbars as LibreOffice lays them out, and the status bar. */
+.toolbars { flex: 0 0 auto; background: var(--bg-raised); border-bottom: 1px solid var(--border); }
+.toolbars .toolbar { display: flex; align-items: center; gap: 2px; padding: 3px 8px; flex-wrap: wrap; border: none; background: none; }
+.toolbars .toolbar + .toolbar { border-top: 1px solid var(--border); }
+.toolbars .group { display: flex; align-items: center; gap: 1px; padding-right: 6px; margin-right: 4px; border-right: 1px solid var(--border); }
+.toolbars .group:last-child, .toolbars .group.end { border-right: none; }
+.toolbars .spacer { flex: 1; }
+.icon-button { width: 28px; height: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-color: transparent; }
+.icon-button:hover:not(:disabled) { border-color: var(--border); background: var(--bg-sunken, rgba(127, 127, 127, 0.12)); }
+.icon-button[aria-pressed="true"] { background: rgba(37, 99, 235, 0.16); border-color: var(--accent); }
+.icon-button:disabled { opacity: 0.38; }
+.grt-icon { display: block; }
+.grt-letter { font-size: 15px; line-height: 16px; min-width: 16px; text-align: center; }
+.statusbar { flex: 0 0 auto; display: flex; align-items: center; gap: 0; min-height: 24px; padding: 0 8px; font-size: 12px; color: var(--text-dim); background: var(--bg-raised); border-top: 1px solid var(--border); overflow: hidden; }
+.status-field { padding: 2px 10px; border: none; border-right: 1px solid var(--border); border-radius: 0; background: none; color: inherit; font: inherit; white-space: nowrap; }
+.status-field:last-child { border-right: none; }
+.status-field.grow { flex: 1; }
+button.status-field:hover { color: var(--text); background: var(--bg-sunken, rgba(127, 127, 127, 0.12)); }
+.status-field:empty { display: none; }
+
+/* Live preview lists. */
+.live-preview-hidden { position: absolute !important; width: 1px !important; height: 1px !important; opacity: 0; pointer-events: none; }
+.live-preview-button { min-width: 140px; text-align: left; padding: 4px 26px 4px 10px; position: relative; }
+.live-preview-button::after { content: '▾'; position: absolute; right: 8px; color: var(--text-dim); }
+.live-preview-list { max-height: 60vh; overflow-y: auto; z-index: 60; }
+.live-preview-list [role="option"] { padding: 4px 12px; cursor: default; white-space: nowrap; }
+.live-preview-list [role="option"].active { background: var(--accent); color: #fff; }

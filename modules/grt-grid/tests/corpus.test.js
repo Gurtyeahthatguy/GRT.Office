@@ -74,9 +74,11 @@ describe.skipIf(files.length === 0 || !oracleAvailable())('the spreadsheet corpu
         result = ours(file);
       } catch (error) {
         cleanup(out);
-        console.log(`[corpus] ${label}: ${theirs ? 'ERROR' : 'refused, as LibreOffice did'}: ${error.message.split('\n')[0]}`);
-        results[keyOf(file)] = theirs ? 0 : 1;
-        if (theirs && !process.env.GRT_CORPUS_UPDATE) throw error;
+        // A file GRT turns away on purpose, such as an XML bomb, is not a failure even when LibreOffice opens it.
+        const meant = /declares XML entities|is too large|is nested more/.test(error.message);
+        console.log(`[corpus] ${label}: ${meant ? 'refused on purpose' : theirs ? 'ERROR' : 'refused, as LibreOffice did'}: ${error.message.split('\n')[0]}`);
+        results[keyOf(file)] = theirs && !meant ? 0 : 1;
+        if (theirs && !meant && !process.env.GRT_CORPUS_UPDATE) throw error;
         return;
       }
       cleanup(out);

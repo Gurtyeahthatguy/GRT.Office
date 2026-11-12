@@ -14,6 +14,8 @@ import { declareExternal } from './external.js';
 const P = NS.p;
 const A = NS.a;
 const P14 = 'http://schemas.microsoft.com/office/powerpoint/2010/main';
+/** Comment places are in PowerPoint's master units, 576 to the inch; a slide pixel is 1/96 inch. */
+const COMMENT_UNITS = 576 / 96;
 const TABLE_URI = 'http://schemas.openxmlformats.org/drawingml/2006/table';
 const PT_TO_PX = 96 / 72;
 
@@ -73,9 +75,16 @@ class PptxReader {
     const slideRefs = kids(kid(this.root, P, 'sldIdLst'), P, 'sldId');
     const sections = this.readSections();
     const slides = [];
+    // A part named by two slides is read once, so a small file cannot make the reader parse one slide many times.
+    const readParts = new Set();
     for (const ref of slideRefs) {
       const rel = this.rels.get(ref.getAttributeNS(NS.r, 'id'));
       if (!rel || !relIs(rel.type, 'slide')) continue;
+      if (readParts.has(rel.target)) {
+        this.losses.add('Slides that name a part already read, left out');
+        continue;
+      }
+      readParts.add(rel.target);
       const slide = this.readSlide(rel.target);
       if (!slide) continue;
       slide.section = sections.get(ref.getAttribute('id')) ?? null;
@@ -236,10 +245,27 @@ class PptxReader {
       background: this.background(root, context) ?? (layout?.background !== master?.background ? layout?.background ?? null : null),
       section: null,
       notes: this.notes(rels),
+      ...this.comments(rels),
       transition: this.transition(root),
       elements,
       ...(root.getAttribute('show') === '0' ? { hidden: true } : {}),
     };
+  }
+
+  /** A slide's comments: their places and text; who wrote them and when are not kept. */
+  comments(rels) {
+    const part = [...rels.values()].find((rel) => rel.type.endsWith('/comments') && !rel.external)?.target;
+    const doc = part ? readPart(this.pkg, part, 'the comments') : null;
+    const out = [];
+    for (const cm of doc ? kids(doc.documentElement, P, 'cm').slice(0, 500) : []) {
+      if (cm.hasAttribute('dt')) this.losses.add('Names and dates on comments, left out');
+      const text = (kid(cm, P, 'text')?.textContent ?? '').slice(0, 100_000);
+      if (text.trim() === '') continue;
+      const pos = kid(cm, P, 'pos');
+      const at = (name) => Math.round((Number(pos?.getAttribute(name)) || 0) / COMMENT_UNITS);
+      out.push({ id: this.id('c'), x: at('x'), y: at('y'), text });
+    }
+    return out.length ? { comments: out } : {};
   }
 
   notes(rels) {
@@ -487,22 +513,33 @@ class PptxReader {
     const table = kid(data, A, 'tbl');
     const rows = kids(table, A, 'tr');
     const cols = kids(kid(table, A, 'tblGrid'), A, 'gridCol').length || Math.max(...rows.map((tr) => kids(tr, A, 'tc').length), 1);
-    let merged = false;
     let size = null;
-    const cells = rows.map((tr) => kids(tr, A, 'tc').slice(0, cols).map((tc) => {
-      if (tc.hasAttribute('gridSpan') || tc.hasAttribute('rowSpan') || tc.hasAttribute('hMerge') || tc.hasAttribute('vMerge')) merged = true;
+    const merges = [];
+    const widths = kids(kid(table, A, 'tblGrid'), A, 'gridCol').slice(0, 64).map((g) => Number(g.getAttribute('w')));
+    const heights = rows.slice(0, 1000).map((tr) => Number(tr.getAttribute('h')));
+    const cells = rows.slice(0, 1000).map((tr, r) => kids(tr, A, 'tc').slice(0, cols).map((tc, c) => {
+      if (['1', 'true'].includes(tc.getAttribute('hMerge')) || ['1', 'true'].includes(tc.getAttribute('vMerge'))) return '';
+      const across = Math.min(Number(tc.getAttribute('gridSpan') ?? 1) || 1, 64);
+      const down = Math.min(Number(tc.getAttribute('rowSpan') ?? 1) || 1, 1000);
+      if (across > 1 || down > 1) merges.push({ top: r, left: c, bottom: r + down - 1, right: c + across - 1 });
       const body = kid(tc, A, 'txBody');
       const sz = body?.getElementsByTagNameNS(A, 'rPr')[0]?.getAttribute('sz');
       if (size === null && sz) size = Number(sz) / 100;
       return kids(body, A, 'p').map((p) => paragraphText(p)).join('\n');
     }));
-    if (merged) this.losses.add('Merged table cells, shown separate');
     if (rows.length > 30 || cols > 12) this.losses.add('Tables larger than 30 rows or 12 columns, cut to that size');
     const header = kid(table, A, 'tblPr')?.getAttribute('firstRow') === '1';
+    const rowCount = Math.min(Math.max(rows.length, 1), 30);
+    const colCount = Math.min(cols, 12);
+    const fits = (list, count) => (list.length >= count && list.slice(0, count).every((v) => v > 0) ? list.slice(0, count) : null);
+    const colW = fits(widths, colCount);
+    const rowH = fits(heights, rowCount);
     out.push({
       id: this.id('e'), kind: 'table', ...rounded(box), style: 'body',
-      rows: Math.min(Math.max(rows.length, 1), 30), cols: Math.min(cols, 12), header,
+      rows: rowCount, cols: colCount, header,
       cells: cells.slice(0, 30).map((row) => row.slice(0, 12)),
+      ...(colW ? { colW } : {}), ...(rowH ? { rowH } : {}),
+      ...(merges.length ? { merges: merges.filter((m) => m.top < rowCount && m.left < colCount).map((m) => ({ ...m, bottom: Math.min(m.bottom, rowCount - 1), right: Math.min(m.right, colCount - 1) })) } : {}),
       size: Math.round((size ?? 18) * PT_TO_PX), data: {},
     });
   }
@@ -531,21 +568,21 @@ class PptxReader {
 
     const runs = [];
     const sizes = [];
+    const paras = [];
     let elementColor = null;
     let align = null;
     let font = null;
-    let bulleted = false;
+    let spacing = null;
     paragraphs.forEach((p, index) => {
       const pPr = kid(p, A, 'pPr');
-      const level = Number(pPr?.getAttribute('lvl') ?? 0);
+      const level = Math.max(0, Math.min(8, Number(pPr?.getAttribute('lvl') ?? 0) || 0));
       const levelProps = mergeLevels(listChain, level, pPr);
       align ??= levelProps.algn ?? 'l';
+      spacing ??= levelProps;
       if (index > 0) runs.push({ text: '\n' });
       const text = paragraphText(p);
-      if (text !== '' && levelProps.bullet && kind === 'body') {
-        bulleted = true;
-        runs.push({ text: `${'    '.repeat(level)}${levelProps.bullet} ` });
-      }
+      const list = text !== '' && levelProps.list ? levelProps.list : null;
+      paras.push(list ? { level, list } : { level });
       for (const run of kids(p)) {
         if (!['r', 'fld', 'br'].includes(run.localName) || run.namespaceURI !== A) continue;
         if (run.localName === 'br') {
@@ -555,6 +592,8 @@ class PptxReader {
         const value = kid(run, A, 't')?.textContent ?? '';
         if (value === '') continue;
         const rPr = { ...levelProps.defRPr, ...readRPr(kid(run, A, 'rPr')) };
+        const linkRel = context.rels?.get(kid(kid(run, A, 'rPr'), A, 'hlinkClick')?.getAttributeNS(NS.r, 'id'));
+        const link = linkRel?.external ? linkRel.target.slice(0, 2048) : null;
         const color = colorOf(rPr.fill, context.theme, context.colorMap) ?? fontRefColor;
         elementColor ??= color;
         if (rPr.sz) sizes.push(rPr.sz);
@@ -563,20 +602,39 @@ class PptxReader {
           text: value,
           ...(rPr.b ? { bold: true } : {}),
           ...(rPr.i ? { italic: true } : {}),
-          ...(rPr.u ? { underline: true } : {}),
+          ...(rPr.u && !rPr.dbl ? { underline: true } : {}),
+          ...(rPr.dbl ? { double: true } : {}),
+          ...(rPr.strike ? { strike: true } : {}),
+          ...(rPr.cap === 'small' ? { smallcaps: true } : {}),
+          ...(rPr.baseline > 0 ? { sup: true } : rPr.baseline < 0 ? { sub: true } : {}),
+          ...(rPr.outline ? { outline: true } : {}),
+          ...(rPr.shadow ? { shadow: true } : {}),
+          ...(rPr.highlight ? { highlight: rPr.highlight } : {}),
           ...(color && color !== elementColor ? { color } : {}),
+          ...(rPr.sz ? { sz: rPr.sz } : {}),
+          ...(link ? { link } : {}),
         });
       }
     });
-    if (bulleted) this.losses.add('Bulleted lists, kept as text with bullet characters');
-    const distinct = [...new Set(sizes)];
-    if (distinct.length > 1) this.losses.add('Text of different sizes in one box, shown at one size');
+    // The box takes the size most of its text has; runs of another size keep their own, in pixels.
+    const counts = new Map();
+    for (const s of sizes) counts.set(s, (counts.get(s) ?? 0) + 1);
+    const common = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    for (const run of runs) {
+      if (run.sz && run.sz !== common) run.size = Math.round(run.sz * scale * PT_TO_PX);
+      delete run.sz;
+    }
+    const distinct = common === null ? [] : [common];
     const points = (distinct[0] ?? 18) * scale;
     const typeface = font === '+mj-lt' ? context.theme.major : font === '+mn-lt' ? context.theme.minor : font;
 
     return {
       style: 'body',
       content: mergeRuns(runs),
+      ...(paras.some((x) => x.list || x.level) ? { paras } : {}),
+      ...(spacing?.lineHeight && Math.abs(spacing.lineHeight - 0.87) > 0.01 ? { lineHeight: Math.round(spacing.lineHeight * 100) / 100 } : {}),
+      ...(spacing?.spaceBefore ? { spaceBefore: Math.round(spacing.spaceBefore) } : {}),
+      ...(spacing?.spaceAfter ? { spaceAfter: Math.round(spacing.spaceAfter) } : {}),
       size: Math.round(points * PT_TO_PX),
       align: { ctr: 'center', r: 'right' }[align] ?? (centredBlock ? 'center' : 'left'),
       ...(anchor === 'ctr' ? { valign: 'middle' } : anchor === 'b' ? { valign: 'bottom' } : {}),
@@ -637,7 +695,17 @@ function readRPr(rPr) {
   if (rPr.hasAttribute('sz')) out.sz = Number(rPr.getAttribute('sz')) / 100;
   if (rPr.hasAttribute('b')) out.b = ['1', 'true'].includes(rPr.getAttribute('b'));
   if (rPr.hasAttribute('i')) out.i = ['1', 'true'].includes(rPr.getAttribute('i'));
-  if (rPr.hasAttribute('u')) out.u = rPr.getAttribute('u') !== 'none';
+  if (rPr.hasAttribute('u')) {
+    out.u = rPr.getAttribute('u') !== 'none';
+    out.dbl = /^dbl/.test(rPr.getAttribute('u'));
+  }
+  if (rPr.hasAttribute('strike')) out.strike = rPr.getAttribute('strike') !== 'noStrike';
+  if (rPr.hasAttribute('cap')) out.cap = rPr.getAttribute('cap');
+  if (rPr.hasAttribute('baseline')) out.baseline = Number(rPr.getAttribute('baseline'));
+  if (kid(rPr, A, 'ln') && kid(rPr, A, 'noFill')) out.outline = true;
+  if (kid(kid(rPr, A, 'effectLst'), A, 'outerShdw')) out.shadow = true;
+  const mark = kid(kid(rPr, A, 'highlight'), A, 'srgbClr')?.getAttribute('val');
+  if (mark && /^[0-9a-f]{6}$/i.test(mark)) out.highlight = `#${mark.toLowerCase()}`;
   const fill = kid(rPr, A, 'solidFill');
   if (fill) out.fill = fill;
   const latin = kid(rPr, A, 'latin')?.getAttribute('typeface');
@@ -651,9 +719,14 @@ function mergeLevels(chain, level, pPr) {
   const apply = (props) => {
     if (!props) return;
     if (props.hasAttribute('algn')) merged.algn = props.getAttribute('algn');
-    if (kid(props, A, 'buNone')) merged.bullet = null;
-    else if (kid(props, A, 'buChar')) merged.bullet = kid(props, A, 'buChar').getAttribute('char') || '•';
-    else if (kid(props, A, 'buAutoNum')) merged.bullet = '•';
+    if (kid(props, A, 'buNone')) { merged.bullet = null; merged.list = null; }
+    else if (kid(props, A, 'buChar')) { merged.bullet = kid(props, A, 'buChar').getAttribute('char') || '•'; merged.list = 'bullet'; }
+    else if (kid(props, A, 'buAutoNum')) { merged.bullet = '•'; merged.list = 'number'; }
+    const spacing = (name) => kid(kid(props, A, name), A, 'spcPts')?.getAttribute('val');
+    if (spacing('spcBef')) merged.spaceBefore = Number(spacing('spcBef')) / 75;
+    if (spacing('spcAft')) merged.spaceAfter = Number(spacing('spcAft')) / 75;
+    const pct = kid(kid(props, A, 'lnSpc'), A, 'spcPct')?.getAttribute('val');
+    if (pct) merged.lineHeight = Number(pct) / 120000;
     Object.assign(merged.defRPr, readRPr(kid(props, A, 'defRPr')));
   };
   for (const list of chain) apply(kid(list, A, `lvl${Math.min(level, 8) + 1}pPr`));
@@ -672,7 +745,10 @@ function paragraphText(p) {
 
 /** Neighbouring runs that look the same, joined. */
 function mergeRuns(runs) {
-  const key = (r) => JSON.stringify([!!r.bold, !!r.italic, !!r.underline, r.color ?? null]);
+  const key = (r) => {
+    const { text, ...look } = r;
+    return JSON.stringify(Object.entries(look).sort());
+  };
   const out = [];
   for (const run of runs) {
     const last = out[out.length - 1];

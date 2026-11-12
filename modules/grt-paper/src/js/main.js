@@ -1,5 +1,17 @@
 /** Application wiring. */
 
+import { mergeFields, mergeRecord } from './core/editor/merge.js';
+import { readSource, SOURCE_FILTERS } from './core/sources.js';
+import { inspect } from './core/inspector.js';
+import { textFindings, cleanTextCopy } from './core/editor/inspect.js';
+import { toggleRedact, autoRedact, redactedCopy, redactedCount } from './core/editor/redact.js';
+import { SENSITIVE_KINDS } from './core/sensitive.js';
+import { searchPattern } from './core/find.js';
+import { compareInto } from './core/editor/compare.js';
+import { shiftLevel, moveItems, toggleUnnumbered, toggleRestart, addToList, stepInLevel } from './core/editor/lists.js';
+import { reviewTools } from './review.js';
+import { listChanges } from './core/editor/review.js';
+import { showLink } from './core/honest-links.js';
 import {
   PaperModel, PAGE_SIZES, SLOT_ALIGNMENTS, pageDimensions, makeBlock, itemIndices,
 } from './core/editor/model.js';
@@ -10,7 +22,7 @@ import { Measurer, Deferred, paginate, pageHeightPx } from './pagination.js';
 import {
   toMarkdown, toHtml, toPlainText, outline,
 } from './export.js';
-import { point, collapsed, toDom } from './core/editor/selection.js';
+import { point, collapsed, toDom, isCollapsed } from './core/editor/selection.js';
 import {
   setBlockKind,
   setBlockStyle,
@@ -18,8 +30,9 @@ import {
   insertBlockAt,
   blocksInRange,
   applyFormat,
+  insertObject,
 } from './core/editor/commands.js';
-import { MARKS } from './core/editor/model.js';
+import { MARKS, runsText, normaliseRuns } from './core/editor/model.js';
 import { createProperties } from './core/properties.js';
 import { showPanel, showChoice, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
 import { readPackage, writePackage } from './core/package.js';
@@ -38,7 +51,7 @@ import { Keeper, MODES, isMode } from './core/keeper.js';
 import { stripMetadata, neutralName } from './core/image-metadata.js';
 import {
   pickToOpen, pickToSave, readDocument, readResource, writeDocument, writeText,
-  writeBytes, readFileBytes, readText, stagePart, clearStaged, fileExists, runtimeInfo,
+  readFileBytes, readText, stagePart, clearStaged, fileExists, runtimeInfo,
   onFilesDropped, baseName, withExtension, toDataUrl, FILTERS,
 } from './io.js';
 import { isTemplate, baseFormat, asTemplate } from './core/formats/templates.js';
@@ -54,10 +67,24 @@ import {
 } from './core/editor/tables.js';
 import { aboutDialog, licencesDialog } from './core/about.js';
 import { templateManager } from './core/template-manager.js';
+import { searchEverywhere } from './core/everywhere.js';
+import { applyShortcuts, customizeDialog } from './core/customize.js';
+import { askLanguage, setLanguage, LANGUAGES, NAMES as LANGUAGE_NAMES } from './core/language.js';
+import { wireToolbars } from './core/toolbar.js';
+import { livePreview } from './core/live-preview.js';
+import { styleCss } from './core/editor/render.js';
+import { createStatusBar } from './core/statusbar.js';
+import { createSpellChecker } from './core/spelling.js';
+import { createProofing } from './core/proofing-ui.js';
+import { parsePatterns, hyphenateBlocks } from './core/hyphenate.js';
+import { chineseConversion, hangulHanjaConversion } from './core/cjk-conversion.js';
+import { applyEdits } from './core/autocorrect.js';
+import { autocorrectSettings, cleanAutoText, autocorrectOptions, applyToDocument, autoTextDialog, autoTextBefore, selectedText } from './core/autocorrect-ui.js';
 import { runListsOf } from './core/editor/fields.js';
 import { readFormulaFile, formulaPackage, mathmlWithTex } from './core/formats/math-ml.js';
 import { Losses } from './core/losses.js';
 import { OBJECT, normaliseStyle } from './core/editor/model.js';
+import { textTools } from './text.js';
 
 const el = (id) => document.getElementById(id);
 const { invoke } = window.__TAURI__.core;
@@ -92,16 +119,27 @@ const editor = new EditorController(surface, renderer, {
     text: toPlainText({ blocks }),
     html: toHtml({ ...model, blocks }),
   }),
-  onChange: () => { repaginate.schedule(); refresh(); },
+  onChange: () => { repaginate.schedule(); refresh(); proofing?.schedule(); },
+  autocorrect: () => autocorrect,
 });
+/** Spelling, grammar and synonyms, with Paper's own dictionaries; made once the editor exists. */
+let proofing = null;
 /** The same pictures as their own bytes. */
 let imageBytes = new Map();
 let busy = false;
+/** Track Changes and comments; made once the editor exists. */
+let review = null;
 
 let settings = {
-  theme: 'system', showOutline: false, spellcheck: false, showMargins: true,
+  theme: 'system', showOutline: false, showMargins: true,
   autosave: 'recovery',
 };
+/** Spelling as you type, grammar with it, and the language of text that names none. */
+const SPELLING_DEFAULTS = { auto: true, grammar: true, language: /^it\b/i.test(globalThis.navigator?.language ?? '') ? 'it-IT' : 'en-US' };
+const spellingSettings = () => ({ ...SPELLING_DEFAULTS, ...(settings.spelling ?? {}) });
+/** AutoCorrect's options and table, and the AutoText entries, as the settings hold them made safe. */
+let autocorrect = autocorrectSettings(null);
+let autoText = [];
 
 // Notifications
 
@@ -165,6 +203,11 @@ function refresh() {
   }
 
   const block = model.block(editor.selection.anchor.blockId);
+  for (const align of ['left', 'center', 'right', 'justify']) {
+    el(`btn-align-${align}`).setAttribute('aria-pressed', String(Boolean(block) && (block.align ?? 'left') === align));
+  }
+  el('btn-bullets').setAttribute('aria-pressed', String(block?.kind === 'list' && block.listType === 'bullet'));
+  el('btn-numbers').setAttribute('aria-pressed', String(block?.kind === 'list' && block.listType === 'number'));
   // The picker lists Paper's styles and the person's own, rebuilt when the list changes.
   const picker = el('style-picker');
   const styles = paragraphStyles(model);
@@ -174,16 +217,40 @@ function refresh() {
     picker.dataset.styles = signature;
   }
   if (block) picker.value = block.style ?? 'body';
+  stylePreview?.refresh();
 
-  const counts = model.counts();
-  const parts = [`${counts.words} words`, `${pageCount} page${pageCount === 1 ? '' : 's'}`];
-  if (model.dirty) parts.push('unsaved changes');
-  el('status').textContent = parts.join(' • ');
+  toolbars?.refresh();
+  statusbar?.refresh();
+  review?.drawMargin();
+}
+
+/** The page the cursor is on: the page breaks drawn before its paragraph, plus one. */
+function currentPage() {
+  const id = editor.selection?.anchor?.blockId;
+  const node = id ? surface.querySelector(`[data-block="${CSS.escape(id)}"]`) : null;
+  if (!node) return 1;
+  let page = 1;
+  for (const marker of surface.querySelectorAll('.page-break')) if (marker.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) page += 1;
+  return Math.min(page, pageCount);
+}
+
+/** The language of the text at the cursor, or the one text naming none is in. */
+function languageHere() {
+  const at = editor.selection?.anchor;
+  const runs = at ? model.runsOf(at.blockId, at.itemIndex) ?? [] : [];
+  let seen = 0;
+  const run = runs.find((r) => { seen += r.text.length; return seen >= (at?.offset ?? 0); });
+  const tag = run?.lang ?? spellingSettings().language;
+  return LANGUAGE_NAMES.get(tag) ?? tag;
 }
 
 // Pagination
 
 let pageCount = 1;
+/** The toolbars and the status bar, made once the menus exist. */
+let toolbars = null;
+let statusbar = null;
+let stylePreview = null;
 
 /** Recalculates the page breaks, after a lull. */
 const repaginate = new Deferred(() => {
@@ -249,7 +316,7 @@ function applyList(listType) {
   readSelection();
   const block = model.block(editor.selection.anchor.blockId);
 
-  edit(() => (block?.kind === 'list' && block.listType === listType
+  edit(() => (listType === 'none' || (block?.kind === 'list' && block.listType === listType)
     ? setBlockKind(model, editor.selection, 'paragraph')
     : setBlockKind(model, editor.selection, 'list', { listType })));
   measurer.invalidate();
@@ -896,7 +963,14 @@ async function loadSettings(ephemeral) {
   if (!isMode(settings.autosave)) settings.autosave = 'recovery';
   applyTheme(settings.theme);
   el('outline-panel').classList.toggle('hidden', !settings.showOutline);
-  surface.spellcheck = !!settings.spellcheck;
+  // The webview's own checker would use the system's dictionaries; GRT checks with its own.
+  surface.spellcheck = false;
+  delete settings.spellcheck;
+  proofing?.schedule(0);
+  autocorrect = autocorrectSettings(settings.autocorrect);
+  autoText = cleanAutoText(settings.autoText);
+  settings.keyboard = applyShortcuts(menus, settings.keyboard);
+  review?.apply();
 }
 
 async function saveSettings() {
@@ -930,11 +1004,20 @@ async function openSettings() {
       <input type="checkbox" data-field="showMargins" ${settings.showMargins ? 'checked' : ''} />
     </div>
     <div class="setting">
-      <span class="label">Spell checking
-        <span class="hint">Uses the system's own dictionaries through the
-        webview. Nothing is sent anywhere.</span>
+      <span class="label">Check spelling as you type
+        <span class="hint">With GRT's own Italian and English dictionaries. Nothing is sent anywhere.</span>
       </span>
-      <input type="checkbox" data-field="spellcheck" ${settings.spellcheck ? 'checked' : ''} />
+      <input type="checkbox" data-field="spellAuto" ${spellingSettings().auto ? 'checked' : ''} />
+    </div>
+    <div class="setting">
+      <span class="label">Check grammar with spelling
+        <span class="hint">A word twice, extra spaces, a space before a mark, a small letter after a full stop, a bracket left open.</span>
+      </span>
+      <input type="checkbox" data-field="spellGrammar" ${spellingSettings().grammar ? 'checked' : ''} />
+    </div>
+    <div class="setting">
+      <span class="label">Language of text that names none</span>
+      <select data-field="spellLanguage">${LANGUAGES.filter(([tag]) => /^(it|en)-/.test(tag)).map(([tag, name]) => `<option value="${tag}"${spellingSettings().language === tag ? ' selected' : ''}>${escapeHtml(name)}</option>`).join('')}</select>
     </div>
     <div class="setting">
       <span class="label">Keep unsaved work
@@ -950,12 +1033,13 @@ async function openSettings() {
     </div>`, 'Apply');
   if (!confirmed) return;
 
-  settings = { ...settings, ...readFields() };
+  const { spellAuto, spellGrammar, spellLanguage, ...rest } = readFields();
+  settings = { ...settings, ...rest, spelling: { auto: !!spellAuto, grammar: !!spellGrammar, language: spellLanguage || SPELLING_DEFAULTS.language } };
+  proofing?.schedule(0);
   applyTheme(settings.theme);
   keeper.setMode(settings.autosave);
   applyPageToSheet();
   el('outline-panel').classList.toggle('hidden', !settings.showOutline);
-  surface.spellcheck = !!settings.spellcheck;
   drawOutline();
   await saveSettings();
   toast('Settings saved');
@@ -992,7 +1076,9 @@ async function insertTable() {
 }
 
 async function tableProperties() {
-  const at = tableAt(model, editor.selection);
+  // The cells chosen before the panel opened are the ones it changes, whatever the caret does meanwhile.
+  const chosen = editor.selection;
+  const at = tableAt(model, chosen);
   if (!at) return;
   const cell = at.block.rows[at.row].cells[at.col];
   const confirmed = await showPanel('Table properties', `
@@ -1010,10 +1096,11 @@ async function tableProperties() {
   if (!confirmed) return;
   const f = readFields();
   const widths = f.widths.split(/[\s,;]+/).map(Number).filter((n) => n > 0);
+  editor.selection = chosen;
   edit(() => {
-    setCells(model, editor.selection, { bg: f.clear ? null : f.bg, align: f.align || null });
-    return setTable(model, editor.selection, { borders: f.borders, ...(widths.length === at.cols ? { widths } : {}) });
-  });
+    setCells(model, chosen, { bg: f.clear ? null : f.bg, align: f.align || null });
+    return setTable(model, chosen, { borders: f.borders, ...(widths.length === at.cols ? { widths } : {}) });
+  }, { read: false });
   backToText();
 }
 
@@ -1134,6 +1221,185 @@ async function stylesOf(path) {
   const opened = await withPassword(baseName(path), (password) => readPackage(path, { password }));
   if (!opened) return null;
   return (format === 'odt' ? readOdt(opened.value) : readDocx(opened.value)).document;
+}
+
+/** Writes a copy of a document's JSON in a format, without touching the open document. */
+async function writeCopyAs(json, format, path) {
+  if (format === 'pdf') return exportPdf({ setup: {}, build: () => printablePages(new PaperModel(json), images), path });
+  if (format === 'grt') {
+    const parts = documentParts();
+    parts['content/main.json'] = `${JSON.stringify(json, null, 2)}\n`;
+    return writeDocument(path, parts, null);
+  }
+  const { entries } = format === 'odt' ? writeOdt(json, imageBytes) : writeDocx(json, imageBytes);
+  return writePackage(path, entries, {});
+}
+
+// Mail merge
+
+/** The table last chosen for mail merge, so its columns can be offered as fields. */
+let mergeSource = null;
+
+async function chooseMergeSource() {
+  const path = await pickToOpen(SOURCE_FILTERS, 'Where the records are');
+  if (!path) return null;
+  const source = await readSource(path, { readBytes: readFileBytes, readText });
+  const tables = source.tables.filter((t) => t.columns.length);
+  if (tables.length === 0) throw new Error('That file has no table with named columns');
+  let table = tables[0];
+  if (tables.length > 1) {
+    const confirmed = await showPanel('Mail merge', `<div class="form-grid"><label for="mm-table">${source.kind === 'sheet' ? 'Sheet' : 'Table'}</label>
+      <select id="mm-table" data-field="table">${tables.map((t, i) => `<option value="${i}">${escapeHtml(t.name)}</option>`).join('')}</select></div>`, 'Use it');
+    if (!confirmed) return null;
+    table = tables[Number(readFields().table) || 0];
+  }
+  mergeSource = { name: baseName(path), table };
+  return mergeSource;
+}
+
+/** Insert, Field, Mail Merge Field: a column of the chosen table, or a name typed for one to come. */
+async function insertMergeField() {
+  readSelection();
+  const columns = mergeSource?.table.columns ?? [];
+  const confirmed = await showPanel('Mail merge field', `
+    <div class="form-grid"><label for="mm-name">Column</label><input id="mm-name" data-field="name" list="mm-columns" maxlength="100" />
+    <datalist id="mm-columns">${columns.map((c) => `<option value="${escapeHtml(c)}">`).join('')}</datalist></div>
+    <p class="fp-note">${mergeSource ? `Columns of ${escapeHtml(mergeSource.table.name)} in ${escapeHtml(mergeSource.name)}.` : 'Tools, Mail Merge chooses the records; a name typed here is matched to a column of the same name.'}</p>`, 'Insert');
+  if (!confirmed) return;
+  const name = String(readFields().name ?? '').trim();
+  if (!name) return;
+  edit(() => insertObject(model, editor.selection, { type: 'merge', name }));
+}
+
+/** Tools, Mail Merge: one copy of the document a record, into one PDF or to the printer; nothing is left on disk between. */
+async function mailMerge() {
+  const fields = mergeFields(model.toJSON());
+  if (fields.length === 0) return toast('Put mail merge fields in the document first: Insert, Field, Mail Merge Field');
+  const source = await chooseMergeSource();
+  if (!source) return;
+  const { table } = source;
+  const known = new Set(table.columns.map((c) => c.trim().toLowerCase()));
+  const missing = fields.filter((f) => !known.has(f.trim().toLowerCase()));
+  const rows = table.rows.filter((row) => row.some((v) => v !== null && v !== ''));
+  const confirmed = await showPanel('Mail merge', `
+    <p>${rows.length} record(s) in ${escapeHtml(table.name)}, one copy of the document each.</p>
+    ${missing.length ? `<p class="fp-note">No column for ${missing.map(escapeHtml).join(', ')}: those fields stay empty.</p>` : ''}
+    <div class="form-grid"><label for="mm-to">Output</label><select id="mm-to" data-field="to"><option value="pdf">One PDF</option><option value="print">The printer</option></select></div>`, 'Merge');
+  if (!confirmed) return;
+  if (rows.length === 0) return toast('There are no records to merge');
+  const base = model.toJSON();
+  const build = async () => {
+    let size = null;
+    const pages = [];
+    for (const row of rows) {
+      const printed = await printablePages(new PaperModel(mergeRecord(base, table.columns, row)), images);
+      size ??= printed;
+      pages.push(...printed.pages);
+    }
+    return { width: size.width, height: size.height, pages };
+  };
+  if (readFields().to === 'print') {
+    await printPreview({ title: 'Mail merge', setup: {}, build, pdfTo: pickPdfPath });
+    return;
+  }
+  const path = await pickToSave(withExtension(model.path ? model.path.replace(/(\.[^./\\]+)?$/, '-merged') : 'merged', 'pdf'), FILTERS.pdf, 'Write the merged PDF to');
+  if (!path) return;
+  const pages = await exportPdf({ setup: {}, build, path });
+  toast(`Merged ${rows.length} record(s) into ${pages} page(s) of ${baseName(path)}`);
+}
+
+/** File, Inspect Document: what the document carries, and a clean copy without what is ticked. */
+async function inspectDocument() {
+  const out = await inspect(textFindings(model.toJSON()), { toast });
+  if (!out) return;
+  const confirmed = await showPanel('Clean copy', `
+    <div class="form-grid"><label for="ic-format">Format</label>
+    <select id="ic-format" data-field="format"><option value="odt">OpenDocument text (.odt)</option><option value="docx">Word (.docx)</option><option value="pdf">PDF</option><option value="grt">GRT document (.grt)</option></select></div>`, 'Choose file');
+  if (!confirmed) return;
+  const { format } = readFields();
+  const base = model.path ? model.path.replace(/(\.[^./\\]+)?$/, '-clean') : 'clean';
+  const path = await pickToSave(withExtension(base, format), FILTERS[format], 'Write the clean copy to');
+  if (!path) return;
+  await writeCopyAs(cleanTextCopy(model.toJSON(), out), format, path);
+  toast(`Wrote the clean copy as ${baseName(path)}`);
+}
+
+/** Tools, Redact: the chosen text is marked to be covered in a redacted copy. */
+function redactSelection() {
+  readSelection();
+  if (!editor.selection || isCollapsed(editor.selection)) return toast('Select the text to cover first');
+  edit(() => toggleRedact(model, editor.selection));
+}
+
+/** Tools, Auto-Redact: a local finder marks what the person chooses to look for. */
+async function autoRedactDialog() {
+  const checks = Object.entries(SENSITIVE_KINDS).map(([key, label]) => `<div class="setting"><span class="label">${escapeHtml(label)}</span><input type="checkbox" data-field="k-${key}" checked /></div>`).join('');
+  const confirmed = await showPanel('Auto-Redact', `${checks}
+    <div class="form-grid"><label for="ar-words">Words of your own, one a line</label><textarea id="ar-words" data-field="words" rows="3"></textarea></div>
+    <p class="fp-note">The finder runs here, on this computer. Tax codes, IBANs and card numbers are checked by their control characters. Look at what it marked before sharing.</p>`, 'Mark');
+  if (!confirmed) return;
+  const f = readFields();
+  const kinds = Object.keys(SENSITIVE_KINDS).filter((key) => f[`k-${key}`]);
+  const words = String(f.words ?? '').split('\n').map((w) => w.trim()).filter(Boolean).slice(0, 200);
+  const extra = words.length ? [searchPattern(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), { regex: true })] : [];
+  let count = 0;
+  edit(() => {
+    count = autoRedact(model, kinds, extra);
+    return editor.selection;
+  });
+  toast(count ? `${count} stretch(es) marked; File, Export as, Redacted Export makes the copy to share` : 'Nothing found to cover');
+}
+
+/** File, Export as, Redacted Export: a copy where the covered text is gone, with tracked deletions and comments. */
+async function redactedExport() {
+  const count = redactedCount(model);
+  if (count === 0) return toast('Nothing is marked to be covered: use Tools, Redact or Auto-Redact first');
+  const confirmed = await showPanel('Redacted export', `
+    <div class="form-grid"><label for="rx-format">Format</label>
+    <select id="rx-format" data-field="format"><option value="pdf">PDF</option><option value="odt">OpenDocument text (.odt)</option><option value="docx">Word (.docx)</option></select></div>
+    <p class="fp-note">${count} covered stretch(es) become black blocks of the same length every time. Text taken out by recorded changes, and comments, are left out of the copy. This document is not changed.</p>`, 'Choose file');
+  if (!confirmed) return;
+  const { format } = readFields();
+  const base = model.path ? model.path.replace(/(\.[^./\\]+)?$/, '-redacted') : 'redacted';
+  const path = await pickToSave(withExtension(base, format), FILTERS[format], 'Export the redacted copy to');
+  if (!path) return;
+  const copy = redactedCopy(model.toJSON());
+  if (format === 'pdf') {
+    const pages = await exportPdf({ setup: {}, build: () => printablePages(new PaperModel(copy), images), path });
+    toast(`Exported the redacted copy, ${pages} page(s), as ${baseName(path)}`);
+    return;
+  }
+  const { entries } = format === 'odt' ? writeOdt(copy, imageBytes) : writeDocx(copy, imageBytes);
+  await writePackage(path, entries, {});
+  toast(`Exported the redacted copy as ${baseName(path)}`);
+}
+
+/**
+ * Compare Document: this document is the newer version, the one chosen the older; what changed shows as recorded changes.
+ * Merge Document: the one chosen is a newer copy; its differences come in as changes to accept or reject.
+ */
+async function compareDocument(mode) {
+  const path = await pickToOpen([{ name: 'Documents', extensions: ['grt', 'odt', 'fodt', 'docx'] }], mode === 'compare' ? 'Compare with an older version' : 'Merge a newer copy');
+  if (!path) return;
+  const other = await stylesOf(path);
+  if (!other) return;
+  let counts;
+  let dropped = 0;
+  edit(() => {
+    counts = compareInto(model, other, mode);
+    // Pictures only the other copy had are not in this one's files, so they cannot come across.
+    const before = model.blocks.length;
+    model.blocks = model.blocks.filter((block) => block.kind !== 'image' || images.has(block.resource));
+    dropped = before - model.blocks.length;
+    if (model.blocks.length === 0) model.blocks.push(makeBlock('paragraph'));
+    return collapsed(point(model.blocks[0].id, 0));
+  }, { read: false });
+  measurer.invalidate();
+  const changes = listChanges(model).length;
+  const parts = [changes ? `${changes} change(s) to review in Edit, Track Changes` : 'No differences in the text'];
+  if (counts.untouched) parts.push(`${counts.untouched} table(s), list(s) or object(s) that differ kept as they are`);
+  if (dropped) parts.push(`${dropped} picture(s) only the other copy had left out`);
+  toast(parts.join('; '));
 }
 
 /** Takes the paragraph and character styles of another document or template, as LibreOffice's Load Styles does. */
@@ -1300,8 +1566,9 @@ async function sortParagraphs() {
 }
 
 function tableCommand(name) {
-  // A range of cells chosen with Shift+click stands, the text selection inside one cell does not.
-  if (cellRange) editor.selection = { anchor: point(cellRange.blockId, 0, cellRange.from), focus: point(cellRange.blockId, 0, cellRange.to) };
+  // A range of cells chosen with Shift+click or a drag stands, the text selection inside one cell does not.
+  const chosen = !!cellRange;
+  if (chosen) editor.selection = { anchor: point(cellRange.blockId, 0, cellRange.from), focus: point(cellRange.blockId, 0, cellRange.to) };
   else readSelection();
   cellRange = null;
   paintCellRange();
@@ -1330,7 +1597,7 @@ function tableCommand(name) {
   if (['selectCell', 'selectRow', 'selectColumn', 'selectTable'].includes(name)) return chooseCells(name);
   if (name === 'sort') return guard('Sort', sortTableRows);
   if (name === 'columnWidth') return guard('Table', askColumnWidth);
-  if (run && tableAt(model, editor.selection)) edit(run);
+  if (run && tableAt(model, editor.selection)) edit(run, { read: !chosen });
   measurer.invalidate();
   return null;
 }
@@ -1352,6 +1619,137 @@ async function insertColumns() {
 }
 
 // Menus and the command palette
+
+// AutoCorrect and AutoText.
+
+async function storeAutocorrect() {
+  settings.autocorrect = autocorrect;
+  settings.autoText = autoText;
+  await saveSettings();
+}
+
+function toggleAutocorrect() {
+  autocorrect = { ...autocorrect, options: { ...autocorrect.options, whileTyping: !autocorrect.options.whileTyping } };
+  storeAutocorrect();
+  toast(autocorrect.options.whileTyping ? 'AutoCorrect while typing is on' : 'AutoCorrect while typing is off');
+}
+
+async function editAutocorrect() {
+  const next = await autocorrectOptions(autocorrect);
+  if (!next) return;
+  autocorrect = next;
+  await storeAutocorrect();
+}
+
+/** AutoCorrect over the selected paragraphs or the whole document; with `track`, as changes to look over. */
+function applyAutocorrect(track) {
+  editor.readSelection();
+  let result = { changed: 0, skipped: 0 };
+  editor.edit(() => {
+    result = applyToDocument(model, editor.selection, autocorrect, { track });
+    return editor.selection;
+  });
+  toast(result.changed
+    ? `${result.changed} paragraph(s) corrected${track ? ', as changes to accept or reject' : ''}${result.skipped ? `; ${result.skipped} with changes not yet settled were left` : ''}`
+    : `Nothing to correct${result.skipped ? `; ${result.skipped} paragraph(s) with changes not yet settled were left` : ''}`);
+}
+
+/** Tools › Language: the language of the selection, its paragraphs, or all the text. */
+async function chooseLanguage(scope) {
+  const at = editor.selection;
+  if (scope === 'selection' && (!at || isCollapsed(at))) {
+    toast('Select the text first');
+    return;
+  }
+  const here = at ? model.runsOf(at.anchor.blockId, at.anchor.itemIndex)?.find((r) => r.lang)?.lang ?? '' : '';
+  const lang = await askLanguage(scope, here);
+  if (lang === null) return;
+  let done = false;
+  editor.edit(() => {
+    done = setLanguage(model, at, scope, lang);
+    return at;
+  }, { read: false });
+  if (!done) toast('There is no text there to mark');
+}
+
+/** Each language's hyphenation patterns, read once. */
+const hyphenationPatterns = new Map();
+
+/** Tools › Language › Hyphenation: soft hyphens put into long words, or taken out, in the selection or all the text. */
+async function hyphenation() {
+  const at = editor.selection;
+  const selected = at && !isCollapsed(at);
+  const confirmed = await showPanel('Hyphenation', `
+    <label>Do<select data-field="action">
+      <option value="add">Mark where words may break</option>
+      <option value="remove">Take the marks away</option>
+    </select></label>
+    <label>In<select data-field="scope">
+      ${selected ? '<option value="selection">The selected paragraphs</option>' : ''}
+      <option value="all">All the text</option>
+    </select></label>
+    <label>Words of at least<input type="number" data-field="minLength" min="4" max="30" value="6"> letters</label>
+    <p class="hint">A soft hyphen shows only where a line breaks. Italian and English have patterns; other languages are left as they are.</p>`, 'OK');
+  if (!confirmed) return;
+  const { action, scope, minLength } = readFields();
+  const blocks = scope === 'selection' && selected ? model.blocks.filter((b) => blocksInRange(model, at).includes(b.id)) : model.blocks;
+  const fallback = spellingSettings().language;
+  // The patterns of every language in the text, read before the change, which is made at once.
+  const langs = new Set([fallback]);
+  for (const block of blocks) for (const i of itemIndices(block)) for (const run of model.runsOf(block.id, i) ?? []) if (run.lang) langs.add(run.lang);
+  for (const lang of langs) {
+    const key = lang.split('-')[0];
+    if (!hyphenationPatterns.has(key)) {
+      const text = await invoke('hyphenation_patterns', { lang }).catch(() => null);
+      hyphenationPatterns.set(key, text ? parsePatterns(text) : null);
+    }
+  }
+  let result = { changed: 0, hyphens: 0, skipped: 0 };
+  editor.edit(() => {
+    result = hyphenateBlocks(model, blocks, (lang) => hyphenationPatterns.get(String(lang).split('-')[0]) ?? null, fallback, {
+      minLength: Math.max(4, Math.min(30, Number(minLength) || 6)), remove: action === 'remove', applyEdits, normaliseRuns, itemIndices,
+    });
+    return editor.selection;
+  }, { read: false });
+  toast(result.hyphens
+    ? `${result.hyphens} soft hyphen(s) ${action === 'remove' ? 'taken away' : 'put in'}${result.skipped ? `; ${result.skipped} paragraph(s) with changes not yet settled were left` : ''}`
+    : 'Nothing to change');
+}
+
+/** Puts an AutoText entry over the selection, or over its short form just typed. */
+function insertAutoText(entry, range = null) {
+  if (range) toDom(surface, range);
+  editor.handlers.paste({ text: entry.text });
+}
+
+async function autoTextEntries() {
+  const kept = editor.selection;
+  const result = await autoTextDialog({ entries: autoText, selectedText: selectedText(model, kept) });
+  if (!result) return;
+  if (result.insert) {
+    if (kept) toDom(surface, kept);
+    insertAutoText(result.insert);
+    return;
+  }
+  autoText = result.entries;
+  await storeAutocorrect();
+  if (result.added === false) toast('That short form is taken already');
+}
+
+/** F3: the short form before the caret becomes its AutoText. */
+function runAutoText() {
+  editor.readSelection();
+  const at = editor.selection;
+  if (!at || !isCollapsed(at)) return;
+  const before = runsText(model.runsOf(at.anchor.blockId, at.anchor.itemIndex)).slice(0, at.anchor.offset);
+  const entry = autoTextBefore(before, autoText);
+  if (!entry) {
+    toast('No AutoText has the short form before the cursor');
+    return;
+  }
+  const from = { ...at.anchor, offset: at.anchor.offset - entry.short.length };
+  insertAutoText(entry, { anchor: from, focus: at.anchor });
+}
 
 function wordCount() {
   const c = model.counts();
@@ -1395,6 +1793,56 @@ whenMathReady(() => {
   measurer.invalidate();
 });
 
+/** Writer's list commands, on the items the selection covers. */
+function listCommand(what, value, withSub) {
+  if (what === 'step') {
+    editor.selection = stepInLevel(model, editor.selection, value);
+    editor.draw();
+    surface.focus();
+    return;
+  }
+  let missed = false;
+  edit(() => {
+    const before = editor.selection;
+    const after = what === 'level' ? shiftLevel(model, before, value, { withSub })
+      : what === 'move' ? moveItems(model, before, value, { withSub })
+        : what === 'unnumbered' ? toggleUnnumbered(model, before)
+          : what === 'restart' ? toggleRestart(model, before)
+            : addToList(model, before);
+    if (after === null) missed = true;
+    return after ?? before;
+  });
+  if (missed) toast('There is no list just above to add this to');
+  else if (!model.block(editor.selection?.anchor?.blockId) || model.block(editor.selection.anchor.blockId).kind !== 'list') toast('Put the caret in a list item first');
+}
+
+/** What the document holds, counted; GRT writes no author, dates or editing time, so there are none to show. */
+function documentProperties() {
+  const c = model.counts();
+  const all = model.blocks.flatMap((block) => [...runListsOf(block)].flatMap(({ runs }) => runs));
+  const rows = [
+    ['Name', model.path ? baseName(model.path) : 'Untitled'],
+    ['Location', model.path ? model.path.replace(/[/\\][^/\\]*$/, '') : 'Not saved yet'],
+    ['Format', file.format.toUpperCase()],
+    ['Pages', pageCount], ['Words', c.words], ['Characters', c.characters], ['Paragraphs', c.blocks],
+    ['Tables', model.blocks.filter((b) => b.kind === 'table').length], ['Images', model.blocks.filter((b) => b.kind === 'image').length],
+    ['Comments', all.filter((r) => r.object?.type === 'comment').length],
+    ['Recorded changes', listChanges(model).length],
+  ];
+  showChoice('Properties', `<div class="form-grid">${rows.map(([k, v]) => `<span class="label">${escapeHtml(k)}</span><span>${escapeHtml(String(v))}</span>`).join('')}</div>
+    <p class="hint">GRT writes no author, dates or editing time into the file.</p>`, [{ id: 'ok', label: 'Close', primary: true }]);
+}
+
+review = reviewTools({
+  editor, model: () => model, edit, settings: () => settings, saveSettings: () => saveSettings(), toast,
+  surface, scroll: el('scroll'), sheet: el('sheet'), refresh: () => refresh(),
+});
+
+const text = textTools({
+  editor, model: () => model, edit, readSelection, refresh: () => refresh(), invalidate: () => measurer.invalidate(),
+  settings: () => settings, saveSettings: () => saveSettings(), toast,
+});
+
 const menus = paperMenus({
   inTable,
   actions: {
@@ -1412,12 +1860,48 @@ const menus = paperMenus({
     find: () => guard('Find', findReplace),
     outline: () => toggleOutline(),
     wordCount,
+    autocorrectWhileTyping: () => autocorrect.options.whileTyping,
+    toggleAutocorrect,
+    applyAutocorrect: () => applyAutocorrect(false),
+    applyAutocorrectTracked: () => applyAutocorrect(true),
+    editAutocorrect,
+    autoText: () => autoTextEntries(),
+    runAutoText,
+    language: (scope) => chooseLanguage(scope),
+    hyphenation,
+    chinese: () => chineseConversion({ editor, model: () => model, toast }),
+    hanja: () => hangulHanjaConversion({ editor, model: () => model, toast }),
+    spelling: () => proofing.spellingDialog(),
+    thesaurus: () => proofing.thesaurusDialog(),
+    autoSpelling: () => spellingSettings().auto,
+    toggleAutoSpelling: () => {
+      settings.spelling = { ...spellingSettings(), auto: !spellingSettings().auto };
+      saveSettings();
+      proofing.schedule(0);
+    },
+    customize: async () => {
+      const next = await customizeDialog(menus, settings.keyboard ?? {});
+      if (!next) return;
+      settings.keyboard = applyShortcuts(menus, next);
+      await saveSettings();
+      toast('Shortcuts saved');
+    },
     insertImage: () => insertImage(),
     insertTable: () => guard('Table', insertTable),
     pageBreak: () => insertPageBreak(),
     mark: (mark) => handlers.toggleMark(mark),
+    markOn: (mark) => editor.markIsOn(mark),
     align: (align) => applyAlign(align),
     list: (type) => applyList(type),
+    lists: (what, value, withSub = false) => listCommand(what, value, withSub),
+    compare: () => guard('Compare', () => compareDocument('compare')),
+    redact: () => redactSelection(),
+    inspect: () => guard('Inspect', inspectDocument),
+    mailMerge: () => guard('Mail merge', mailMerge),
+    mergeField: () => guard('Mail merge field', insertMergeField),
+    autoRedact: () => guard('Auto-Redact', autoRedactDialog),
+    redactedExport: () => guard('Export', redactedExport),
+    merge: () => guard('Merge', () => compareDocument('merge')),
     style: (style) => applyStyle(style),
     styles: [['body', 'Body text'], ['title', 'Title'], ['subtitle', 'Subtitle'], ['h1', 'Heading 1'], ['h2', 'Heading 2'], ['h3', 'Heading 3'], ['h4', 'Heading 4'], ['quote', 'Quotations'], ['code', 'Preformatted text'], ['hr', 'Horizontal line']],
     table: tableCommand,
@@ -1430,6 +1914,7 @@ const menus = paperMenus({
     saveCopy: () => guard('Save', () => saveCopy()),
     saveTemplate: () => guard('Save', () => saveCopy('ott')),
     templates: () => templateManager({ extensions: ['ott', 'dotx', 'dotm'], open: openConfirmed, toast }),
+    everywhere: () => searchEverywhere({ kind: 'paper', open: openConfirmed, toast }),
     reload: () => { if (model.path) guard('Reload', () => openConfirmed(model.path)); else toast('This document has not been saved yet'); },
     cloneFormatting: () => cloneFormatting(),
     toggleSidebar: () => { el('properties').classList.toggle('hidden'); properties.refresh(); },
@@ -1442,9 +1927,50 @@ const menus = paperMenus({
     charts,
     styleTools,
     palette: () => openPalette(commands()),
+    text,
+    review,
+    properties: () => documentProperties(),
   },
 });
 createMenubar(el('menubar'), menus);
+toolbars = wireToolbars(document.querySelector('.toolbars'), menus);
+// The paragraph style list shows each style as it looks, and the paragraphs take it while it is pointed at.
+const previewed = new Map();
+const restorePreview = () => {
+  for (const [node, css] of previewed) node.style.cssText = css;
+  previewed.clear();
+};
+stylePreview = livePreview(el('style-picker'), {
+  look: (key) => {
+    const css = styleCss(model.styles[key] ?? {}, model);
+    const size = parseFloat(css.fontSize);
+    return { fontFamily: css.fontFamily, fontWeight: css.fontWeight, fontStyle: css.fontStyle, color: css.color, fontSize: Number.isFinite(size) ? `${Math.min(size, 22)}px` : '' };
+  },
+  preview: (key) => {
+    restorePreview();
+    const style = model.styles[key];
+    if (!style || !editor.selection) return;
+    for (const id of blocksInRange(model, editor.selection)) {
+      const node = surface.querySelector(`[data-block="${CSS.escape(id)}"]`);
+      if (!node) continue;
+      previewed.set(node, node.style.cssText);
+      Object.assign(node.style, styleCss(style, model));
+    }
+  },
+  restore: restorePreview,
+});
+const zoomNow = () => Number(document.getElementById('sheet').style.zoom || 1);
+statusbar = createStatusBar(el('statusbar'), [
+  { key: 'page', title: 'The page the cursor is on; a click shows the Navigator', text: () => `Page ${currentPage()} of ${pageCount}`, run: () => toggleOutline() },
+  { key: 'words', title: 'Word Count', text: () => { const c = model.counts(); return `${c.words} words, ${c.characters} characters`; }, run: () => wordCount() },
+  { key: 'style', title: 'Page Style', text: () => 'Default Page Style', run: () => guard('Page', pageSetup) },
+  { key: 'language', title: 'The language of the text at the cursor; a click sets it for the paragraph', text: languageHere, run: () => chooseLanguage('paragraph') },
+  { key: 'changes', title: 'Changes are being recorded', text: () => (model.review?.recording ? 'Recording changes' : '') },
+  { key: 'modified', title: 'The document has changes not yet saved', text: () => (model.dirty ? 'Unsaved changes' : ''), grow: true },
+  { key: 'zoom-out', title: 'Zoom Out', text: () => '−', run: () => { text.setZoom(zoomNow() - 0.1); statusbar.refresh(); } },
+  { key: 'zoom', title: 'Zoom & View Layout', text: () => `${Math.round(zoomNow() * 100)}%`, run: () => text.zoomDialog() },
+  { key: 'zoom-in', title: 'Zoom In', text: () => '+', run: () => { text.setZoom(zoomNow() + 0.1); statusbar.refresh(); } },
+]);
 
 function commands() {
   return paletteEntries(menus).filter((entry) => entry.enabled());
@@ -1453,6 +1979,16 @@ function commands() {
 // Events
 
 new InputCapture(surface, handlers);
+
+proofing = createProofing({
+  editor, surface, toast,
+  model: () => model,
+  checker: createSpellChecker(),
+  language: () => spellingSettings().language,
+  settings: spellingSettings,
+});
+// A right click on a word underlined offers what it could be.
+surface.addEventListener('contextmenu', (event) => { proofing.contextMenu(event); });
 
 document.addEventListener('selectionchange', () => {
   if (document.activeElement === surface) {
@@ -1483,7 +2019,11 @@ surface.addEventListener('click', (event) => {
     return;
   }
   const link = event.target.closest('.text-link');
-  if (link && (event.ctrlKey || event.metaKey)) followLink(surface, link);
+  if (link && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    // A link inside the document goes there; any other shows where it leads first, and is only copied.
+    if (!followLink(surface, link)) showLink(link.dataset.href ?? '', link.textContent, { follow: () => followLink(surface, link), toast });
+  }
 });
 
 // A chart opens its dialog when double-clicked.
@@ -1493,7 +2033,7 @@ surface.addEventListener('dblclick', (event) => {
   if (block) guard('Chart', () => charts.chartDialog(block));
 });
 
-document.querySelector('.toolbar').addEventListener('mousedown', (event) => {
+document.querySelector('.toolbars').addEventListener('mousedown', (event) => {
   if (event.target.closest('button')) event.preventDefault();
 });
 el('btn-new').onclick = () => guard('New', newDocumentConfirmed);
@@ -1546,7 +2086,8 @@ document.addEventListener('keydown', (event) => {
     applyStyle(event.key === '0' ? 'body' : `h${event.key}`);
     return;
   }
-  if (key === 'k') {
+  // With Shift these keys are other commands of the menus: small capitals, superscript.
+  if (key === 'k' && !event.shiftKey) {
     event.preventDefault();
     openPalette(commands());
   } else if (key === 's') {
@@ -1561,7 +2102,7 @@ document.addEventListener('keydown', (event) => {
   } else if (key === 'f') {
     event.preventDefault();
     guard('Find', findReplace);
-  } else if (key === 'p') {
+  } else if (key === 'p' && !event.shiftKey) {
     event.preventDefault();
     guard('Print', printDocument);
   } else if (event.key === ',') {
@@ -1580,6 +2121,7 @@ onFilesDropped((paths) => guard('Open', async () => {
 (async function start() {
   const info = await runtimeInfo();
   await loadSettings(info.ephemeral);
+  text.restoreZoom();
   if (info.ephemeral) el('ephemeral-note').classList.remove('hidden');
 
   applyPageToSheet();

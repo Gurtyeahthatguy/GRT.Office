@@ -325,11 +325,14 @@ function readRow(rowElement, reader, columnDefaults, rowDefault, row = 0, merges
     const spanCols = Number(attr(cell, NS.table, 'number-columns-spanned') ?? 1);
     const spanRows = Number(attr(cell, NS.table, 'number-rows-spanned') ?? 1);
     if (spanCols > 1 || spanRows > 1) merges.push({ top: row, left: col, bottom: row + spanRows - 1, right: col + spanCols - 1 });
-    if (kid(cell, NS.office, 'annotation')) reader.losses.add('Comments on cells');
     let read = readCell(cell, reader, attr(cell, NS.table, 'style-name') ?? columnDefaults[col] ?? rowDefault);
+    const note = readNote(kid(cell, NS.office, 'annotation'), reader);
+    if (note) read = { ...(read ?? {}), ...note };
     const matrixRows = Number(attr(cell, NS.table, 'number-matrix-rows-spanned') ?? 1);
     const matrixCols = Number(attr(cell, NS.table, 'number-matrix-columns-spanned') ?? 1);
     if (read?.f && (matrixRows > 1 || matrixCols > 1)) read = { ...read, a: [matrixRows, matrixCols] };
+    // LibreOffice gives a formula that is not an array formula the value on its own row, so it never spills.
+    else if (read?.f && !attr(cell, NS.table, 'number-matrix-rows-spanned')) read = { ...read, i: 1 };
     if (read && repeat > 1024) reader.losses.add('A cell repeated across more than a thousand columns, kept a thousand times');
     if (read) {
       const times = Math.min(repeat, COLUMN_LIMIT - col);
@@ -381,8 +384,26 @@ function readCell(cell, reader, styleName) {
   }
   const style = gridStyle(styleName, reader);
   if (style) out.s = style;
+  // The cell's link: the first one in its text, as Calc keeps one per cell.
+  const link = kids(cell, NS.text, 'p').flatMap((p) => [...p.getElementsByTagNameNS(NS.text, 'a')])[0];
+  const href = link ? link.getAttributeNS(NS.xlink, 'href') : null;
+  if (href && out.v !== undefined) out.l = href.slice(0, 2048);
   return out.v === undefined && out.f === undefined ? null : out;
 }
+
+/** A link inside the document written as ODF writes it, Sheet2.A1, whichever way it was read. */
+const odfLink = (href) => href.replace(/^#(.+)!(\$?[A-Z]{1,3}\$?\d{1,7}(?::\$?[A-Z]{1,3}\$?\d{1,7})?)$/, '#$1.$2');
+
+/** A cell's comment as text, and whether it is always shown; who wrote it and when are not kept. */
+function readNote(annotation, reader) {
+  if (!annotation) return null;
+  if (kids(annotation).some((k) => k.localName === 'creator' || k.localName === 'date')) reader.losses.add('Names and dates on comments, left out');
+  const text = kids(annotation, NS.text, 'p').map(paragraphText).join('\n').slice(0, NOTE_LIMIT);
+  if (text.trim() === '') return null;
+  return attr(annotation, NS.office, 'display') === 'true' ? { n: text, ns: 1 } : { n: text };
+}
+
+const NOTE_LIMIT = 100_000;
 
 /** Error names as LibreOffice shows them in other languages, and its own codes. */
 const ERROR_NAMES = {
@@ -443,7 +464,8 @@ function lookOfChain(name, reader) {
   const paragraph = styles.resolve('table-cell', name, 'paragraph');
   const dataStyle = name ? styles.chain('table-cell', name).find((s) => s.dataStyle)?.dataStyle ?? null : null;
   const look = {
-    bold: text.bold, italic: text.italic, underline: text.underline, strike: text.strike,
+    bold: text.bold, italic: text.italic, underline: text.underline && !text.double, strike: text.strike,
+    double: text.double, overline: text.overline, shadow: text.shadow, outline: text.outline,
     color: text.color && text.color !== '#000000' ? text.color : null, font: text.font, size: text.size,
   };
   const bg = cell['background-color'];
@@ -612,6 +634,7 @@ function readFrozen(source) {
  */
 export function writeOds(document, { flat = false } = {}) {
   const losses = new Losses();
+  if ((document.sheets ?? []).some((sheet) => Object.values(sheet.cells ?? {}).some((cell) => cell?.rd))) losses.add('Cells marked to be covered, written in full: File, Export As, Redacted Export makes a copy without them');
   const writer = {
     cellStyles: new Map(), dataStyles: new Map(), columnStyles: new Map(), rowStyles: new Map(), pages: new Map(),
   };
@@ -751,7 +774,6 @@ function writeTable(sheet, gridStyles, writer, validations = [], shapes = null) 
     maxCol = Math.max(maxCol, area.right);
   }
   const validationAt = (r, c) => validations.find(({ area }) => r >= area.top && r <= area.bottom && c >= area.left && c <= area.right)?.name ?? null;
-  const inValidation = (r) => validations.some(({ area }) => r >= area.top && r <= area.bottom);
   const covered = (r, c) => merges.some((m) => r >= m.top && r <= m.bottom && c >= m.left && c <= m.right && !(r === m.top && c === m.left));
   const rowVisibility = (r) => (filteredRows.has(r) ? 'filter' : hiddenRows.has(r) ? 'collapse' : null);
 
@@ -771,27 +793,16 @@ function writeTable(sheet, gridStyles, writer, validations = [], shapes = null) 
   }
 
   const inMerge = (r) => merges.some((m) => r >= m.top && r <= m.bottom);
+  // The validations a row lies in; empty rows under the same ones are written once and repeated.
+  const coveringOf = (r) => validations.filter(({ area }) => r >= area.top && r <= area.bottom).map(({ name }) => name).join('\n');
+  const byRow = new Map();
+  for (const { row, col, cell } of cells.values()) {
+    if (!byRow.has(row)) byRow.set(row, []);
+    byRow.get(row)[col] = cell;
+  }
   const marked = (r) => heights.has(r) || rowBreaks.has(r) || (header && (r === header.top || r === header.bottom + 1))
-    || rowVisibility(r) !== null || inMerge(r) || inValidation(r);
-  const rows = [];
-  for (let r = 0; r <= maxRow;) {
-    const rowCells = [];
-    for (let c = 0; c <= maxCol; c += 1) {
-      const found = cells.get(`${r},${c}`);
-      if (found) rowCells[c] = found.cell;
-    }
-    const style = heights.has(r) || rowBreaks.has(r) ? rowStyle(heights.get(r) ?? null, rowBreaks.has(r), writer) : null;
-    if (rowCells.length === 0 && !inMerge(r) && !inValidation(r)) {
-      let run = 1;
-      while (r + run <= maxRow && !marked(r + run) && !hasRow(cells, r + run, maxCol)
-        && rowVisibility(r + run) === rowVisibility(r)) run += 1;
-      rows.push({ at: r, element: tag('table:table-row', {
-        'table:style-name': style, 'table:number-rows-repeated': run > 1 ? String(run) : null,
-        'table:visibility': rowVisibility(r),
-      }, tag('table:table-cell', {})) });
-      r += run;
-      continue;
-    }
+    || rowVisibility(r) !== null || inMerge(r) || byRow.has(r);
+  const childrenOf = (r, rowCells) => {
     const children = [];
     for (let c = 0; c <= maxCol;) {
       if (covered(r, c)) {
@@ -820,7 +831,24 @@ function writeTable(sheet, gridStyles, writer, validations = [], shapes = null) 
       c += 1;
     }
     if (children.length === 0) children.push(tag('table:table-cell', {}));
-    rows.push({ at: r, element: tag('table:table-row', { 'table:style-name': style, 'table:visibility': rowVisibility(r) }, children) });
+    return children;
+  };
+  const rows = [];
+  for (let r = 0; r <= maxRow;) {
+    const rowCells = byRow.get(r) ?? [];
+    const style = heights.has(r) || rowBreaks.has(r) ? rowStyle(heights.get(r) ?? null, rowBreaks.has(r), writer) : null;
+    if (rowCells.length === 0 && !inMerge(r)) {
+      const covering = coveringOf(r);
+      let run = 1;
+      while (r + run <= maxRow && !marked(r + run) && rowVisibility(r + run) === rowVisibility(r) && coveringOf(r + run) === covering) run += 1;
+      rows.push({ at: r, element: tag('table:table-row', {
+        'table:style-name': style, 'table:number-rows-repeated': run > 1 ? String(run) : null,
+        'table:visibility': rowVisibility(r),
+      }, covering ? childrenOf(r, rowCells) : tag('table:table-cell', {})) });
+      r += run;
+      continue;
+    }
+    rows.push({ at: r, element: tag('table:table-row', { 'table:style-name': style, 'table:visibility': rowVisibility(r) }, childrenOf(r, rowCells)) });
     r += 1;
   }
   if (rows.length === 0) rows.push({ at: 0, element: tag('table:table-row', {}, tag('table:table-cell', {})) });
@@ -941,11 +969,6 @@ function sizeOf(value, key) {
   return Number.isFinite(px) ? px : 0;
 }
 
-function hasRow(cells, row, maxCol) {
-  for (let c = 0; c <= maxCol; c += 1) if (cells.has(`${row},${c}`)) return true;
-  return false;
-}
-
 function columnStyle(width, pageBreak, writer) {
   const key = `${width}|${pageBreak}`;
   if (!writer.columnStyles.has(key)) {
@@ -1014,22 +1037,33 @@ function writeCell(cell, gridStyles, writer) {
     attrs['office:value-type'] = 'string';
     shown = value;
   }
-  const paragraphs = shown === null ? [] : String(shown).split('\n').map((line) => tag('text:p', {}, odfText(line)));
-  return tag('table:table-cell', attrs, paragraphs);
+  const link = typeof cell.l === 'string' && cell.l !== '' ? odfLink(cell.l) : null;
+  const paragraphs = shown === null ? [] : String(shown).split('\n')
+    .map((line) => tag('text:p', {}, link ? tag('text:a', { 'xlink:type': 'simple', 'xlink:href': link }, odfText(line)) : odfText(line)));
+  const note = typeof cell.n === 'string' && cell.n !== ''
+    ? tag('office:annotation', { 'office:display': cell.ns ? 'true' : null }, cell.n.split('\n').map((line) => tag('text:p', {}, odfText(line)))) : null;
+  return tag('table:table-cell', attrs, note, paragraphs);
 }
 
 function isoDate(serial) {
-  const ms = Math.round(serial * DAY) + Date.UTC(1899, 11, 30);
-  const iso = new Date(ms).toISOString();
-  return Number.isInteger(serial) ? iso.slice(0, 10) : iso.slice(0, 19);
+  // Counted in microseconds, so a time between two seconds keeps its fraction.
+  const micro = Math.round(serial * DAY * 1000);
+  const whole = Math.floor(micro / 1e6);
+  const iso = new Date(whole * 1000 + Date.UTC(1899, 11, 30)).toISOString();
+  if (Number.isInteger(serial)) return iso.slice(0, 10);
+  const fraction = micro - whole * 1e6;
+  return fraction ? `${iso.slice(0, 19)}.${String(fraction).padStart(6, '0').replace(/0+$/, '')}` : iso.slice(0, 19);
 }
 
 function isoDuration(fraction) {
-  const total = Math.round(Math.abs(fraction) * 86400);
+  const exact = Math.abs(fraction) * 86400;
+  // Whole seconds unless the time holds less than a second, which is kept to the microsecond.
+  const total = Math.abs(exact - Math.round(exact)) < 1e-6 ? Math.round(exact) : exact;
   const h = Math.floor(total / 3600);
   const m = Math.floor(total / 60) % 60;
-  const s = total % 60;
-  return `${fraction < 0 ? '-' : ''}PT${String(h).padStart(2, '0')}H${String(m).padStart(2, '0')}M${String(s).padStart(2, '0')}S`;
+  const s = total - h * 3600 - m * 60;
+  const seconds = Number.isInteger(s) ? String(s) : s.toFixed(6).replace(/0+$/, '');
+  return `${fraction < 0 ? '-' : ''}PT${String(h).padStart(2, '0')}H${String(m).padStart(2, '0')}M${seconds.padStart(s < 10 ? seconds.length + 1 : 0, '0')}S`;
 }
 
 /** A look as the property elements of an ODF cell style. */
@@ -1037,8 +1071,12 @@ function lookProperties(look, writer) {
   const text = {};
   if (look.bold) Object.assign(text, { 'fo:font-weight': 'bold', 'style:font-weight-asian': 'bold', 'style:font-weight-complex': 'bold' });
   if (look.italic) Object.assign(text, { 'fo:font-style': 'italic', 'style:font-style-asian': 'italic', 'style:font-style-complex': 'italic' });
-  if (look.underline) Object.assign(text, { 'style:text-underline-style': 'solid', 'style:text-underline-width': 'auto', 'style:text-underline-color': 'font-color' });
+  if (look.underline || look.double) Object.assign(text, { 'style:text-underline-style': 'solid', 'style:text-underline-width': 'auto', 'style:text-underline-color': 'font-color' });
+  if (look.double) text['style:text-underline-type'] = 'double';
   if (look.strike) text['style:text-line-through-style'] = 'solid';
+  if (look.overline) Object.assign(text, { 'style:text-overline-style': 'solid', 'style:text-overline-width': 'auto', 'style:text-overline-color': 'font-color' });
+  if (look.shadow) text['fo:text-shadow'] = '1pt 1pt';
+  if (look.outline) text['style:text-outline'] = 'true';
   if (look.color) text['fo:color'] = look.color;
   if (look.font) text['fo:font-family'] = /\s/.test(look.font) ? `'${look.font}'` : look.font;
   if (look.size) text['fo:font-size'] = `${look.size}pt`;

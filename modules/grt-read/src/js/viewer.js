@@ -55,9 +55,18 @@ export class Viewer {
     // Tracks which page the user is actually looking at, for the indicator
     // and for the thumbnail highlight.
     this.currentObserver = new IntersectionObserver(
-      (entries) => this.handleCurrentPage(entries),
-      { root: container, threshold: 0.5 },
+      () => this.updateCurrent(),
+      { root: container, threshold: 0 },
     );
+    // The page asked for by Go to page or a key, kept as current while it shows; the wheel or the pointer lets it go.
+    this.wanted = null;
+    let queued = false;
+    container.addEventListener('scroll', () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => { queued = false; this.updateCurrent(); });
+    }, { passive: true });
+    for (const kind of ['wheel', 'pointerdown']) container.addEventListener(kind, () => { this.wanted = null; }, { passive: true });
   }
 
   /**
@@ -92,7 +101,8 @@ export class Viewer {
     this.renderTasks.clear();
     for (const entry of this.rendered.values()) releaseCanvas(entry.canvas);
     this.rendered.clear();
-    for (const doc of this.docs.values()) await doc.destroy();
+    // pdf.js 6 frees a document through the task that loaded it.
+    for (const doc of this.docs.values()) await doc.loadingTask.destroy();
     this.docs.clear();
     this.dims.clear();
     this.pageElements = [];
@@ -190,14 +200,27 @@ export class Viewer {
     this.evict();
   }
 
-  handleCurrentPage(entries) {
-    for (const entry of entries) {
-      if (!entry.isIntersecting) continue;
-      const viewIndex = Number(entry.target.dataset.viewIndex);
-      if (viewIndex !== this.currentPage) {
-        this.currentPage = viewIndex;
-        this.onPageChange(viewIndex);
-      }
+  /** The current page is the one that fills most of the window, the first of equals; a page taller than the window counts too. */
+  updateCurrent() {
+    const view = this.container.getBoundingClientRect();
+    let best = -1;
+    let most = 0;
+    const visible = new Set();
+    this.pageElements.forEach((element, index) => {
+      const box = element.getBoundingClientRect();
+      const shown = Math.min(box.bottom, view.bottom) - Math.max(box.top, view.top);
+      if (shown <= 0) return;
+      visible.add(index);
+      if (shown > most + 0.5) { most = shown; best = index; }
+    });
+    if (this.wanted !== null) {
+      // While a smooth scroll is on its way the page asked for may not show yet; the indicator waits for it.
+      if (!visible.has(this.wanted)) return;
+      best = this.wanted;
+    }
+    if (best >= 0 && best !== this.currentPage) {
+      this.currentPage = best;
+      this.onPageChange(best);
     }
   }
 
@@ -366,7 +389,9 @@ export class Viewer {
 
   scrollToPage(viewIndex) {
     const element = this.pageElements[viewIndex];
-    if (element) element.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if (!element) return;
+    this.wanted = viewIndex;
+    element.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 
   /**

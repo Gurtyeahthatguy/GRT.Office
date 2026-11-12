@@ -9,64 +9,87 @@
   </head>
   <body>
     <nav id="menubar" aria-label="Menus"></nav>
-    <header class="toolbar">
-      <div class="group">
-        <button id="btn-new" title="New document (Ctrl+N)">New</button>
-        <button id="btn-open" title="Open (Ctrl+O)">Open</button>
-        <button id="btn-save" title="Save (Ctrl+S)">Save</button>
-        <button id="btn-save-as" title="Save as (Ctrl+Shift+S)">Save as</button>
+    <header class="toolbars">
+      <div class="toolbar" id="toolbar-standard" role="toolbar" aria-label="Standard">
+        <div class="group">
+          <button id="btn-new" data-icon="new" title="New (Ctrl+N)">New</button>
+          <button data-command="File/Templates/Manage Templates…" data-icon="templates"></button>
+          <button id="btn-open" data-icon="open" title="Open (Ctrl+O)">Open</button>
+          <button id="btn-save" data-icon="save" title="Save (Ctrl+S)">Save</button>
+          <button id="btn-save-as" data-icon="saveAs" title="Save As (Ctrl+Shift+S)">Save As</button>
+        </div>
+        <div class="group">
+          <button id="btn-pdf" data-icon="pdf" title="Export Directly as PDF">Export Directly as PDF</button>
+          <button id="btn-export" data-icon="export" title="Export">Export</button>
+          <button id="btn-print" data-icon="print" title="Print (Ctrl+P)">Print</button>
+        </div>
+        <div class="group">
+          <button data-command="Format/Clone Formatting" data-icon="clone"></button>
+          <button data-command="Format/Clear Direct Formatting" data-icon="clear"></button>
+        </div>
+        <div class="group">
+          <button id="btn-undo" data-icon="undo" title="Undo (Ctrl+Z)">Undo</button>
+          <button id="btn-redo" data-icon="redo" title="Redo (Ctrl+Y)">Redo</button>
+        </div>
+        <div class="group">
+          <button id="btn-find" data-icon="find" title="Find and Replace (Ctrl+H)">Find and Replace</button>
+          <button data-command="Tools/Spelling…" data-icon="spelling"></button>
+        </div>
+        <div class="group">
+          <button data-command="Table/Insert Table…" data-icon="table"></button>
+          <button id="btn-image" data-icon="image" title="Insert Image">Insert Image</button>
+          <button data-command="Insert/Chart…" data-icon="chart"></button>
+          <button id="btn-break" data-icon="pageBreak" title="Insert Page Break (Ctrl+Enter)">Insert Page Break</button>
+          <button data-command="Insert/Special Character…" data-icon="special"></button>
+          <button data-command="Insert/Hyperlink…" data-icon="link"></button>
+          <button data-command="Insert/Footnote and Endnote/Footnote" data-icon="footnote"></button>
+          <button data-command="Insert/Comment" data-icon="comment"></button>
+          <button data-command="Edit/Track Changes/Record" data-icon="track"></button>
+        </div>
+        <div class="spacer"></div>
+        <div class="group end">
+          <button id="btn-outline" data-icon="navigator" title="Navigator: the contents of the document">Navigator</button>
+          <button id="btn-commands" data-icon="commands" title="Search Commands (Ctrl+K)">Search Commands</button>
+          <button id="btn-settings" data-icon="settings" title="Options (Ctrl+,)">Options</button>
+        </div>
       </div>
-
-      <div class="group">
-        <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
-        <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
-      </div>
-
-      <div class="group">
-        <select id="style-picker" title="Paragraph style">
-          <option value="body">Body</option>
-          <option value="h1">Heading 1</option>
-          <option value="h2">Heading 2</option>
-          <option value="h3">Heading 3</option>
-          <option value="h4">Heading 4</option>
-          <option value="quote">Quote</option>
-          <option value="code">Code</option>
-        </select>
-        <button id="btn-bold" title="Bold (Ctrl+B)"><b>B</b></button>
-        <button id="btn-italic" title="Italic (Ctrl+I)"><i>I</i></button>
-        <button id="btn-underline" title="Underline (Ctrl+U)"><u>U</u></button>
-        <button id="btn-strike" title="Strikethrough"><s>S</s></button>
-      </div>
-
-      <div class="group">
-        <button id="btn-align-left" title="Align left">&#8676;</button>
-        <button id="btn-align-center" title="Centre">&#8596;</button>
-        <button id="btn-align-right" title="Align right">&#8677;</button>
-        <button id="btn-align-justify" title="Justify">&#8801;</button>
-      </div>
-
-      <div class="group">
-        <button id="btn-bullets" title="Bulleted list">&bull; List</button>
-        <button id="btn-numbers" title="Numbered list">1. List</button>
-        <button id="btn-image" title="Insert an image">Image</button>
-        <button id="btn-break" title="Page break">Break</button>
-      </div>
-
-      <div class="group">
-        <button id="btn-find" title="Find and replace (Ctrl+F)">Find</button>
-        <button id="btn-outline" title="Table of contents">Contents</button>
-        <button id="btn-page-setup" title="Page size and margins">Page</button>
-        <button id="btn-pdf" title="Export as PDF, exactly as it prints">PDF</button>
-        <button id="btn-export" title="Export">Export</button>
-        <button id="btn-print" title="Print (Ctrl+P)">Print</button>
-      </div>
-
-      <div class="spacer"></div>
-
-      <div class="group">
-        <span id="status" class="muted"></span>
-        <button id="btn-commands" title="All commands (Ctrl+K)">Commands</button>
-        <button id="btn-settings" title="Settings (Ctrl+,)">Settings</button>
+      <div class="toolbar" id="toolbar-formatting" role="toolbar" aria-label="Formatting">
+        <div class="group">
+          <select id="style-picker" title="Paragraph Style" aria-label="Paragraph Style">
+            <option value="body">Body</option>
+          </select>
+        </div>
+        <div class="group">
+          <button id="btn-bold" data-icon="bold" title="Bold (Ctrl+B)">Bold</button>
+          <button id="btn-italic" data-icon="italic" title="Italic (Ctrl+I)">Italic</button>
+          <button id="btn-underline" data-icon="underline" title="Underline (Ctrl+U)">Underline</button>
+          <button id="btn-strike" data-icon="strike" title="Strikethrough">Strikethrough</button>
+          <button data-command="Format/Text/Superscript" data-icon="superscript"></button>
+          <button data-command="Format/Text/Subscript" data-icon="subscript"></button>
+          <button data-command="Format/Text/Shadow" data-icon="shadow"></button>
+        </div>
+        <div class="group">
+          <button id="btn-align-left" data-icon="alignLeft" title="Align Left (Ctrl+L)">Align Left</button>
+          <button id="btn-align-center" data-icon="alignCenter" title="Align Center (Ctrl+E)">Align Center</button>
+          <button id="btn-align-right" data-icon="alignRight" title="Align Right (Ctrl+R)">Align Right</button>
+          <button id="btn-align-justify" data-icon="alignJustify" title="Justified (Ctrl+J)">Justified</button>
+        </div>
+        <div class="group">
+          <button id="btn-bullets" data-icon="bullets" title="Toggle Unordered List">Toggle Unordered List</button>
+          <button id="btn-numbers" data-icon="numbers" title="Toggle Ordered List (F12)">Toggle Ordered List</button>
+        </div>
+        <div class="group">
+          <button data-command="Format/Spacing/Increase Indent" data-icon="indentMore"></button>
+          <button data-command="Format/Spacing/Decrease Indent" data-icon="indentLess"></button>
+        </div>
+        <div class="group">
+          <button data-command="Format/Spacing/Line Spacing: 1.5" data-icon="lineSpacing" aria-label="Line Spacing 1.5"></button>
+          <button data-command="Format/Spacing/Increase Paragraph Spacing" data-icon="spacingMore"></button>
+          <button data-command="Format/Spacing/Decrease Paragraph Spacing" data-icon="spacingLess"></button>
+        </div>
+        <div class="group end">
+          <button id="btn-page-setup" title="Page Style">Page Style…</button>
+        </div>
       </div>
     </header>
 
@@ -86,6 +109,7 @@
       </section>
       <aside id="properties"></aside>
     </main>
+    <footer id="statusbar" aria-label="Status"></footer>
 
     <div id="overlay" class="overlay hidden">
       <div class="panel" role="dialog" aria-modal="true">

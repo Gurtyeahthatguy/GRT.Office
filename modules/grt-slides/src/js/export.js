@@ -1,11 +1,13 @@
 /** HTML, SVG, PNG and PDF. */
 
+import { tableGrid, colShares, rowShares } from './tables.js';
 import { chartSvg } from './core/charts.js';
 import { ownChartSpec } from './core/formats/chart-object.js';
 import { mathSvg } from './core/math.js';
 import { SlidesModel, fontStack } from './model.js';
 import { fontFaceRules } from './fonts.js';
 import { parsePath, mapPath, formatPath, presetOutline } from './core/paths.js';
+import { splitParagraphs, parasFor, numbersFor, labelFor, indentOf, runCss } from './paragraphs.js';
 
 const escape = (value) => String(value ?? '')
   .replace(/[<>&"']/g, (c) => ({
@@ -59,14 +61,37 @@ function textStyle(look) {
   ].join(';');
 }
 
+/** A text box's paragraphs: each a block, list items with their bullet or number before them. */
+function paragraphsMarkup(element) {
+  const paras = parasFor(element);
+  const numbers = numbersFor(paras);
+  const spacing = [
+    element.lineHeight ? `line-height:${element.lineHeight * 1.2}` : '',
+    element.spaceBefore ? `margin-top:${element.spaceBefore}px` : '',
+    element.spaceAfter ? `margin-bottom:${element.spaceAfter}px` : '',
+  ].filter(Boolean).join(';');
+  return splitParagraphs(element.content).map((runs, i) => {
+    const para = paras[i];
+    const inner = runs.map(runMarkup).join('') || '&#8203;';
+    const label = labelFor(para, numbers[i]);
+    const indent = indentOf(para.level, element) + (para.list ? 28 : 0);
+    const marker = label ? `<span class="para-label" style="position:absolute;margin-left:-28px">${escape(label)}</span>` : '';
+    return `<div style="position:relative;margin-left:${indent}px${spacing ? `;${spacing}` : ''}">${marker}${inner}</div>`;
+  }).join('');
+}
+
 /** One run of text, with its own formatting. */
 export function runMarkup(run) {
   let html = escape(run.text).replace(/\n/g, '<br>');
   if (run.bold) html = `<strong>${html}</strong>`;
   if (run.italic) html = `<em>${html}</em>`;
-  if (run.underline) html = `<u>${html}</u>`;
-  if (run.color) html = `<span style="color:${escape(run.color)}">${html}</span>`;
-  return html;
+  if (run.underline && !run.double) html = `<u>${html}</u>`;
+  // The other effects, which have no tag of their own, as inline style.
+  const css = runCss({ ...run, bold: false, italic: false, underline: false });
+  html = css ? `<span style="${escape(css)}">${html}</span>` : html;
+  if (run.redact) html = `<span class="redacted">${html}</span>`;
+  // A link is shown as one and never followed from the slide; Ctrl and a click shows where it goes.
+  return run.link ? `<span class="text-link" data-href="${escape(run.link)}">${html}</span>` : html;
 }
 
 /**
@@ -92,9 +117,9 @@ export function elementMarkup(element, model, images = new Map()) {
 
   if (element.kind === 'text') {
     const look = textLook(element, model);
-    const runs = (element.content ?? []).map(runMarkup).join('');
+    const runs = paragraphsMarkup(element);
     // Anchored text is one block, moved as a whole inside the box.
-    const body = look.valign !== 'top' ? `<div>${runs}</div>` : runs;
+    const body = look.valign !== 'top' ? `<div class="text-body">${runs}</div>` : runs;
     // An empty placeholder says what it is for, on screen only.
     const hint = element.placeholder ? ` data-placeholder="${{ title: 'Click to add a title', subtitle: 'Click to add a subtitle' }[element.placeholder] ?? 'Click to add text'}"` : '';
     return `<div class="el text"${hint} style="${escape(`${boxStyle(element)};${textStyle(look)}`)}">${body}</div>`;
@@ -124,18 +149,20 @@ export function elementMarkup(element, model, images = new Map()) {
 
   if (element.kind === 'table') {
     const line = escape(model.theme.text ?? '#666666');
-    const rows = (element.cells ?? []).map((row, r) => {
-      const cells = row.map((cell) => {
-        const heading = element.header && r === 0;
-        const weight = heading ? 'font-weight:700;' : '';
-        return `<td style="border:1px solid ${line};padding:6px 10px;${weight}">`
-          + `${escape(cell).replace(/\n/g, '<br>')}</td>`;
-      }).join('');
-      return `<tr>${cells}</tr>`;
-    }).join('');
+    const { cells } = tableGrid(element);
+    const rowsOf = Array.from({ length: element.rows }, () => []);
+    for (const cell of cells) {
+      const weight = element.header && cell.row === 0 ? 'font-weight:700;' : '';
+      const covered = element.redact?.includes(`${cell.row},${cell.col}`) ? ' class="redacted"' : '';
+      rowsOf[cell.row].push(`<td data-row="${cell.row}" data-col="${cell.col}"${covered}`
+        + `${cell.rowSpan > 1 ? ` rowspan="${cell.rowSpan}"` : ''}${cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : ''}`
+        + ` style="border:1px solid ${line};padding:6px 10px;${weight}">${escape(cell.text).replace(/\n/g, '<br>')}</td>`);
+    }
+    const columns = colShares(element).map((share) => `<col style="width:${round(share * 100)}%">`).join('');
+    const rows = rowShares(element).map((share, r) => `<tr style="height:${round(share * 100)}%">${rowsOf[r].join('')}</tr>`).join('');
 
     return `<div class="el table" style="${escape(`${boxStyle(element)};${textStyle({ ...textLook(element, model), valign: 'top' })}`)}">`
-      + `<table style="width:100%;height:100%;border-collapse:collapse;table-layout:fixed">`
+      + `<table style="width:100%;height:100%;border-collapse:collapse;table-layout:fixed"><colgroup>${columns}</colgroup>`
       + `${rows}</table></div>`;
   }
 
@@ -354,30 +381,20 @@ export function slideToSvg(model, slideId, images = new Map()) {
 
     if (element.kind === 'table') {
       const look = textLook(element, model);
-      const size = Math.min(look.size, element.h / Math.max(element.rows, 1) * 0.5);
-      const cw = element.w / element.cols;
-      const ch = element.h / element.rows;
       const stroke = escape(model.theme.text ?? '#666666');
-
-      for (let r = 0; r <= element.rows; r += 1) {
-        const y = round(element.y + r * ch);
-        parts.push(`<line x1="${round(element.x)}" y1="${y}" `
-          + `x2="${round(element.x + element.w)}" y2="${y}" stroke="${stroke}"/>`);
-      }
-      for (let c = 0; c <= element.cols; c += 1) {
-        const x = round(element.x + c * cw);
-        parts.push(`<line x1="${x}" y1="${round(element.y)}" `
-          + `x2="${x}" y2="${round(element.y + element.h)}" stroke="${stroke}"/>`);
-      }
-      (element.cells ?? []).forEach((row, r) => row.forEach((cell, c) => {
-        if (!cell) return;
-        parts.push(`<text x="${round(element.x + c * cw + 8)}" `
-          + `y="${round(element.y + r * ch + ch / 2 + size / 3)}" `
+      const { cells } = tableGrid(element);
+      // Each shown cell is a box of its own, so merged cells have no line through them.
+      for (const cell of cells) {
+        const size = Math.min(look.size, cell.h * 0.5);
+        parts.push(`<rect x="${round(element.x + cell.x)}" y="${round(element.y + cell.y)}" width="${round(cell.w)}" height="${round(cell.h)}" fill="none" stroke="${stroke}"/>`);
+        if (!cell.text) continue;
+        parts.push(`<text x="${round(element.x + cell.x + 8)}" `
+          + `y="${round(element.y + cell.y + cell.h / 2 + size / 3)}" `
           + `font-family="sans-serif" font-size="${round(size)}" `
           + `fill="${escape(look.color)}"`
-          + `${element.header && r === 0 ? ' font-weight="700"' : ''}>`
-          + `${escape(cell)}</text>`);
-      }));
+          + `${element.header && cell.row === 0 ? ' font-weight="700"' : ''}>`
+          + `${escape(cell.text)}</text>`);
+      }
       continue;
     }
 
@@ -461,40 +478,23 @@ export function slideToPrintPage(model, slideId, imageBytes = new Map()) {
 
     if (element.kind === 'table') {
       const look = textLook(element, model);
-      const cw = element.w / element.cols;
-      const ch = element.h / element.rows;
-      const size = Math.min(look.size, ch * 0.45);
-
-      for (let r = 0; r <= element.rows; r += 1) {
-        const y = element.y + r * ch;
+      const { cells } = tableGrid(element);
+      for (const cell of cells) {
+        const x = element.x + cell.x;
+        const y = element.y + cell.y;
         primitives.push({
           type: 'polyline',
-          points: [[element.x, y], [element.x + element.w, y]],
+          points: [[x, y], [x + cell.w, y], [x + cell.w, y + cell.h], [x, y + cell.h], [x, y]],
           stroke: model.theme.text ?? '#666666',
           strokeWidth: 1,
         });
-      }
-      for (let c = 0; c <= element.cols; c += 1) {
-        const x = element.x + c * cw;
+        if (!cell.text) continue;
+        const size = Math.min(look.size, cell.h * 0.45);
         primitives.push({
-          type: 'polyline',
-          points: [[x, element.y], [x, element.y + element.h]],
-          stroke: model.theme.text ?? '#666666',
-          strokeWidth: 1,
+          type: 'text', x: x + 8, y: y + cell.h / 2 - size / 2, text: cell.text, size, fill: look.color,
+          bold: element.header && cell.row === 0,
         });
       }
-      (element.cells ?? []).forEach((row, r) => row.forEach((cell, c) => {
-        if (!cell) return;
-        primitives.push({
-          type: 'text',
-          x: element.x + c * cw + 8,
-          y: element.y + r * ch + ch / 2 - size / 2,
-          text: cell,
-          size,
-          fill: look.color,
-          bold: element.header && r === 0,
-        });
-      }));
       continue;
     }
 

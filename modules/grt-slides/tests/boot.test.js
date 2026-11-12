@@ -69,7 +69,7 @@ describe('the program starts', () => {
   });
 
   it('reports the deck in the status bar', () => {
-    expect(el('status').textContent).toMatch(/Slide 1 of 1/);
+    expect(el('statusbar').textContent).toMatch(/Slide 1 of 1/);
   });
 
   it('CANARY: the new deck has nothing on the slide', () => {
@@ -82,7 +82,7 @@ describe('slides', () => {
     el('btn-add-slide').click();
     await settle();
     expect(thumbs().length).toBe(2);
-    expect(el('status').textContent).toMatch(/Slide 2 of 2/);
+    expect(el('statusbar').textContent).toMatch(/Slide 2 of 2/);
   });
 
   it('duplicates one', async () => {
@@ -140,7 +140,7 @@ describe('elements on a slide', () => {
   it('selects what it has just added', async () => {
     el('btn-add-text').click();
     await settle();
-    expect(el('status').textContent).toMatch(/1 selected/);
+    expect(el('statusbar').textContent).toMatch(/1 selected/);
     expect(el('btn-delete').disabled).toBe(false);
   });
 
@@ -293,7 +293,7 @@ describe('the text box that could not be edited', () => {
     await settle();
 
     expect(el('surface').textContent).toContain('Rewritten by hand');
-    expect(el('status').textContent).toMatch(/unsaved changes/);
+    expect(el('statusbar').textContent).toMatch(/Unsaved changes/);
   });
 
   it('a click inside the box being edited does not redraw it away', async () => {
@@ -435,7 +435,7 @@ describe('keeping unsaved work', () => {
     choose('recover');
     await until(() => called('recovery_remove').length > 0);
     expect(thumbs().length).toBe(3);
-    expect(el('status').textContent).toMatch(/unsaved changes/);
+    expect(el('statusbar').textContent).toMatch(/Unsaved changes/);
   });
 });
 

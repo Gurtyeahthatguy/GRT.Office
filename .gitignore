@@ -7,15 +7,15 @@ target/
 **/tests/corpus/*
 !**/tests/corpus/README.md
 
+modules/*/src-tauri/gen/
+modules/*/src-tauri/icons/ios/
 modules/*/src/js/core/
 modules/*/src/css/design.css
-modules/*/src/vendor/pdf-lib.esm.js
-modules/*/src/vendor/markdown-it.min.js
-modules/*/src/vendor/mathjax-tex-mml-svg.js
-modules/*/src/vendor/LICENSE.pdf-lib
-modules/*/src/vendor/LICENSE.markdown-it
-modules/*/src/vendor/LICENSE.mathjax
-modules/*/src-tauri/icons/ios/
+modules/*/src/vendor/*.js
+modules/*/src/vendor/LICENSE.*
+!modules/grt-read/src/vendor/LICENSE.pdfjs
+modules/*/src/vendor/THIRD_PARTY_LICENSES.*
+modules/*/src/vendor/mathjax-newcm-font/
 
 .env*
 *.pem
