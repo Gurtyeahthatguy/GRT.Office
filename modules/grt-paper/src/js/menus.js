@@ -1,3 +1,4 @@
+import { clipboardItems } from './core/clipboard.js';
 /** Paper's menus, in the order and with the names of LibreOffice Writer's; Word's names and GRT's older ones are aliases. */
 
 /**
@@ -6,11 +7,14 @@
 export function paperMenus({ actions: a, inTable }) {
   const t = a.text;
   const r = a.review;
+  const d = a.drawing;
+  const dc = d.commands;
   return [
     {
       label: 'File',
       items: [
         { label: 'New', shortcut: 'Ctrl+N', run: a.newFile, aliases: ['New document'] },
+        { label: 'Start Center…', run: a.startCenter, aliases: ['Start Center', 'Start screen', 'Home'] },
         { label: 'Open…', shortcut: 'Ctrl+O', run: a.open },
         { label: 'Templates', items: [
           { label: 'Manage Templates…', shortcut: 'Ctrl+Shift+N', run: a.templates, aliases: ['Templates…', 'Templates', 'New from template'] },
@@ -27,6 +31,8 @@ export function paperMenus({ actions: a, inTable }) {
         { label: 'Export…', run: a.exportDocument, aliases: ['Export as', 'HTML', 'Markdown', 'Plain text'] },
         { label: 'Export As', items: [
           { label: 'Export Directly as PDF', run: a.exportPdf, aliases: ['Export as PDF…', 'PDF'] },
+          { label: 'Export as EPUB…', run: a.exportEpub, aliases: ['EPUB', 'E-book', 'Ebook'] },
+          { label: 'Export Directly as EPUB', run: () => a.exportEpub({ direct: true }), aliases: ['EPUB without questions'] },
           { label: 'Redacted Export…', run: a.redactedExport, aliases: ['Redacted Export (Black)', 'Export redacted', 'Share a redacted copy'] },
         ] },
         'separator',
@@ -34,6 +40,7 @@ export function paperMenus({ actions: a, inTable }) {
         'separator',
         { label: 'Properties…', run: a.properties, aliases: ['Document properties', 'Statistics', 'Word count'] },
         { label: 'Inspect Document…', run: a.inspect, aliases: ['Document inspector', 'Remove personal information', 'Clean copy', 'Prepare for sharing'] },
+        { label: 'Digital Signatures…', run: a.signatures, aliases: ['Digital signatures', 'Signatures', 'Verify signature', 'Signed document'] },
         { label: 'Printer Settings…', run: a.pageSetup, aliases: ['Page setup…'] },
       ],
     },
@@ -42,6 +49,10 @@ export function paperMenus({ actions: a, inTable }) {
       items: [
         { label: 'Undo', shortcut: 'Ctrl+Z', run: a.undo },
         { label: 'Redo', shortcut: 'Ctrl+Y', run: a.redo },
+        'separator',
+        ...clipboardItems(),
+        'separator',
+        dc.menus.selectFirst(),
         'separator',
         { label: 'Search Everywhere…', run: a.everywhere, aliases: ['Search everywhere', 'Search in files', 'Find in folder', 'Search all documents'] },
         { label: 'Find and Replace…', shortcut: 'Ctrl+H', run: a.find, aliases: ['Find and replace…', 'Find & Replace', 'Search', 'Replace', 'Find'] },
@@ -98,6 +109,21 @@ export function paperMenus({ actions: a, inTable }) {
         { label: 'Comments', run: r.showComments, checked: r.commentsShown, aliases: ['Show comments'] },
         { label: 'Resolved Comments', run: r.showResolved, checked: r.resolvedShown },
         'separator',
+        { label: 'Rulers', items: [
+          { label: 'Rulers', shortcut: 'Ctrl+Shift+R', run: a.view.ruler, checked: a.view.rulerShown, aliases: ['Ruler', 'Show ruler'] },
+          { label: 'Vertical Ruler', run: a.view.verticalRuler, checked: a.view.verticalRulerShown },
+        ] },
+        { label: 'Grid and Helplines', items: [
+          { label: 'Display Grid', run: a.view.grid, checked: a.view.gridShown, aliases: ['Grid', 'Show grid'] },
+          { label: 'Snap to Grid', run: a.view.snap, checked: a.view.snapOn },
+          { label: 'Helplines While Moving', run: a.view.helplines, checked: a.view.helplinesOn, aliases: ['Guides while moving'] },
+        ] },
+        { label: 'Page Layout', items: [
+          { label: 'Single Page per Row', run: () => a.view.layout('single'), checked: () => a.view.layoutIs('single'), aliases: ['Single-page view'] },
+          { label: 'Multiple Pages per Row', run: () => a.view.layout('multiple'), checked: () => a.view.layoutIs('multiple'), aliases: ['Multi-page view'] },
+          { label: 'Book View', run: () => a.view.layout('book'), checked: () => a.view.layoutIs('book'), aliases: ['Book mode', 'Two pages'] },
+        ] },
+        'separator',
         { label: 'Zoom', items: [
           { label: 'Entire Page', run: () => t.zoomTo('page'), aliases: ['Whole page'] },
           { label: 'Page Width', run: () => t.zoomTo('width') },
@@ -116,10 +142,18 @@ export function paperMenus({ actions: a, inTable }) {
         { label: 'Comment', shortcut: 'Ctrl+Alt+C', run: r.insertComment, aliases: ['Insert Comment', 'Note', 'Annotation'] },
         'separator',
         { label: 'Image…', run: a.insertImage, aliases: ['Insert Image', 'Picture'] },
+        { label: 'Floating Image…', run: d.insert.floatingImage, aliases: ['Image with text wrap', 'Anchored image'] },
         { label: 'Chart…', run: () => a.charts.chartDialog(), aliases: ['Insert Chart', 'Graph'] },
         { label: 'OLE Object', items: [
           { label: 'Formula Object…', run: a.long.insertFormula, aliases: ['Formula…', 'Insert Formula', 'Equation', 'Math', 'LibreOffice Math'] },
         ] },
+        { label: 'Text Box', run: d.insert.textBox, aliases: ['Insert Text Box', 'Draw text box'] },
+        { label: 'Frame', items: [
+          { label: 'Frame Interactively', run: () => d.layer.useTool({ kind: 'text', frame: true }), aliases: ['Draw frame'] },
+          { label: 'Frame…', run: d.insert.frame, aliases: ['Insert Frame', 'Text frame'] },
+        ] },
+        dc.menus.shape(),
+        { label: 'Signature Line…', run: d.insert.signatureLine, aliases: ['Insert signature line'] },
         'separator',
         { label: 'Section…', run: a.columns, aliases: ['Columns…', 'Sections', 'Insert Section'] },
         { label: 'Caption…', run: a.long.insertCaption, aliases: ['Insert Caption', 'Numbered caption'] },
@@ -128,7 +162,7 @@ export function paperMenus({ actions: a, inTable }) {
         { label: 'Cross-reference…', shortcut: 'Ctrl+F2', run: a.long.insertReference, aliases: ['Insert Cross-reference', 'Reference'] },
         'separator',
         { label: 'Special Character…', run: t.special, aliases: ['Special character', 'Symbol', 'Insert Symbol'] },
-        { label: 'Formatting Mark', items: t.marks.map((m) => ({ label: m.label.replace(/\b\w/g, (c) => c.toUpperCase()).replace('No-Break', 'No-break').replace('Non-Breaking', 'Non-breaking').replace('Left-To-Right', 'Left-to-Right').replace('Right-To-Left', 'Right-to-Left').replace('Zero-Width', 'Zero-width'), shortcut: m.shortcut, run: () => t.insertChars(m.char) })) },
+        { label: 'Formatting Mark', items: t.marks.map((m) => ({ label: m.label.replace(/\b\w/g, (c) => c.toUpperCase()).replace('No-Break', 'No-break').replace('Non-Breaking', 'Non-breaking').replace('Left-To-Right', 'Left-to-Right').replace('Right-To-Left', 'Right-to-Left').replace('Zero-Width', 'Zero-width'), shortcut: m.shortcut, run: () => t.insertChars(m.char), enabled: () => !d.layer.selection.size })) },
         'separator',
         { label: 'Footnote and Endnote', items: [
           { label: 'Footnote', shortcut: 'Ctrl+Alt+F', run: () => a.long.insertNote('foot'), aliases: ['Footnote…', 'Insert Footnote'] },
@@ -199,6 +233,10 @@ export function paperMenus({ actions: a, inTable }) {
           { label: 'Centered', shortcut: 'Ctrl+E', run: () => a.align('center'), aliases: ['Centre', 'Center'] },
           { label: 'Right', shortcut: 'Ctrl+R', run: () => a.align('right'), aliases: ['Align right'] },
           { label: 'Justified', shortcut: 'Ctrl+J', run: () => a.align('justify'), aliases: ['Justify'] },
+          'separator',
+          { label: 'Top', run: () => a.view.textAnchor('top'), aliases: ['Align top', 'Vertical align top'] },
+          { label: 'Center', run: () => a.view.textAnchor('middle'), aliases: ['Align middle', 'Vertical align center'] },
+          { label: 'Bottom', run: () => a.view.textAnchor('bottom'), aliases: ['Align bottom', 'Vertical align bottom'] },
         ] },
         'separator',
         { label: 'Clone Formatting', run: a.cloneFormatting, aliases: ['Clone formatting', 'Format Paintbrush'] },
@@ -234,6 +272,19 @@ export function paperMenus({ actions: a, inTable }) {
         { label: 'Columns…', run: a.columns, aliases: ['Format Columns'] },
         'separator',
         { label: 'Format All Comments', run: r.formatAll, aliases: ['Comment size'] },
+        'separator',
+        { ...dc.menus.image({ filters: true }), items: [...dc.menus.image({ filters: true }).items, { label: 'Properties…', run: d.anchorDialog, aliases: ['Image properties'] }] },
+        { ...dc.menus.textBoxAndShape({ points: true, textPath: true }), items: [...dc.menus.textBoxAndShape({ points: true, textPath: true }).items, 'separator', ...dc.menus.nameItems()] },
+        { label: 'Frame and Object', items: [
+          { label: 'Properties…', run: d.anchorDialog, aliases: ['Frame properties', 'Object properties', 'Position and Size of frame'] },
+        ] },
+        ...dc.menus.nameItems(),
+        dc.menus.rotateOrFlip(),
+        d.menus.wrap(),
+        d.menus.anchor(),
+        d.menus.arrange(),
+        dc.menus.alignObjects(),
+        dc.menus.group(),
       ],
     },
     {

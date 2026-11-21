@@ -10,6 +10,7 @@ import { documentFields, runListsOf, referenceText } from '../editor/fields.js';
 import { odfChartDocument, CHART_MIMETYPE } from './chart-object.js';
 import { mathmlWithTex, odfFormulaXml, FORMULA_MIMETYPE } from './math-ml.js';
 import { Losses } from '../losses.js';
+import { writeTextDrawing } from './odt-drawings.js';
 import {
   MIMETYPES, ODF_VERSION, ROOT_NAMESPACES, odfPackage, MEDIA_TYPES, extensionOf, toBase64,
 } from './odf.js';
@@ -44,6 +45,7 @@ const LISTS = {
 const pt = (value) => `${Math.round(value * 100) / 100}pt`;
 const mmFromPt = (value) => toMm(value, 'pt');
 const mmFromPx = (value) => toMm(value, 'px');
+const mmToPx = (mm) => (mm * 96) / 25.4;
 
 /**
  * @param {object} document the model's toJSON()
@@ -81,6 +83,48 @@ class TextWriter {
     this.page = { ...DEFAULT_PAGE, ...(document.page ?? {}), running: normaliseRunning(document.page?.running) };
     this.styles = document.styles ?? {};
     this.customFonts = new Map((document.fonts ?? []).map((font) => [font.id, font]));
+    // Drawings over the text: their automatic styles, the markers, dashes and fills those name, and ids numbered as written.
+    this.drawings = Array.isArray(document.drawings) ? document.drawings : [];
+    this.drawStyles = new Map();
+    this.drawNamed = new Map();
+    this.drawIds = new Map();
+  }
+
+  /** An automatic graphic style for a drawing, one per look. */
+  drawingStyle(props, parent) {
+    const key = JSON.stringify([props, parent]);
+    if (!this.drawStyles.has(key)) {
+      const name = `gr${this.drawStyles.size + 1}`;
+      this.drawStyles.set(key, tag('style:style', { 'style:name': name, 'style:family': 'graphic', 'style:parent-style-name': parent === 'Graphics' ? 'Graphics' : null },
+        tag('style:graphic-properties', props)));
+    }
+    return this.drawStyles.get(key).attrs['style:name'];
+  }
+
+  /** One drawing as OpenDocument, its pictures put in the package. */
+  drawingElement(o) {
+    const element = writeTextDrawing(o, {
+      style: (props, parent) => this.drawingStyle(props, parent),
+      named: (kind, name, xml) => this.drawNamed.set(`${kind}:${name}`, xml),
+      odfId: (id) => { if (!this.drawIds.has(id)) this.drawIds.set(id, `shape${this.drawIds.size + 1}`); return this.drawIds.get(id); },
+      picture: (resource) => {
+        const bytes = this.images.get(resource);
+        if (!bytes) { this.losses.add('Pictures whose file was missing'); return null; }
+        const href = `Pictures/${resource.split('/').pop()}`;
+        this.pictures.set(href, bytes);
+        return { href };
+      },
+      pictureByHref: (href) => this.pictures.get(href) ?? null,
+      page: { left: mmToPx(this.page.margins.left), top: mmToPx(this.page.margins.top) },
+      flat: this.flat,
+    });
+    if (!element) this.losses.add('Drawings that could not be written, left out');
+    return element;
+  }
+
+  /** The drawings anchored to a paragraph or a character of a block. */
+  anchoredTo(blockId) {
+    return this.drawings.filter((o) => (o.anchor?.type === 'paragraph' || o.anchor?.type === 'char') && o.anchor.block === blockId);
   }
 
   write() {
@@ -170,6 +214,11 @@ class TextWriter {
       }, embedded ? tag('svg:font-face-src', {},
         tag('svg:font-face-uri', { 'xlink:href': this.fontPath(font), 'xlink:type': 'simple' },
           tag('svg:font-face-format', { 'svg:string': fontFormat(font.resource) }))) : null));
+    }
+    const declared = new Set([...Object.values(FONTS).map((f) => f.name), ...[...this.customFonts.values()].map((f) => f.name)]);
+    for (const name of this.runFonts ?? []) {
+      if (declared.has(name)) continue;
+      faces.push(tag('style:font-face', { 'style:name': name, 'svg:font-family': `'${name.replace(/'/g, '')}'` }));
     }
     return tag('office:font-face-decls', {}, faces);
   }
@@ -306,6 +355,7 @@ class TextWriter {
       this.listStyle('number'),
       this.outlineStyle(),
       this.notesConfiguration(),
+      ...this.drawNamed.values(),
     );
     return tag('office:styles', {}, styles);
   }
@@ -384,6 +434,11 @@ class TextWriter {
     else if (run.sub) props['style:text-position'] = 'sub 58%';
     if (run.color) props['fo:color'] = run.color;
     if (run.highlight) props['fo:background-color'] = run.highlight;
+    if (run.font) {
+      // A font of the text's own is declared once with the others and named here, as LibreOffice writes it.
+      (this.runFonts ??= new Set()).add(run.font);
+      Object.assign(props, { 'style:font-name': run.font, 'style:font-name-asian': run.font, 'style:font-name-complex': run.font });
+    }
     if (run.size) Object.assign(props, { 'fo:font-size': pt(run.size), 'style:font-size-asian': pt(run.size), 'style:font-size-complex': pt(run.size) });
     if (run.lang) {
       const [language, country] = run.lang.split('-');
@@ -420,6 +475,7 @@ class TextWriter {
       out.push(tag('style:style', { 'style:name': style.name, 'style:family': 'text' }, tag('style:text-properties', style.props)));
     }
     out.push(...this.tableStyles);
+    out.push(...this.drawStyles.values());
     out.push(...(this.listVariants?.values() ?? []));
     for (const style of this.graphicStyles.values()) {
       out.push(tag('style:style', { 'style:name': style.name, 'style:family': 'graphic', 'style:parent-style-name': 'Graphics' },
@@ -561,10 +617,23 @@ class TextWriter {
         continue;
       }
       const elements = this.block(block);
+      const anchored = this.anchoredTo(block.id);
+      if (anchored.length) {
+        // A drawing anchored to a paragraph is written inside it, before its text.
+        const drawn = anchored.map((o) => this.drawingElement(o)).filter(Boolean);
+        const holder = firstParagraph(elements);
+        if (holder) holder.children.unshift(...drawn);
+        else elements.unshift(tag('text:p', { 'text:style-name': 'Standard' }, drawn));
+      }
       if (section) section.children.push(...elements);
       else out.push(...elements);
     }
-    return out;
+    // Drawings anchored to a page stand before the text, each naming its page.
+    const known = new Set(this.doc.blocks.map((b) => b.id));
+    const onPages = this.drawings.filter((o) => o.anchor?.type === 'page'
+      || ((o.anchor?.type === 'paragraph' || o.anchor?.type === 'char') && !known.has(o.anchor.block)));
+    const pageDrawn = onPages.map((o) => this.drawingElement(o.anchor?.type === 'page' ? o : { ...o, anchor: { type: 'page', page: 1 } })).filter(Boolean);
+    return [...pageDrawn, ...out];
   }
 
   /** A table: its width the text column's, its columns in proportion, its borders on each cell. */
@@ -725,6 +794,10 @@ class TextWriter {
         return object.sub
           ? tag('text:alphabetical-index-mark', { 'text:string-value': object.sub, 'text:key1': object.term })
           : tag('text:alphabetical-index-mark', { 'text:string-value': object.term });
+      case 'drawing': {
+        const o = this.drawings.find((d) => d.id === object.id);
+        return o ? this.drawingElement({ ...o, anchor: { type: 'as-char' } }) : null;
+      }
       default:
         return null;
     }
@@ -948,3 +1021,13 @@ function fontFormat(resource) {
   return { ttf: 'truetype', otf: 'opentype', woff: 'woff', woff2: 'woff2' }[ext] ?? 'truetype';
 }
 
+/** The first paragraph or heading among written elements, looking inside lists, sections and tables. */
+function firstParagraph(elements) {
+  for (const element of elements) {
+    if (!element || typeof element !== 'object') continue;
+    if (element.name === 'text:p' || element.name === 'text:h') return element;
+    const inner = firstParagraph(element.children ?? []);
+    if (inner) return inner;
+  }
+  return null;
+}

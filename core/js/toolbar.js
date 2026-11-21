@@ -56,3 +56,48 @@ export function wireToolbars(root, menus) {
   refresh();
   return { refresh };
 }
+
+/**
+ * A context menu's items from menu commands by their paths, as LibreOffice's right click repeats its menus; 'separator' stays, a missing command is left out.
+ * @param {Object[]} menus
+ * @param {string[]} paths such as 'Edit/Cut'
+ */
+export function contextItems(menus, paths) {
+  const index = commandIndex(menus);
+  const out = [];
+  for (const path of paths) {
+    if (path === 'separator') { if (out.length && out[out.length - 1] !== 'separator') out.push(path); continue; }
+    const item = index.get(path);
+    if (item?.run) out.push({ label: item.label, run: item.run, enabled: item.enabled });
+  }
+  while (out[out.length - 1] === 'separator') out.pop();
+  return out;
+}
+
+/** A typed box of the Formatting bar: Enter or leaving it sets the value, Escape takes it back, and the document has the keys again unless another control was chosen. */
+export function barBox(box, apply, back) {
+  let given = box.value;
+  let leavingTo = null;
+  const give = () => { if (box.value !== given) { given = box.value; apply(box.value); } };
+  // As in LibreOffice the first character typed on entering the box takes the place of what it shows.
+  let fresh = false;
+  box.addEventListener('mousedown', () => { if (box.ownerDocument.activeElement === box) fresh = false; });
+  box.addEventListener('focus', () => { given = box.value; fresh = true; box.select(); });
+  // The change comes before the blur, and setting the page's selection may take the focus: the control pressed has it back.
+  box.addEventListener('blur', (event) => { leavingTo = event.relatedTarget; });
+  box.addEventListener('change', () => {
+    give();
+    setTimeout(() => {
+      const to = leavingTo;
+      leavingTo = null;
+      if (to?.matches?.('input, select, textarea, button')) to.focus();
+      else back();
+    });
+  });
+  box.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); give(); back(); }
+    else if (event.key === 'Escape') { event.preventDefault(); box.value = given; back(); }
+    else if (fresh && event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) { box.value = ''; fresh = false; }
+    else if (!['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) fresh = false;
+  });
+}

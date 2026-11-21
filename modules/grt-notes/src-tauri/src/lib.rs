@@ -788,6 +788,8 @@ pub fn run() {
             grt_app::commands::print_page,
             grt_app::commands::read_package,
             grt_app::commands::write_package,
+            grt_app::backup::backup_create,
+            grt_app::backup::backup_restore,
             read_file,
             write_file_atomic,
             file_exists,

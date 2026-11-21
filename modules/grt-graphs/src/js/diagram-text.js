@@ -1,10 +1,11 @@
 /** A diagram as text, in Mermaid's flowchart language, both ways: written from the drawing, and read back into it. */
 
-import { parseMermaid } from './mermaid.js';
+import { parseMermaid } from './core/mermaid.js';
 
 const DELIMITERS = {
-  rect: ['[', ']'], rounded: ['([', '])'], ellipse: ['((', '))'], diamond: ['{', '}'],
-  parallelogram: ['[/', '/]'], hexagon: ['{{', '}}'], triangle: ['[', ']'],
+  rectangle: ['[', ']'], 'round-rectangle': ['([', '])'], ellipse: ['((', '))'], diamond: ['{', '}'],
+  parallelogram: ['[/', '/]'], hexagon: ['{{', '}}'], 'isosceles-triangle': ['[', ']'],
+  'flowchart-predefined-process': ['[[', ']]'], can: ['[(', ')]'], circle: ['((', '))'],
 };
 const ARROW = { orthogonal: '-->', straight: '-->', curved: '-->' };
 
@@ -28,7 +29,7 @@ export function toMermaid(model) {
   const ids = idsFor(model);
   const lines = ['flowchart TD'];
   for (const node of model.nodes) {
-    const [open, close] = DELIMITERS[node.shape] ?? DELIMITERS.rect;
+    const [open, close] = DELIMITERS[node.shape] ?? DELIMITERS.rectangle;
     lines.push(`  ${ids.get(node.id)}${open}${label(node.text.replace(/\n/g, ' '))}${close}`);
   }
   for (const edge of model.edges) {
@@ -59,7 +60,7 @@ export function applyMermaid(model, text) {
     const old = byText.get(p.id);
     if (old) return { ...old, text, shape: p.shape ?? old.shape };
     fresh += 1;
-    return { id: p.id, shape: p.shape ?? 'rect', x: right + 80, y: top + (fresh - 1) * 100, w: 160, h: 60, text, style: 'default', data: {} };
+    return { id: p.id, shape: p.shape ?? 'rectangle', x: right + 80, y: top + (fresh - 1) * 100, w: 160, h: 60, text, style: 'default', data: {} };
   });
   const present = new Set(nodes.map((n) => n.id));
   const removed = model.nodes.filter((n) => !present.has(n.id)).length;

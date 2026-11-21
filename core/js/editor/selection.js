@@ -214,10 +214,19 @@ function pointFromDom(root, node, offset) {
     current = walker.nextNode();
   }
 
-  // The anchor was the element itself rather than a text node inside it,
-  // which happens in an empty block.
-  return point(host.dataset.block, node.nodeType === 3 ? offset : count,
-    itemAttribute === undefined ? null : Number(itemAttribute));
+  // The place was an element rather than a text node, as selecting a whole paragraph gives: the text before that place counts.
+  if (node.nodeType !== 3) {
+    const before = node.ownerDocument.createRange();
+    before.setStart(host, 0);
+    try { before.setEnd(node, Math.min(offset, node.childNodes.length)); } catch { return point(host.dataset.block, count, itemAttribute === undefined ? null : Number(itemAttribute)); }
+    let upTo = 0;
+    const inside = textWalker(host);
+    for (let text = inside.nextNode(); text; text = inside.nextNode()) {
+      if (before.isPointInRange(text, text.nodeValue.length)) upTo += text.nodeValue.length;
+    }
+    return point(host.dataset.block, upTo, itemAttribute === undefined ? null : Number(itemAttribute));
+  }
+  return point(host.dataset.block, offset, itemAttribute === undefined ? null : Number(itemAttribute));
 }
 
 /** Writes the model's selection back into the browser. */

@@ -10,6 +10,7 @@ import { readOdg, writeOdg } from '../src/js/core/formats/odg.js';
 import { decodeBlock, encodeBlock } from '../src/js/core/package.js';
 import { oracleAvailable, scratch, cleanup, writeBlock, readBlock, convert } from '../../../scripts/oracle.mjs';
 import { graphsMenus } from '../src/js/menus.js';
+import { graphsDrawing } from '../src/js/drawing.js';
 
 function diagram() {
   const model = new GraphModel();
@@ -23,7 +24,7 @@ function diagram() {
 
 const shape = (doc) => ({
   links: doc.nodes.filter((n) => n.link).map((n) => [n.text, n.link]),
-  comments: (doc.meta.comments ?? []).map((c) => c.text),
+  comments: (doc.pages?.[0]?.comments ?? doc.meta.comments ?? []).map((c) => c.text),
 });
 
 describe('links and comments', () => {
@@ -61,9 +62,15 @@ describe('find and replace', () => {
 describe('the menus', () => {
   it('follow Draw in their order, and every one runs something', () => {
     const noop = () => {};
-    const actions = new Proxy({ tools: new Proxy({ marks: [], bar: { open: noop } }, { get: (o, k) => (k in o ? o[k] : noop) }) }, { get: (o, k) => (k in o ? o[k] : noop) });
+    const actions = new Proxy({ tools: new Proxy({ marks: [], bar: { open: noop } }, { get: (o, k) => (k in o ? o[k] : noop) }) }, { get: (o, k) => (k in o ? o[k] : noop), set: (o, k, v) => { o[k] = v; return true; } });
+    const model = new GraphModel();
+    const canvas = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const drawing = graphsDrawing({ canvas, renderer: { toDiagram: (x, y) => ({ x, y }), view: { x: 0, y: 0, scale: 1 } }, interaction: { selection: new Set() }, model: () => model, change: noop, draw: noop, refresh: noop, toast: noop, snapshot: noop, commit: noop });
+    actions.drawing = drawing;
     const menus = graphsMenus(actions);
-    expect(menus.map((m) => m.label)).toEqual(['File', 'Edit', 'View', 'Insert', 'Format', 'Shape', 'Tools', 'Help']);
+    expect(menus.map((m) => m.label)).toEqual(['File', 'Edit', 'View', 'Insert', 'Format', 'Page', 'Shape', 'Tools', 'Help']);
+    const leaves = (items) => items.flatMap((i) => (i === 'separator' ? [] : i.items ? leaves(i.items) : [i]));
+    for (const item of leaves(menus.flatMap((m) => m.items))) expect(typeof item.run, item.label).toBe('function');
   });
 });
 

@@ -68,7 +68,7 @@ describe.skipIf(!ready)('LibreOffice and Slides’ .pptx', () => {
     const texts = document.slides.flatMap((s) => s.elements.filter((e) => e.kind === 'text').map((e) => e.content.map((r) => r.text).join('')));
     expect(texts).toEqual(['Opening words', 'Closing words']);
     // The master's bar is drawn under the second slide, wherever LibreOffice keeps it.
-    const bars = [...document.masters.flatMap((m) => m.elements), ...document.slides[1].elements].filter((e) => e.fill === '#ff8800');
+    const bars = [...document.masters.flatMap((m) => m.elements), ...document.slides[1].elements].filter((e) => e.fillLook?.color === '#ff8800');
     expect(bars.length).toBeGreaterThan(0);
   }, 120000);
 });

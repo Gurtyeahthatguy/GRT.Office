@@ -1,38 +1,12 @@
 /** Slides' charts, formulas, layouts and masters: the dialogs, the model changes left to the caller's undo. */
 
-import { chartSvg } from './core/charts.js';
-import { ownChartSpec, dataFromText, dataToText, normaliseChartData } from './core/formats/chart-object.js';
 import { formulaDialog } from './core/formula-dialog.js';
-import { showPanel, showChoice, readFields, escapeHtml } from './core/panel.js';
+import { showChoice, readFields, escapeHtml } from './core/panel.js';
 import { LAYOUTS } from './model.js';
 
 const option = (value, label, chosen) => `<option value="${escapeHtml(value)}"${value === chosen ? ' selected' : ''}>${escapeHtml(label)}</option>`;
-const KINDS = [['column', 'Column'], ['bar', 'Bar'], ['line', 'Line'], ['area', 'Area'], ['pie', 'Pie'], ['doughnut', 'Doughnut'], ['scatter', 'Points (XY)'], ['combo', 'Columns and lines']];
 
-/** The chart dialog: kind, titles, data typed as lines, the chart drawn as it changes; null when cancelled. */
-export async function chartDialog(existing = null) {
-  const chart = existing ?? { type: 'column', legend: 'right', data: normaliseChartData({ categories: ['Q1', 'Q2', 'Q3', 'Q4'], series: [{ name: 'Sales', values: [12, 18, 15, 22] }] }) };
-  const answer = showPanel(existing ? 'Chart' : 'Insert chart', `
-    <div class="chart-preview" id="chart-preview"></div>
-    <label>Kind<select data-field="type">${KINDS.map(([v, l]) => option(v, l, chart.type)).join('')}</select></label>
-    <label>Title<input data-field="title" value="${escapeHtml(chart.title ?? '')}"></label>
-    <label>Legend<select data-field="legend">${[['right', 'Right'], ['bottom', 'Below'], ['top', 'Above'], ['none', 'None']].map(([v, l]) => option(v, l, chart.legend ?? 'right')).join('')}</select></label>
-    <label>Data: series names on the first line, a line per category<textarea data-field="data" rows="6" spellcheck="false">${escapeHtml(dataToText(chart.data))}</textarea></label>`, existing ? 'Apply' : 'Insert');
-  const body = document.getElementById('panel-body');
-  const read = () => {
-    const f = readFields();
-    return { type: f.type, title: f.title, legend: f.legend, data: dataFromText(f.data) };
-  };
-  const preview = () => {
-    const node = document.getElementById('chart-preview');
-    if (node) node.innerHTML = chartSvg(ownChartSpec(read()), { width: 440, height: 220, background: '#ffffff', text: '#222222' });
-  };
-  body.addEventListener('input', preview);
-  preview();
-  const confirmed = await answer;
-  body.removeEventListener('input', preview);
-  return confirmed ? read() : null;
-}
+export { chartDialog } from './core/chart-dialog.js';
 
 /** The formula of a slide: TeX typed, the formula drawn as it is typed. */
 export async function slideFormulaDialog(existing = null) {

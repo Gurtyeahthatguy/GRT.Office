@@ -66,11 +66,14 @@ function plain(document) {
     return '';
   };
   shown.runs = (runs) => runs.map((run) => (run.object ? ` ${shown(run.object)} ` : run.text)).join('');
-  return model.toJSON().blocks.map((block) => {
+  const json = model.toJSON();
+  // Text in frames and shapes is the document's too, kept with the drawing since 0.5.
+  const drawn = (o) => [o?.text ?? '', ...(o?.children ?? []).map(drawn)].join('\n');
+  return [...json.blocks.map((block) => {
     if (itemsOf(block)) return itemsOf(block).map((item) => shown.runs(item.runs)).join('\n');
     if (block.kind === 'image') return shown.runs(block.caption);
     return shown.runs(block.runs ?? []);
-  }).join('\n');
+  }), ...(json.drawings ?? []).map((d) => drawn(d.object ?? d))].join('\n');
 }
 
 const baselineFile = list ? `${list}.baseline.json` : null;

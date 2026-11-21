@@ -1,5 +1,6 @@
 /** Wiring. */
 
+import { backUp, restoreBackup } from './core/backup.js';
 import {
   createModel, createEvent, createTask, addCalendar, addEntry, updateEntry,
   removeEntry, findEntry, excludeOccurrence, calendarById, removeCalendar,
@@ -753,6 +754,15 @@ function onKey(event) {
   if (action) { event.preventDefault(); action(); }
 }
 
+/** A backup's step, its trouble said rather than thrown. */
+async function guardBackup(run) {
+  try {
+    await run();
+  } catch (error) {
+    await io.notify(String(error?.message ?? error), 'Backup');
+  }
+}
+
 function commands() {
   return [
     { label: 'New event', run: () => newEvent() },
@@ -767,6 +777,8 @@ function commands() {
     { label: 'Day view', run: () => setView('day') },
     { label: 'Agenda view', run: () => setView('agenda') },
     { label: 'Print…', run: () => printCalendar() },
+    { label: 'Back up the calendars…', run: () => guardBackup(() => backUp({ folder: model.directory, what: 'the calendars', name: 'GRT Calendar', toast })), aliases: ['Backup', 'Copy to an external disk', 'Encrypted backup'] },
+    { label: 'Restore a backup…', run: () => guardBackup(() => restoreBackup({ toast })), aliases: ['Restore', 'Backup'] },
     { label: 'Settings', run: () => openSettings() },
   ];
 }

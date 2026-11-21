@@ -362,11 +362,9 @@ input[type="search"] {
 
 .node { cursor: move; }
 .node text { pointer-events: none; }
-.node-text {
-  font-family: system-ui, sans-serif;
-  font-size: 13px;
-  fill: #222222;
-}
+.node text.container-mark { pointer-events: all; cursor: pointer; font: 13px system-ui, sans-serif; fill: var(--text-dim, #667); }
+/* A node's text gets its family, size and colour from its look, written on each line. */
+.node-text { font-family: system-ui, sans-serif; }
 
 .edge {
   fill: none;
@@ -487,3 +485,17 @@ input[type="search"] {
 .diagram-text[hidden] { display: none; }
 .diagram-text textarea { flex: 1; resize: none; font-family: ui-monospace, monospace; font-size: 12px; border: 0; padding: 8px; background: var(--bg); color: var(--text); }
 .diagram-text .hint { margin: 6px 8px; }
+
+/* The drawing layer's handles, laid over the canvas in the drawing's own coordinates. */
+.draw-host { position: absolute; inset: 0; pointer-events: none; overflow: hidden; isolation: isolate; z-index: 1; }
+#draw-overlay { transform-origin: 0 0; inset: auto; left: 0; top: 0; width: 0; height: 0; overflow: visible; }
+
+/* Pages, down the left as in Draw. */
+.pages-pane { width: 132px; flex: none; overflow-y: auto; border-right: 1px solid var(--border); background: var(--bg-raised); padding: 6px; display: flex; flex-direction: column; gap: 6px; }
+.pages-pane[hidden] { display: none; }
+.page-item { display: flex; flex-direction: column; align-items: stretch; gap: 3px; padding: 4px; border: 1px solid transparent; border-radius: 4px; background: none; color: inherit; cursor: pointer; font: inherit; font-size: 12px; text-align: left; }
+.page-item .page-thumb { height: 64px; background: #ffffff; border: 1px solid var(--border); border-radius: 2px; overflow: hidden; }
+.page-item .page-thumb svg { width: 100%; height: 100%; }
+.page-item.current { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.page-item:focus-visible { outline: 2px solid var(--accent); }
+.draw-object { cursor: move; }

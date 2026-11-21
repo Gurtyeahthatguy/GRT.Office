@@ -2,6 +2,7 @@
 
 import { NS, parseXml, kids, kid, attr, tag, xmlDocument } from '../xml.js';
 import { parseLength } from '../units.js';
+import { cleanColours } from './colour.js';
 
 export const MIMETYPES = {
   text: 'application/vnd.oasis.opendocument.text',
@@ -25,6 +26,7 @@ export const ROOT_NAMESPACES = {
   'xmlns:number': NS.number,
   'xmlns:presentation': NS.presentation,
   'xmlns:of': NS.of,
+  'xmlns:drawooo': 'http://openoffice.org/2010/draw',
 };
 
 /**
@@ -85,6 +87,7 @@ function readProperties(element) {
     if (!kind || child.namespaceURI !== NS.style) continue;
     const bag = props[kind] ?? (props[kind] = {});
     for (const attribute of child.attributes) bag[attribute.localName] = attribute.value;
+    cleanColours(bag);
     const columns = kid(child, NS.style, 'columns');
     if (columns) bag.columnCount = attr(columns, NS.fo, 'column-count');
   }
@@ -234,7 +237,9 @@ export function textLook(props, styles = null) {
   if (position === 'sub' || (position.endsWith('%') && parseFloat(position) < 0)) look.sub = true;
 
   const color = props.color;
-  if (color && props['use-window-font-color'] !== 'true') look.color = color.toLowerCase();
+  // LibreOffice's Default style asks for the window's colour, and its children inherit that with a colour of their own set:
+  // a colour other than black is the child's, and wins.
+  if (color && (props['use-window-font-color'] !== 'true' || color.toLowerCase() !== '#000000')) look.color = color.toLowerCase();
   const background = props['background-color'];
   if (background && background !== 'transparent') look.highlight = background.toLowerCase();
 

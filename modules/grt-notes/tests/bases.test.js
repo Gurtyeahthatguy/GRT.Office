@@ -60,7 +60,9 @@ describe('a base file', () => {
     expect(value('file.basename + " (" + rating + ")"')).toBe('Dune (5)');
     expect(value('(finished + "1M").format("YYYY-MM-DD")')).toBe('2024-04-01');
     expect(value('missing == null')).toBe(true);
+    expect(value('(finished + "999999999y").format("YYYY-MM-DD")')).toBe('Invalid Date');
     expect(() => parseExpression('pages >')).toThrow();
+    for (const cut of ['file.', 'file.+', 'file.(']) expect(() => parseExpression(cut)).toThrow(/name after/);
   });
 
   it('gives the rows of a view, filtered, with formulas and sorted', () => {

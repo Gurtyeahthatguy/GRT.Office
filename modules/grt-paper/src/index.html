@@ -24,6 +24,9 @@
           <button id="btn-print" data-icon="print" title="Print (Ctrl+P)">Print</button>
         </div>
         <div class="group">
+          <button data-command="Edit/Cut" data-icon="cut"></button>
+          <button data-command="Edit/Copy" data-icon="copy"></button>
+          <button data-command="Edit/Paste" data-icon="paste"></button>
           <button data-command="Format/Clone Formatting" data-icon="clone"></button>
           <button data-command="Format/Clear Direct Formatting" data-icon="clear"></button>
         </div>
@@ -46,6 +49,12 @@
           <button data-command="Insert/Comment" data-icon="comment"></button>
           <button data-command="Edit/Track Changes/Record" data-icon="track"></button>
         </div>
+        <div class="group">
+          <button data-command="Insert/Text Box" data-icon="textBox"></button>
+          <button data-command="Insert/Shape/Line/Line" data-icon="line"></button>
+          <button data-command="Insert/Shape/Basic Shapes/Rectangle" data-icon="rect" aria-label="Basic Shapes"></button>
+          <button data-command="Insert/Shape/Basic Shapes/Ellipse" data-icon="ellipse"></button>
+        </div>
         <div class="spacer"></div>
         <div class="group end">
           <button id="btn-outline" data-icon="navigator" title="Navigator: the contents of the document">Navigator</button>
@@ -58,6 +67,14 @@
           <select id="style-picker" title="Paragraph Style" aria-label="Paragraph Style">
             <option value="body">Body</option>
           </select>
+        </div>
+        <div class="group" role="group" aria-label="Font">
+          <input id="font-picker" type="text" list="font-list" title="Font Name" aria-label="Font Name" class="font-picker" placeholder="Font of the style" spellcheck="false" />
+          <datalist id="font-list"><option value="Liberation Serif"></option><option value="Liberation Sans"></option><option value="Liberation Mono"></option><option value="DejaVu Serif"></option><option value="DejaVu Sans"></option><option value="DejaVu Sans Mono"></option><option value="Noto Serif"></option><option value="Noto Sans"></option><option value="Carlito"></option><option value="Caladea"></option><option value="Cantarell"></option><option value="Ubuntu"></option><option value="Georgia"></option><option value="Times New Roman"></option><option value="Arial"></option><option value="Calibri"></option><option value="Courier New"></option></datalist>
+          <input id="size-picker" type="number" min="2" max="999" step="0.5" list="size-list" title="Font Size" aria-label="Font Size" class="size-picker" />
+          <datalist id="size-list"><option value="8"></option><option value="9"></option><option value="10"></option><option value="10.5"></option><option value="11"></option><option value="12"></option><option value="14"></option><option value="16"></option><option value="18"></option><option value="20"></option><option value="24"></option><option value="28"></option><option value="36"></option><option value="48"></option><option value="72"></option></datalist>
+          <label class="color-button" title="Font Color"><span data-icon-static="fontColor"></span><input id="color-picker" type="color" aria-label="Font Color" value="#c9211e" /></label>
+          <label class="color-button" title="Character Highlighting Color"><span data-icon-static="highlight"></span><input id="highlight-picker" type="color" aria-label="Character Highlighting Color" value="#ffff00" /></label>
         </div>
         <div class="group">
           <button id="btn-bold" data-icon="bold" title="Bold (Ctrl+B)">Bold</button>
@@ -96,7 +113,7 @@
     <main class="workspace">
       <aside id="outline-panel" class="outline hidden" aria-label="Contents"></aside>
       <section id="scroll" class="scroll">
-        <div id="sheet" class="sheet">
+        <div id="sheet" class="sheet" tabindex="-1">
           <div
             id="surface"
             class="surface"
@@ -105,6 +122,8 @@
             role="textbox"
             aria-multiline="true"
           ></div>
+          <div id="page-drawings" class="page-drawings"></div>
+          <div id="draw-overlay" class="draw-overlay paper-draw-overlay"></div>
         </div>
       </section>
       <aside id="properties"></aside>
@@ -122,7 +141,7 @@
       </div>
     </div>
 
-    <div id="toast" class="toast hidden"></div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
     <p id="ephemeral-note" class="ephemeral-note hidden">
       Ephemeral mode: nothing is written to disk except the document you save.
     </p>

@@ -45,8 +45,8 @@ describe('OpenDocument presentations', () => {
     expect(title).toMatchObject({ size: 72, color: '#111111', font: 'sans' });
     expect(title.content).toEqual([{ text: 'Hello  ', bold: true }, { text: 'there', bold: true, italic: true, color: '#cc0000' }]);
     expect(body).toMatchObject({ size: 40, align: 'right', valign: 'middle', content: [{ text: 'Line one\nLine two' }] });
-    expect(shape).toMatchObject({ kind: 'shape', shape: 'diamond', fill: '#336699', x: 700, y: 200, w: 200, h: 200, rotation: 30 });
-    expect(rounded).toMatchObject({ kind: 'shape', shape: 'rounded' });
+    expect(shape).toMatchObject({ kind: 'shape', shape: 'diamond', fillLook: { color: '#336699' }, x: 700, y: 200, w: 200, h: 200, rotation: 30 });
+    expect(rounded).toMatchObject({ kind: 'shape', shape: 'round-rectangle' });
     expect(line).toMatchObject({ kind: 'line', arrow: true, thickness: 6, x: 100, y: 600, w: 300, h: 50 });
     expect(picture).toMatchObject({ kind: 'image', x: 900, y: 500, w: 200, h: 100 });
     expect([...images.values()][0]).toEqual(PNG);
@@ -56,7 +56,7 @@ describe('OpenDocument presentations', () => {
     expect(document.slides[1].transition).toBe('slide');
     expect(document.slides[1].background).toBe('#202020');
     expect(document.masters.map((m) => m.name)).toEqual(['Branded']);
-    expect(document.masters[0].elements[0]).toMatchObject({ kind: 'shape', fill: '#ff8800', w: 1280, h: 10 });
+    expect(document.masters[0].elements[0]).toMatchObject({ kind: 'shape', fillLook: { color: '#ff8800' }, w: 1280, h: 10 });
     expect(document.slides[1].master).toBe(document.masters[0].id);
     expect(document.slides[0].master).toBeNull();
   });

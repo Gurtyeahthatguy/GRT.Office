@@ -96,6 +96,8 @@ describe('a Tables database, read without its engine', () => {
     expect(tables.find((t) => t.name === 'notes').rows[0][0]).toHaveLength(20000);
     expect(pickValue(staff, { column: 'pay', aggregate: 'sum', where: 'boss', equals: '2' })).toBe(4 * 1.5 + 5 * 1.5 + 6 * 1.5);
     expect(pickValue(staff, { column: 'name', where: 'id', equals: '1' })).toBe('Città');
+    const long = { columns: ['n'], rows: Array.from({ length: 300000 }, (_, i) => [i - 7]) };
+    expect([pickValue(long, { column: 'n', aggregate: 'min' }), pickValue(long, { column: 'n', aggregate: 'max' })]).toEqual([-7, 299992]);
     expect(pickValue(staff, { column: 'id', aggregate: 'count' })).toBe(3000);
   });
 

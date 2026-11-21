@@ -113,7 +113,7 @@ export function colorOf(holder, theme, colorMap, placeholder = null) {
     else if (child.localName === 'schemeClr') {
       const name = child.getAttribute('val');
       if (name === 'phClr') hex = placeholder?.replace('#', '') ?? null;
-      else hex = theme.colors[colorMap[name] ?? name] ?? null;
+      else hex = theme?.colors?.[colorMap?.[name] ?? name] ?? null;
     } else if (child.localName === 'scrgbClr') {
       hex = rgbToHex(['r', 'g', 'b'].map((c) => Number(child.getAttribute(c)) / 100000));
     } else if (child.localName === 'hslClr') {

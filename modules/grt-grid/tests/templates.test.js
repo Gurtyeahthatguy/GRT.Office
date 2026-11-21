@@ -20,6 +20,8 @@ describe('spreadsheet templates', () => {
     expect(isTemplate('ots')).toBe(true);
     expect(isTemplate('ods')).toBe(false);
     expect(baseFormat('xltx')).toBe('xlsx');
+    expect(isTemplate('xlt') && isTemplate('ett') && isTemplate('dot') && isTemplate('pot')).toBe(true);
+    expect([baseFormat('xlt'), baseFormat('ett'), baseFormat('wpt'), baseFormat('dpt')]).toEqual(['xls', 'xls', 'doc', 'ppt']);
   });
 
   it('are marked as templates in the package, and read like the document they hold', () => {

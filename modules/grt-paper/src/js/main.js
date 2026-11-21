@@ -15,7 +15,7 @@ import { showLink } from './core/honest-links.js';
 import {
   PaperModel, PAGE_SIZES, SLOT_ALIGNMENTS, pageDimensions, makeBlock, itemIndices,
 } from './core/editor/model.js';
-import { Renderer, withPara } from './core/editor/render.js';
+import { Renderer, withPara, MM } from './core/editor/render.js';
 import { InputCapture } from './core/editor/input.js';
 import { EditorController } from './core/editor/controller.js';
 import { Measurer, Deferred, paginate, pageHeightPx } from './pagination.js';
@@ -34,28 +34,34 @@ import {
 } from './core/editor/commands.js';
 import { MARKS, runsText, normaliseRuns } from './core/editor/model.js';
 import { createProperties } from './core/properties.js';
-import { showPanel, showChoice, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
+import { showPanel, showChoice, readFields, isDialogOpen, escapeHtml, tabbed } from './core/panel.js';
+import { noteSignatures, packageSignatures, showSignatures } from './core/signatures/ui.js';
 import { readPackage, writePackage } from './core/package.js';
 import { withPassword, passwordFields, wirePasswordFields, passwordFrom, canProtect, PROTECTION } from './core/protection.js';
 import { readOdt } from './core/formats/odt-read.js';
 import { writeOdt } from './core/formats/odt-write.js';
 import { readDocx } from './core/formats/docx-read.js';
 import { writeDocx } from './core/formats/docx-write.js';
+import { writeEpub, FIXED_DATE } from './core/formats/epub.js';
+import { readDoc, writeDoc } from './core/formats/doc.js';
+import { readWordml2003, writeWordml2003 } from './core/formats/wordml-2003.js';
 import { readRtf } from './core/formats/rtf-read.js';
 import { readMarkdown } from './core/formats/markdown-read.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
 import { THEMES, applyTheme, isTheme } from './core/theme.js';
 import { printPreview, isPrintPreviewOpen, exportPdf } from './core/print.js';
 import { printablePages } from './printing.js';
+import { paperRulers } from './rulers.js';
+import { pageView, LAYOUTS } from './pageview.js';
 import { Keeper, MODES, isMode } from './core/keeper.js';
 import { stripMetadata, neutralName } from './core/image-metadata.js';
 import {
   pickToOpen, pickToSave, readDocument, readResource, writeDocument, writeText,
   readFileBytes, readText, stagePart, clearStaged, fileExists, runtimeInfo,
-  onFilesDropped, baseName, withExtension, toDataUrl, FILTERS,
+  onFilesDropped, baseName, withExtension, toDataUrl, FILTERS, writeBytes,
 } from './io.js';
 import { isTemplate, baseFormat, asTemplate } from './core/formats/templates.js';
-import { createMenubar, paletteEntries } from './core/menubar.js';
+import { createMenubar, paletteEntries, showContextMenu } from './core/menubar.js';
 import { paperMenus } from './menus.js';
 import { longDocument, fillPageNumbers, followLink } from './long.js';
 import { paperCharts } from './charts.js';
@@ -67,6 +73,7 @@ import {
 } from './core/editor/tables.js';
 import { aboutDialog, licencesDialog } from './core/about.js';
 import { templateManager } from './core/template-manager.js';
+import { startCenter } from './core/start-center.js';
 import { searchEverywhere } from './core/everywhere.js';
 import { applyShortcuts, customizeDialog } from './core/customize.js';
 import { askLanguage, setLanguage, LANGUAGES, NAMES as LANGUAGE_NAMES } from './core/language.js';
@@ -85,6 +92,10 @@ import { readFormulaFile, formulaPackage, mathmlWithTex } from './core/formats/m
 import { Losses } from './core/losses.js';
 import { OBJECT, normaliseStyle } from './core/editor/model.js';
 import { textTools } from './text.js';
+import { contextItems, barBox } from './core/toolbar.js';
+import { galleryHtml, galleryChoice } from './core/draw/gallery.js';
+import { icon } from './core/icons.js';
+import { paperDrawing } from './drawing.js';
 
 const el = (id) => document.getElementById(id);
 const { invoke } = window.__TAURI__.core;
@@ -98,8 +109,8 @@ let model = new PaperModel();
 let images = new Map();
 
 /** Formats a document can be saved back into. */
-const WRITABLE = new Set(['grt', 'odt', 'fodt', 'docx', 'ott', 'dotx']);
-const OPENABLE = /\.(grt|odt|fodt|docx|ott|dotx|rtf|md|markdown|dotm|mml|odf)$/i;
+const WRITABLE = new Set(['grt', 'odt', 'fodt', 'docx', 'ott', 'dotx', 'doc', 'dot', 'xml']);
+const OPENABLE = /\.(grt|odt|fodt|docx|ott|dotx|rtf|md|markdown|dotm|mml|odf|doc|dot|xml)$/i;
 
 function formatOf(path) {
   const extension = (/\.([^.\\/]+)$/.exec(path ?? '')?.[1] ?? '').toLowerCase();
@@ -111,15 +122,18 @@ function formatOf(path) {
  * read, and whether saving over it anyway was agreed to.
  */
 let file = { format: 'grt', losses: [], confirmed: false, password: null };
+/** The package of a signed file as it was opened, so its signatures can be checked again. */
+let signedPackage = null;
 
 /** Everything between a keystroke and the model. */
 const editor = new EditorController(surface, renderer, {
   images: () => images,
   serialiseCopy: (blocks) => ({
     text: toPlainText({ blocks }),
-    html: toHtml({ ...model, blocks }),
+    // The copy keeps the model's own methods, as the page's size, so only its blocks differ.
+    html: toHtml(Object.assign(Object.create(Object.getPrototypeOf(model)), model, { blocks })),
   }),
-  onChange: () => { repaginate.schedule(); refresh(); proofing?.schedule(); },
+  onChange: () => { keepDrawings(); repaginate.schedule(); refresh(); proofing?.schedule(); },
   autocorrect: () => autocorrect,
 });
 /** Spelling, grammar and synonyms, with Paper's own dictionaries; made once the editor exists. */
@@ -133,6 +147,8 @@ let review = null;
 let settings = {
   theme: 'system', showOutline: false, showMargins: true,
   autosave: 'recovery',
+  // View: the rulers, the drawing grid and helplines, and how the pages are laid out.
+  showRuler: true, showVerticalRuler: false, grid: { show: false, snap: false, step: 5 }, helplines: true, pageLayout: 'single',
 };
 /** Spelling as you type, grammar with it, and the language of text that names none. */
 const SPELLING_DEFAULTS = { auto: true, grammar: true, language: /^it\b/i.test(globalThis.navigator?.language ?? '') ? 'it-IT' : 'en-US' };
@@ -218,10 +234,18 @@ function refresh() {
   }
   if (block) picker.value = block.style ?? 'body';
   stylePreview?.refresh();
+  // The text tools are made later in start-up; until then the box keeps its value.
+  try {
+    const here = text.lookHere();
+    // A box is written only when it changes: setting one with a list, even to the same, takes the page's selection in WebKit.
+    if (document.activeElement !== el('size-picker') && el('size-picker').value !== String(here.size)) el('size-picker').value = String(here.size);
+    if (document.activeElement !== el('font-picker') && el('font-picker').value !== here.font) el('font-picker').value = here.font;
+  } catch { /* not ready */ }
 
   toolbars?.refresh();
   statusbar?.refresh();
   review?.drawMargin();
+  rulers?.draw();
 }
 
 /** The page the cursor is on: the page breaks drawn before its paragraph, plus one. */
@@ -250,12 +274,17 @@ let pageCount = 1;
 /** The toolbars and the status bar, made once the menus exist. */
 let toolbars = null;
 let statusbar = null;
+/** The rulers and the page layout, made once the page is ready. */
+let rulers = null;
+let layoutView = null;
 let stylePreview = null;
 
 /** Recalculates the page breaks, after a lull. */
 const repaginate = new Deferred(() => {
   for (const marker of surface.querySelectorAll('.page-break')) marker.remove();
 
+  // Text running round a drawing changes the height of the paragraphs after its own.
+  if (model.drawings.length) measurer.invalidate();
   const measured = measurer.measure(model, surface);
   const { pages, breakAfter } = paginate(measured, pageHeightPx(model));
   pageCount = pages.length;
@@ -279,6 +308,8 @@ const repaginate = new Deferred(() => {
   pages.forEach((ids, index) => { for (const id of ids) if (!firstPage.has(id)) firstPage.set(id, index + 1); });
   fillPageNumbers(surface, (id) => firstPage.get(id) ?? null, pages.length);
 
+  drawing?.layout();
+  if (layoutView && layoutView.mode() !== 'single') layoutView.rebuild();
   refresh();
 }, 220);
 
@@ -290,6 +321,9 @@ const handlers = editor.handlers;
 function step(direction) {
   measurer.invalidate();
   editor.step(direction);
+  // The page may have been what changed: its size and margins are drawn again.
+  applyPageToSheet();
+  repaginate.schedule();
 }
 
 // Blocks and styles
@@ -514,7 +548,8 @@ async function pageSetup() {
         </select>
       </div>`;
   };
-  const confirmed = await showPanel('Page', `
+  const confirmed = await showPanel('Page', tabbed(`
+    <h3 class="form-heading">Page</h3>
     <div class="form-grid">
       <label for="p-size">Size</label>
       <select id="p-size" data-field="size">
@@ -538,6 +573,9 @@ async function pageSetup() {
       <input id="p-bottom" type="number" data-field="bottom" min="5" max="60" value="${page.margins.bottom}" />
       <label for="p-left">Left</label>
       <input id="p-left" type="number" data-field="left" min="5" max="60" value="${page.margins.left}" />
+    </div>
+    <h3 class="form-heading">Header and Footer</h3>
+    <div class="form-grid">
       ${slot('header', 'default', 'Header')}
       ${slot('footer', 'default', 'Footer')}
     </div>
@@ -558,7 +596,7 @@ async function pageSetup() {
       ${slot('footer', 'even', 'Even footer')}
     </div>
     <p class="fp-note">{page} and {pages} in a header or footer become the page
-    number and the number of pages. They show on paper and in the PDF.</p>`, 'Apply');
+    number and the number of pages. They show on paper and in the PDF.</p>`), 'Apply');
   if (!confirmed) return;
 
   const f = readFields();
@@ -604,6 +642,7 @@ function applyPageToSheet() {
 function newDocument() {
   model = new PaperModel();
   file = { format: 'grt', losses: [], confirmed: false, password: null };
+  signedPackage = null;
   images = new Map();
   editor.attach(model);
   keeper.watch(model);
@@ -661,6 +700,7 @@ async function openPath(path) {
   if (!opened) return;
   model.path = path;
   file = { format: 'grt', losses: [], confirmed: false, password: opened.password };
+  signedPackage = null;
   document.title = `${baseName(path)} - GRT Paper`;
   toast(`Opened ${baseName(path)}: ${model.counts().words} words`);
 }
@@ -671,6 +711,7 @@ async function importDocument(path, given) {
   const format = baseFormat(given);
   let result;
   let password = null;
+  let signed = null;
   const unlocked = async () => {
     const opened = await withPassword(baseName(path), (given) => readPackage(path, { password: given }));
     password = opened?.password ?? null;
@@ -680,6 +721,7 @@ async function importDocument(path, given) {
     const pkg = await unlocked();
     if (!pkg) return;
     result = format === 'odt' ? readOdt(pkg) : readDocx(pkg);
+    signed = await noteSignatures(pkg, result.losses, settings);
   }
   else if (format === 'fodt') result = readOdt(await readText(path));
   else if (format === 'mml' || format === 'odf') {
@@ -692,6 +734,8 @@ async function importDocument(path, given) {
     result = { document: fresh.toJSON(), images: new Map(), losses: new Losses() };
   }
   else if (format === 'rtf') result = readRtf(await readFileBytes(path));
+  else if (['doc', 'dot', 'wps', 'wpt'].includes(format)) result = readDoc(await readFileBytes(path));
+  else if (format === 'xml') result = readWordml2003(await readText(path));
   else if (format === 'md') {
     const folder = path.replace(/[^\\/]*$/, '');
     result = await readMarkdown(await readText(path), (src) => (/^([a-z]:)?[\\/]/i.test(src)
@@ -701,6 +745,7 @@ async function importDocument(path, given) {
   }
 
   model = new PaperModel(result.document);
+  signedPackage = template ? null : signed;
   editor.attach(model);
   keeper.watch(model);
   measurer.invalidate();
@@ -738,6 +783,21 @@ async function importDocument(path, given) {
 }
 
 /** Opens a recovery copy as the document it was, with its changes unsaved. */
+/** File › Digital Signatures: the opened file's signatures, checked again against the trusted authorities. */
+async function digitalSignatures() {
+  await showSignatures({
+    title: 'Digital signatures',
+    check: (trusted) => (signedPackage ? packageSignatures(signedPackage, trusted) : []),
+    settings: () => settings,
+    saveSettings,
+    pickCertificate: async () => {
+      const path = await pickToOpen(FILTERS.certificate, 'Trust a certificate');
+      return path ? readFileBytes(path) : null;
+    },
+    toast,
+  });
+}
+
 async function openRecovered(copy, meta) {
   const opened = await withPassword(meta.name || 'Untitled', (password) => loadDocument(copy, password));
   // Without its password the copy stays where it is, offered again next time.
@@ -778,6 +838,9 @@ const FORMAT_NAMES = {
   fodt: 'Flat OpenDocument text (.fodt)',
   ott: 'OpenDocument template (.ott)',
   dotx: 'Word template (.dotx)',
+  doc: 'Word 97-2003 document (.doc)',
+  dot: 'Word 97-2003 template (.dot)',
+  xml: 'Word 2003 XML document (.xml)',
 };
 
 /** Asks which format to save in, with or without a password, then where. */
@@ -823,6 +886,17 @@ async function writeAs(path, format, password = null) {
     await writeText(path, text);
     return losses.lines();
   }
+  if (format === 'xml') {
+    const { text, losses } = writeWordml2003(json, imageBytes);
+    await writeText(path, text);
+    return losses.lines();
+  }
+  if (format === 'doc' || format === 'dot') {
+    // Word 97's own password scheme is too weak to offer, so none is written.
+    const { bytes, losses } = writeDoc(json, { template: format === 'dot' });
+    await writeBytes(path, bytes);
+    return losses.lines();
+  }
   const { entries, losses } = baseFormat(format) === 'odt' ? writeOdt(json, imageBytes) : writeDocx(json, imageBytes);
   await writePackage(path, isTemplate(format) ? asTemplate(entries, format) : entries, { protection: PROTECTION[format], password });
   return losses.lines();
@@ -864,6 +938,8 @@ async function save(forceDialog, { silent = false } = {}) {
   const revision = keeper.revision;
   if (!canProtect(format)) password = null;
   const lost = await writeAs(path, format, password);
+  // The file written, which the document now is, carries no signature.
+  signedPackage = null;
 
   const sameFile = path === model.path && format === file.format;
   model.path = path;
@@ -899,6 +975,32 @@ async function exportDirectPdf() {
   if (!path) return;
   const pages = await exportPdf({ setup: {}, build: () => printablePages(model, images), path });
   toast(`Exported ${pages} page(s) as ${baseName(path)}`);
+}
+
+/** File, Export As, EPUB: a book with clean metadata; the author and the date only when asked for. Directly, the title is the first heading and nothing is asked. */
+async function exportEpub({ direct = false } = {}) {
+  const heading = model.blocks.find((b) => b.kind === 'heading');
+  const guess = heading ? runsText(heading.runs).replaceAll('\uFFFC', '').trim() : baseName(model.path ?? 'Book').replace(/\.[^.]+$/, '');
+  const language = spellingSettings().language?.slice(0, 2) || 'en';
+  const confirmed = direct || await showPanel('Export as EPUB', `
+    <div class="form-grid">
+      <label class="field"><span>Title</span><input type="text" data-field="title" maxlength="300" value="${escapeHtml(guess)}"></label>
+      <label class="field"><span>Author</span><input type="text" data-field="author" maxlength="200" placeholder="Left out"></label>
+      <label class="field"><span>Language</span><input type="text" data-field="language" maxlength="12" value="${escapeHtml(language)}"></label>
+      <label class="check"><input type="checkbox" data-field="today"> Put today's date in the book</label>
+    </div>
+    <p class="hint">Nothing else about you or this computer goes in the book. Without today's date it carries a fixed one, so the same text gives the same file.</p>`, 'Export');
+  if (!confirmed) return;
+  const f = direct ? { title: guess, author: '', language, today: false } : readFields();
+  const path = await pickToSave(withExtension(model.path ?? 'book', 'epub'), FILTERS.epub, 'Export as EPUB');
+  if (!path) return;
+  const { entries, losses } = writeEpub(model.toJSON(), imageBytes, {
+    title: f.title, author: f.author, language: /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(f.language.trim()) ? f.language.trim() : 'en',
+    date: f.today ? `${new Date().toISOString().slice(0, 10)}T00:00:00Z` : FIXED_DATE,
+  });
+  await writePackage(withExtension(path, 'epub'), entries, {});
+  if (losses.empty) toast(`Exported ${baseName(path)}`);
+  else await showPanel('Exported as EPUB', `<p>Written. What the book could not carry:</p>${losses.html()}`);
 }
 
 async function exportDocument() {
@@ -961,6 +1063,8 @@ async function loadSettings(ephemeral) {
   }
   if (!isTheme(settings.theme)) settings.theme = 'system';
   if (!isMode(settings.autosave)) settings.autosave = 'recovery';
+  settings.grid = cleanGrid(settings.grid);
+  if (!LAYOUTS[settings.pageLayout]) settings.pageLayout = 'single';
   applyTheme(settings.theme);
   el('outline-panel').classList.toggle('hidden', !settings.showOutline);
   // The webview's own checker would use the system's dictionaries; GRT checks with its own.
@@ -971,6 +1075,7 @@ async function loadSettings(ephemeral) {
   autoText = cleanAutoText(settings.autoText);
   settings.keyboard = applyShortcuts(menus, settings.keyboard);
   review?.apply();
+  applyView();
 }
 
 async function saveSettings() {
@@ -1184,6 +1289,15 @@ function cloneFormatting() {
 
 // The properties sidebar: the paragraph and the text where the cursor is, changed without a dialog.
 
+const deckEsc = (t) => escapeHtml(String(t ?? ''));
+/** The sidebar's decks beside Properties: Styles to apply, the Navigator's headings, the Gallery's shapes. */
+const paperDecks = [
+  { id: 'styles', label: 'Styles', html: () => `<ul class="deck-list">${paragraphStyles(model).map((st) => `<li><button type="button" data-deck-style="${deckEsc(st.key)}">${deckEsc(st.label)}</button></li>`).join('')}</ul>`,
+    click: (event) => { const b = event.target.closest('[data-deck-style]'); if (b) { applyStyle(b.dataset.deckStyle); surface.focus(); } } },
+  { id: 'navigator', label: 'Navigator', html: () => { const heads = model.blocks.filter((b) => b.kind === 'heading'); return heads.length ? `<ul class="deck-list">${heads.map((h) => `<li><button type="button" data-deck-heading="${deckEsc(h.id)}" style="padding-left:${8 + (h.level - 1) * 12}px">${deckEsc(h.runs.map((r) => r.text).join('') || '(untitled)')}</button></li>`).join('')}</ul>` : '<p class="empty">Headings appear here as you write them.</p>'; },
+    click: (event) => { const b = event.target.closest('[data-deck-heading]'); if (!b) return; editor.selection = collapsed(point(b.dataset.deckHeading, 0)); toDom(surface, editor.selection); surface.querySelector(`[data-block="${CSS.escape(b.dataset.deckHeading)}"]`)?.scrollIntoView({ block: 'center' }); surface.focus({ preventScroll: true }); } },
+  { id: 'gallery', label: 'Gallery', html: () => galleryHtml(), click: (event) => { const type = galleryChoice(event); if (type) { drawing.commands.act.shape(type); toast('Drag on the page to draw it'); } } },
+];
 properties = createProperties(el('properties'), () => {
   const block = editor.selection ? model.block(editor.selection.anchor.blockId) : null;
   if (!block) return [];
@@ -1207,7 +1321,7 @@ properties = createProperties(el('properties'), () => {
       value: editor.markIsOn(mark), apply: () => handlers.toggleMark(mark),
     })) },
   ];
-});
+}, { decks: paperDecks });
 
 /** The styles of another document or template, read without opening it. */
 async function stylesOf(path) {
@@ -1839,9 +1953,156 @@ review = reviewTools({
 });
 
 const text = textTools({
-  editor, model: () => model, edit, readSelection, refresh: () => refresh(), invalidate: () => measurer.invalidate(),
+  editor, model: () => model, edit, readSelection, refresh: () => refresh(), invalidate: () => {
+    measurer.invalidate();
+    // A new zoom shows on the status bar and the rulers, and the laid-out pages are drawn at it.
+    refresh();
+    if (layoutView && layoutView.mode() !== 'single') layoutView.rebuild();
+  },
   settings: () => settings, saveSettings: () => saveSettings(), toast,
 });
+
+/** The text's drawings: shapes, text boxes, frames and pictures anchored to it. */
+const drawing = paperDrawing({
+  surface, sheet, overlay: el('draw-overlay'), pageLayer: el('page-drawings'), model: () => model, editor, images: () => images, toast,
+  grid: () => ({ step: settings.grid.step * MM, snap: settings.grid.snap }),
+  helplines: () => settings.helplines !== false,
+  changed: () => { measurer.invalidate(); repaginate.schedule(); refresh(); },
+  refresh: () => refresh(),
+  pickPicture: async () => {
+    const path = await pickToOpen(FILTERS.image, 'Choose an image');
+    if (!path) return null;
+    return addPicture(stripMetadata(await readFileBytes(path)), path);
+  },
+  pictureBytes: (resource) => (imageBytes.has(resource) ? { bytes: imageBytes.get(resource), type: mediaTypeOf(resource) } : null),
+  putPicture: (bytes, type) => addPicture(bytes, `picture.${{ 'image/svg+xml': 'svg', 'image/jpeg': 'jpg' }[type] ?? type.split('/')[1] ?? 'png'}`),
+  savePicture: (resource) => guard('Save image', async () => {
+    const bytes = imageBytes.get(resource);
+    if (!bytes) return;
+    const path = await pickToSave(resource.split('/').pop(), FILTERS.image, 'Save image');
+    if (path) { await writeBytes(path, bytes); toast(`Saved ${baseName(path)}`); }
+  }),
+});
+// View: rulers, the drawing grid and the page layout
+
+/** The grid as the settings hold it made safe: shown, snapped to, and its step in millimetres. */
+function cleanGrid(grid) {
+  const step = Number(grid?.step);
+  return { show: grid?.show === true, snap: grid?.snap === true, step: Number.isFinite(step) && step >= 1 && step <= 50 ? step : 5 };
+}
+
+rulers = paperRulers({
+  scroll: el('scroll'), sheet, surface, model: () => model,
+  shown: () => {
+    const paged = (layoutView?.mode() ?? 'single') !== 'single';
+    return { h: settings.showRuler !== false && !paged, v: settings.showVerticalRuler === true && !paged };
+  },
+  indentHere: () => {
+    const block = model.block(editor.selection?.anchor?.blockId);
+    return block ? (withPara(model.styles[block.style] ?? {}, block.para).indent ?? 0) : 0;
+  },
+  setIndent: (points) => applyPara(() => ({ indent: points })),
+  setMargins: (margins) => {
+    edit(() => { model.setPage({ margins }); return editor.selection; });
+    applyPageToSheet();
+    measurer.invalidate();
+    repaginate.schedule();
+  },
+});
+
+layoutView = pageView({
+  scroll: el('scroll'), sheet,
+  build: () => printablePages(model, images),
+  zoom: () => Number(sheet.style.zoom || 1),
+  goTo: (id) => {
+    const node = surface.querySelector(`[data-block="${CSS.escape(id)}"], [data-block-container="${CSS.escape(id)}"]`);
+    if (model.block(id)) {
+      editor.selection = collapsed(point(id, 0));
+      toDom(surface, editor.selection);
+    }
+    node?.scrollIntoView({ block: 'center' });
+    surface.focus({ preventScroll: true });
+    settings.pageLayout = 'single';
+    saveSettings();
+    applyView();
+  },
+});
+
+/** Shows the rulers, the grid and the page layout as the settings say. */
+function applyView() {
+  if (!layoutView) return;
+  sheet.classList.toggle('show-grid', settings.grid.show);
+  sheet.style.setProperty('--grid-step', `${settings.grid.step}mm`);
+  if (layoutView.mode() !== settings.pageLayout) layoutView.set(settings.pageLayout);
+  rulers.draw();
+}
+
+/** Turns a View setting on or off, keeping it for next time. */
+function toggleView(change) {
+  change();
+  saveSettings();
+  applyView();
+}
+
+const viewCommands = {
+  ruler: () => toggleView(() => { settings.showRuler = settings.showRuler === false; }),
+  rulerShown: () => settings.showRuler !== false,
+  verticalRuler: () => toggleView(() => { settings.showVerticalRuler = settings.showVerticalRuler !== true; }),
+  verticalRulerShown: () => settings.showVerticalRuler === true,
+  grid: () => toggleView(() => { settings.grid.show = !settings.grid.show; }),
+  gridShown: () => settings.grid.show,
+  snap: () => toggleView(() => { settings.grid.snap = !settings.grid.snap; }),
+  snapOn: () => settings.grid.snap,
+  helplines: () => toggleView(() => { settings.helplines = settings.helplines === false; }),
+  helplinesOn: () => settings.helplines !== false,
+  layout: (mode) => toggleView(() => { settings.pageLayout = mode; }),
+  layoutIs: (mode) => settings.pageLayout === mode,
+  /** Format › Align Text › Top, Center or Bottom: in the chosen text boxes and shapes, or in the chosen table cells. */
+  textAnchor: (valign) => {
+    if (drawing.textAnchor(valign)) return;
+    readSelection();
+    if (!tableAt(model, editor.selection)) { toast('Choose a text box or shape, or put the cursor in a table'); return; }
+    edit(() => setCells(model, editor.selection, { valign: valign === 'top' ? null : valign }));
+  },
+};
+
+// Every drawing of the text is laid out again whenever the text is drawn.
+const drawText = renderer.draw.bind(renderer);
+renderer.draw = (...args) => { drawText(...args); drawing.layout(); };
+
+/** A picture added to the document's resources, its metadata already gone. */
+async function addPicture(bytes, original) {
+  const name = await neutralName(bytes, original);
+  await stagePart(name, bytes);
+  images.set(name, toDataUrl(bytes, name));
+  imageBytes.set(name, bytes);
+  return name;
+}
+const mediaTypeOf = (name) => ({ svg: 'image/svg+xml', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' }[name.split('.').pop().toLowerCase()] ?? 'image/png');
+
+/** The paragraphs as last seen, so a drawing whose paragraph goes can be anchored to the one before. */
+let lastOrder = [];
+function keepDrawings() {
+  const drawings = model.drawings;
+  if (!drawings.length) { lastOrder = []; return; }
+  const ids = new Set(model.blocks.map((b) => b.id));
+  let changed = false;
+  for (const o of drawings) {
+    if (o.anchor.type === 'page' || ids.has(o.anchor.block)) continue;
+    const at = lastOrder.indexOf(o.anchor.block);
+    const before = lastOrder.slice(0, Math.max(at, 0)).reverse().find((id) => ids.has(id));
+    o.anchor.block = before ?? model.blocks[0].id;
+    changed = true;
+  }
+  // A drawing in the line goes with its character: when that is deleted, so is the drawing.
+  const inLine = new Set();
+  const visit = (runs) => { for (const r of runs ?? []) if (r.object?.type === 'drawing') inLine.add(r.object.id); };
+  for (const block of model.blocks) { visit(block.runs); for (const item of block.items ?? []) visit(item.runs); for (const row of block.rows ?? []) for (const cell of row.cells) visit(cell.runs); }
+  const kept = drawings.filter((o) => o.anchor.type !== 'as-char' || inLine.has(o.id));
+  if (kept.length !== drawings.length) { model.drawings = kept; changed = true; }
+  lastOrder = model.blocks.map((b) => b.id);
+  if (changed) editor.draw();
+}
 
 const menus = paperMenus({
   inTable,
@@ -1852,6 +2113,7 @@ const menus = paperMenus({
     saveAs: () => guard('Save', () => save(true)),
     exportDocument: () => guard('Export', exportDocument),
     exportPdf: () => guard('Export', exportDirectPdf),
+    exportEpub: (options) => guard('Export', () => exportEpub(options)),
     print: () => guard('Print', printDocument),
     pageSetup: () => guard('Page', pageSetup),
     settings: () => guard('Settings', openSettings),
@@ -1887,6 +2149,11 @@ const menus = paperMenus({
       toast('Shortcuts saved');
     },
     insertImage: () => insertImage(),
+    drawing,
+    floatImage: () => {
+      const id = editor.selection?.anchor?.blockId;
+      if (!drawing.floatImageBlock(id)) toast('Choose a picture, or put the cursor on one');
+    },
     insertTable: () => guard('Table', insertTable),
     pageBreak: () => insertPageBreak(),
     mark: (mark) => handlers.toggleMark(mark),
@@ -1897,6 +2164,7 @@ const menus = paperMenus({
     compare: () => guard('Compare', () => compareDocument('compare')),
     redact: () => redactSelection(),
     inspect: () => guard('Inspect', inspectDocument),
+    signatures: () => guard('Digital signatures', digitalSignatures),
     mailMerge: () => guard('Mail merge', mailMerge),
     mergeField: () => guard('Mail merge field', insertMergeField),
     autoRedact: () => guard('Auto-Redact', autoRedactDialog),
@@ -1913,11 +2181,13 @@ const menus = paperMenus({
     para: paraCommands,
     saveCopy: () => guard('Save', () => saveCopy()),
     saveTemplate: () => guard('Save', () => saveCopy('ott')),
-    templates: () => templateManager({ extensions: ['ott', 'dotx', 'dotm'], open: openConfirmed, toast }),
+    templates: () => templateManager({ extensions: ['ott', 'dotx', 'dotm', 'dot'], open: openConfirmed, toast }),
+    startCenter: () => startCenter({ kind: 'document', extensions: ['ott', 'dotx', 'dotm'], newDocument: () => el('btn-new').click(), openFile: () => el('btn-open').click(), open: openConfirmed, templates: () => templateManager({ extensions: ['ott', 'dotx', 'dotm', 'dot'], open: openConfirmed, toast }) }),
     everywhere: () => searchEverywhere({ kind: 'paper', open: openConfirmed, toast }),
     reload: () => { if (model.path) guard('Reload', () => openConfirmed(model.path)); else toast('This document has not been saved yet'); },
     cloneFormatting: () => cloneFormatting(),
     toggleSidebar: () => { el('properties').classList.toggle('hidden'); properties.refresh(); },
+    view: viewCommands,
     updateAll: () => { measurer.invalidate(); editor.draw(); repaginate.schedule(); repaginate.flush(); toast('Fields, contents and indexes brought up to date'); },
     fieldsToText,
     sortParagraphs: () => guard('Sort', sortParagraphs),
@@ -1966,6 +2236,7 @@ statusbar = createStatusBar(el('statusbar'), [
   { key: 'style', title: 'Page Style', text: () => 'Default Page Style', run: () => guard('Page', pageSetup) },
   { key: 'language', title: 'The language of the text at the cursor; a click sets it for the paragraph', text: languageHere, run: () => chooseLanguage('paragraph') },
   { key: 'changes', title: 'Changes are being recorded', text: () => (model.review?.recording ? 'Recording changes' : '') },
+  { key: 'signature', title: 'The file was opened with digital signatures; a click shows them', text: () => (signedPackage ? 'Signed' : ''), run: () => guard('Digital signatures', digitalSignatures) },
   { key: 'modified', title: 'The document has changes not yet saved', text: () => (model.dirty ? 'Unsaved changes' : ''), grow: true },
   { key: 'zoom-out', title: 'Zoom Out', text: () => '−', run: () => { text.setZoom(zoomNow() - 0.1); statusbar.refresh(); } },
   { key: 'zoom', title: 'Zoom & View Layout', text: () => `${Math.round(zoomNow() * 100)}%`, run: () => text.zoomDialog() },
@@ -1988,7 +2259,18 @@ proofing = createProofing({
   settings: spellingSettings,
 });
 // A right click on a word underlined offers what it could be.
-surface.addEventListener('contextmenu', (event) => { proofing.contextMenu(event); });
+// The right click: the spelling suggestions over a word underlined, otherwise Writer's own items, the words chosen kept chosen.
+surface.addEventListener('contextmenu', async (event) => {
+  if (event.target.closest('.text-drawing')) return;
+  event.preventDefault();
+  const sel = document.getSelection();
+  const kept = sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0).cloneRange() : null;
+  const inside = kept && (() => { const r = document.caretRangeFromPoint?.(event.clientX, event.clientY); return r && kept.isPointInRange(r.startContainer, r.startOffset); })();
+  if (!inside && await proofing.contextMenu(event)) return;
+  if (inside) { sel.removeAllRanges(); sel.addRange(kept); readSelection(); }
+  const items = contextItems(menus, ['Edit/Cut', 'Edit/Copy', 'Edit/Paste', 'separator', 'Format/Character…', 'Format/Paragraph…', 'Format/Bullets and Numbering…', 'separator', 'Insert/Comment', 'Insert/Hyperlink…', 'separator', 'Format/Clear Direct Formatting']);
+  if (items.length) showContextMenu(event, items);
+});
 
 document.addEventListener('selectionchange', () => {
   if (document.activeElement === surface) {
@@ -2066,6 +2348,13 @@ el('btn-page-setup').onclick = () => guard('Page', pageSetup);
 el('btn-settings').onclick = () => guard('Settings', openSettings);
 el('btn-commands').onclick = () => openPalette(commands());
 el('style-picker').onchange = (event) => applyStyle(event.target.value);
+// The Formatting bar's font size and colours act on the text chosen, as their menu commands do.
+barBox(el('font-picker'), (value) => text.setLook('font', value.trim()), backToText);
+barBox(el('size-picker'), (value) => { const size = Number(value); if (size >= 2 && size <= 999) text.setLook('size', size); }, backToText);
+el('color-picker').onchange = (event) => { text.setLook('color', event.target.value); backToText(); };
+el('highlight-picker').onchange = (event) => { text.setLook('highlight', event.target.value); backToText(); };
+for (const id of ['font-picker', 'size-picker', 'color-picker', 'highlight-picker']) el(id).addEventListener('mousedown', () => readSelection());
+for (const holder of document.querySelectorAll('[data-icon-static]')) holder.innerHTML = icon(holder.dataset.iconStatic) ?? '';
 
 document.addEventListener('keydown', (event) => {
   if (isDialogOpen() || isPaletteOpen() || isPrintPreviewOpen()) return;

@@ -2,10 +2,11 @@
 
 import { applyFormat, transformCase, resizeText, insertText, blocksInRange } from './core/editor/commands.js';
 import { MARKS } from './core/editor/model.js';
-import { withPara } from './core/editor/render.js';
+import { withPara, MM } from './core/editor/render.js';
+import { isCollapsed } from './core/editor/selection.js';
 import { FORMATTING_MARKS } from './core/text-case.js';
 import { specialCharacter } from './core/special-chars.js';
-import { showPanel, readFields, escapeHtml } from './core/panel.js';
+import { showPanel, readFields, escapeHtml, tabbed } from './core/panel.js';
 
 const PT = 4 / 3;
 
@@ -64,7 +65,7 @@ export function textTools(app) {
     const check = (field, label, on) => `<div class="setting"><span class="label">${label}</span><input type="checkbox" data-field="${field}"${on ? ' checked' : ''} /></div>`;
     const underline = run.double ? 'double' : run.underline ? 'single' : 'none';
     const position = run.sup ? 'sup' : run.sub ? 'sub' : 'normal';
-    const confirmed = await showPanel('Character', `
+    const confirmed = await showPanel('Character', tabbed(`
       <h3 class="form-heading">Font</h3>
       <div class="form-grid">
         <label for="ch-size">Size, in points</label>
@@ -84,7 +85,7 @@ export function textTools(app) {
         <select id="ch-position" data-field="position">${[['normal', 'Normal'], ['sup', 'Superscript'], ['sub', 'Subscript']].map(([v, l]) => `<option value="${v}"${position === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
       </div>
       ${check('overline', 'Overlining', run.overline)}${check('strike', 'Strikethrough', run.strike)}
-      ${check('shadow', 'Shadow', run.shadow)}${check('outline', 'Outline', run.outline)}${check('smallcaps', 'Small capitals', run.smallcaps)}`, 'OK');
+      ${check('shadow', 'Shadow', run.shadow)}${check('outline', 'Outline', run.outline)}${check('smallcaps', 'Small capitals', run.smallcaps)}`), 'OK');
     if (!confirmed) return;
     const f = readFields();
     editor.selection = selection;
@@ -110,7 +111,7 @@ export function textTools(app) {
     if (!block) return;
     const look = withPara(model().styles[block.style] ?? {}, block.para);
     const cm = (points) => Math.round(((points ?? 0) / 72) * 2.54 * 100) / 100;
-    const confirmed = await showPanel('Paragraph', `
+    const confirmed = await showPanel('Paragraph', tabbed(`
       <h3 class="form-heading">Indents and spacing</h3>
       <div class="form-grid">
         <label for="pa-before">Before text, in cm</label><input id="pa-before" type="number" step="0.05" data-field="indent" value="${cm(look.indent)}" />
@@ -123,7 +124,7 @@ export function textTools(app) {
       <div class="form-grid">
         <label for="pa-align">Options</label>
         <select id="pa-align" data-field="align">${[['left', 'Start'], ['center', 'Centre'], ['right', 'End'], ['justify', 'Justified']].map(([v, l]) => `<option value="${v}"${(block.align ?? 'left') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
-      </div>`, 'OK');
+      </div>`), 'OK');
     if (!confirmed) return;
     const f = readFields();
     const points = (value) => (Number.isFinite(Number(value)) ? (Number(value) / 2.54) * 72 : 0);
@@ -160,20 +161,15 @@ export function textTools(app) {
   }
 
   function zoomTo(mode) {
-    const page = sheet();
-    const current = Number(page.style.zoom || 1);
-    const width = page.offsetWidth / (current === 0 ? 1 : 1);
+    // From the page's own size, so it works whatever is on screen, the pages laid out or not.
+    const box = app.model().pageBox();
+    const width = box.width * MM;
     const area = scroll();
     const margin = 32;
     if (mode === 'width') return setZoom((area.clientWidth - margin) / width);
-    if (mode === 'page') {
-      const pageHeight = width * (297 / 210);
-      return setZoom(Math.min((area.clientWidth - margin) / width, (area.clientHeight - margin) / pageHeight));
-    }
+    if (mode === 'page') return setZoom(Math.min((area.clientWidth - margin) / width, (area.clientHeight - margin) / (box.height * MM)));
     // Optimal: the text area, without the page margins, fills the window.
-    const surface = document.getElementById('surface');
-    const text = surface.offsetWidth;
-    return setZoom((area.clientWidth - margin) / Math.max(1, text));
+    return setZoom((area.clientWidth - margin) / Math.max(1, box.contentWidth * MM));
   }
 
   async function zoomDialog() {
@@ -193,7 +189,28 @@ export function textTools(app) {
     if (typeof saved === 'number' && saved !== 1) setZoom(saved);
   }
 
+  /** One look set over the selection from the Formatting bar: a size, a font colour or a highlighting; empty takes it away. */
+  function setLook(field, value) {
+    // A box of the bar may have taken the page's own selection: the words last chosen are still the ones meant.
+    const kept = editor.selection;
+    readSelection();
+    if (kept && !isCollapsed(kept) && (!editor.selection || isCollapsed(editor.selection))) editor.selection = kept;
+    const selection = editor.selection;
+    edit(() => {
+      applyFormat(model(), selection, field, value);
+      return selection;
+    });
+    app.invalidate();
+  }
+
+  /** What the Formatting bar shows for the text at the caret. */
+  function lookHere() {
+    const { run, base } = lookAtStart();
+    return { font: run.font ?? '', size: run.size ?? base.size ?? 11, color: run.color ?? '', highlight: run.highlight ?? '' };
+  }
+
   return {
+    setLook, lookHere,
     textCase, resize, insertChars, special, characterDialog, paragraphDialog,
     setZoom, zoomTo, zoomDialog, restoreZoom, marks: FORMATTING_MARKS,
   };

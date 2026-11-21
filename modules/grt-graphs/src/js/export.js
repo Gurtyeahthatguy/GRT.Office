@@ -1,6 +1,25 @@
 /** SVG, JSON and PNG. */
 
+import { shownEnds } from './containers.js';
 import { routeEdge, pathData, edgePorts, labelPoint, drawnPoints } from './routing.js';
+import { pagePaths, drawingSvg } from './core/draw/render.js';
+import { chartSvg } from './core/charts.js';
+import { ownChartSpec } from './core/formats/chart-object.js';
+import { mathSvg } from './core/math.js';
+import { svgToPrimitives } from './core/svg-primitives.js';
+import { fromBase64 } from './core/formats/odf.js';
+
+/** What Graphs draws itself among its drawing objects: charts and formulas, filling their boxes. */
+export function customKind(o) {
+  const fill = (svg) => svg.replace(/<svg ([^>]*?)width="[^"]*" height="[^"]*"/, `<svg $1width="${o.w}" height="${o.h}" preserveAspectRatio="xMidYMid meet"`);
+  if (o.kind === 'chart') return { defs: '', content: fill(chartSvg(ownChartSpec(o), { width: o.w, height: o.h, background: '#ffffff', text: '#222222' })) };
+  if (o.kind === 'formula') {
+    const svg = mathSvg({ tex: o.tex ?? '', mathml: o.mathml, display: true });
+    return { defs: '', content: svg ? fill(svg) : `<text x="4" y="20" font-size="14">${String(o.tex ?? '').replace(/[<&]/g, (c) => (c === '<' ? '&lt;' : '&amp;'))}</text>` };
+  }
+  return null;
+}
+
 
 const escape = (value) => String(value ?? '')
   .replace(/[<>&"']/g, (c) => ({
@@ -9,14 +28,18 @@ const escape = (value) => String(value ?? '')
 
 const round = (value) => Math.round(value * 100) / 100;
 
+/** What a drawing object of Graphs looks like with no line or area of its own. */
+const OBJECT_DEFAULTS = { line: { color: '#333333', width: 2 }, fill: { type: 'solid', color: '#729fcf' } };
+
 /** The drawing's extent, with room to breathe. */
 export function bounds(model, padding = 20) {
-  if (model.nodes.length === 0) {
+  const things = [...model.nodes, ...(model.objects ?? [])];
+  if (things.length === 0) {
     return { x: 0, y: 0, width: 200, height: 200 };
   }
 
-  const xs = model.nodes.flatMap((n) => [n.x, n.x + n.w]);
-  const ys = model.nodes.flatMap((n) => [n.y, n.y + n.h]);
+  const xs = things.flatMap((n) => [n.x, n.x + n.w]);
+  const ys = things.flatMap((n) => [n.y, n.y + n.h]);
 
   const minX = Math.min(...xs) - padding;
   const minY = Math.min(...ys) - padding;
@@ -29,42 +52,41 @@ export function bounds(model, padding = 20) {
   };
 }
 
-/** The outline of one node, as an SVG element. */
-export function shapeMarkup(node, style) {
-  const { x, y, w, h } = node;
-  const fill = escape(style.fill ?? '#ffffff');
-  const stroke = escape(style.stroke ?? '#333333');
-  const width = style.strokeWidth ?? 2;
-  const common = `fill="${fill}" stroke="${stroke}" stroke-width="${width}"`;
+/** A node as a drawing object: its shape, place and its style's fill and outline. */
+export function nodeObject(node, style = {}) {
+  return {
+    id: node.id, kind: 'shape', shape: node.shape, ...(node.geometry ? { geometry: node.geometry } : {}), x: node.x, y: node.y, w: node.w, h: node.h, rotation: node.rotation ?? 0,
+    ...(node.mods ? { mods: node.mods } : {}), ...(node.flipH ? { flipH: true } : {}), ...(node.flipV ? { flipV: true } : {}),
+    fillLook: node.fillLook ?? (style.fill === 'none' ? { type: 'none' } : { type: 'solid', color: style.fill ?? '#ffffff' }),
+    line: node.line ?? (style.stroke === 'none' ? { style: 'none' } : { color: style.stroke ?? '#333333', width: style.strokeWidth ?? 2 }),
+    ...(node.shadow ? { shadow: true } : {}),
+  };
+}
 
-  switch (node.shape) {
-    case 'ellipse':
-      return `<ellipse cx="${round(x + w / 2)}" cy="${round(y + h / 2)}" `
-        + `rx="${round(w / 2)}" ry="${round(h / 2)}" ${common}/>`;
-    case 'diamond':
-      return `<polygon points="${round(x + w / 2)},${round(y)} ${round(x + w)},${round(y + h / 2)} `
-        + `${round(x + w / 2)},${round(y + h)} ${round(x)},${round(y + h / 2)}" ${common}/>`;
-    case 'parallelogram': {
-      const slant = Math.min(w * 0.2, 30);
-      return `<polygon points="${round(x + slant)},${round(y)} ${round(x + w)},${round(y)} `
-        + `${round(x + w - slant)},${round(y + h)} ${round(x)},${round(y + h)}" ${common}/>`;
-    }
-    case 'hexagon': {
-      const notch = Math.min(w * 0.18, 28);
-      return `<polygon points="${round(x + notch)},${round(y)} ${round(x + w - notch)},${round(y)} `
-        + `${round(x + w)},${round(y + h / 2)} ${round(x + w - notch)},${round(y + h)} `
-        + `${round(x + notch)},${round(y + h)} ${round(x)},${round(y + h / 2)}" ${common}/>`;
-    }
-    case 'triangle':
-      return `<polygon points="${round(x + w / 2)},${round(y)} ${round(x + w)},${round(y + h)} `
-        + `${round(x)},${round(y + h)}" ${common}/>`;
-    case 'rounded':
-      return `<rect x="${round(x)}" y="${round(y)}" width="${round(w)}" height="${round(h)}" `
-        + `rx="${round(Math.min(h / 2, 24))}" ${common}/>`;
-    default:
-      return `<rect x="${round(x)}" y="${round(y)}" width="${round(w)}" height="${round(h)}" `
-        + `rx="4" ${common}/>`;
-  }
+/** The outline of one node, as SVG paths where it sits. */
+export function shapeMarkup(node, style) {
+  return pagePaths(nodeObject(node, style)).map((p) => `<path d="${p.d}" fill="${escape(p.fill ?? 'none')}" stroke="${escape(p.stroke ?? 'none')}" stroke-width="${round(p.strokeWidth)}"${p.dash ? ` stroke-dasharray="${p.dash}"` : ''} fill-rule="evenodd"/>`).join('');
+}
+
+/** The SVG attributes of a node's text look: weight, slant, lines, size, colour and alignment. */
+export function textAttributes(look = {}) {
+  const decoration = [look.underline || look.double ? 'underline' : null, look.strike ? 'line-through' : null, look.overline ? 'overline' : null].filter(Boolean).join(' ');
+  const anchor = { left: 'start', right: 'end' }[look.align] ?? 'middle';
+  return {
+    anchor,
+    size: look.size ?? 13,
+    attrs: `text-anchor="${anchor}" font-family="${escape(look.font ?? 'sans-serif')}" font-size="${look.size ?? 13}" fill="${escape(look.color ?? '#222222')}"`
+      + `${look.bold ? ' font-weight="700"' : ''}${look.italic ? ' font-style="italic"' : ''}${decoration ? ` text-decoration="${decoration}"` : ''}`
+      + `${look.smallcaps ? ' font-variant="small-caps"' : ''}${look.outline ? ' stroke="#222222" stroke-width="0.6" fill-opacity="0"' : ''}`,
+  };
+}
+
+/** A node's lines with what its list puts before each paragraph. */
+export function listedLines(node) {
+  const look = node.textLook ?? {};
+  const paragraphs = String(node.text ?? '').split('\n');
+  const marked = look.list ? paragraphs.map((p, i) => `${look.list === 'number' ? `${i + 1}.` : '•'} ${p}`).join('\n') : node.text;
+  return textLines(marked, node.w - (look.indent ?? 0));
 }
 
 /** Text inside a node, wrapped crudely by character count. */
@@ -104,6 +126,12 @@ export function toSvg(model) {
     + `${round(box.width)} ${round(box.height)}">`,
   );
 
+  // Drawing objects first, under the connectors and nodes, as the canvas shows them.
+  for (const o of [...(model.objects ?? [])].sort((p, q) => (p.z ?? 0) - (q.z ?? 0))) {
+    const turn = o.rotation ? ` rotate(${round(o.rotation)} ${round(o.w / 2)} ${round(o.h / 2)})` : '';
+    parts.push(`<g transform="translate(${round(o.x)} ${round(o.y)})${turn}">${drawingSvg(o, { objects: model.objects, image: (x) => x.resource, custom: customKind, idPrefix: `x${parts.length}`, defaults: OBJECT_DEFAULTS })}</g>`);
+  }
+
   // One arrowhead definition, referenced by every connector.
   parts.push(
     '<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" '
@@ -112,9 +140,10 @@ export function toSvg(model) {
   );
 
   for (const edge of model.edges) {
-    const from = model.nodes.find((n) => n.id === edge.from);
-    const to = model.nodes.find((n) => n.id === edge.to);
-    if (!from || !to) continue;      // a dangling edge is simply not drawn.
+    // A dangling edge is simply not drawn; one into a closed container ends at the container.
+    const ends = shownEnds(model, edge);
+    if (!ends) continue;
+    const { from, to } = ends;
 
     const points = routeEdge(edge, from, to);
     const ports = edgePorts(edge, from, to);
@@ -133,17 +162,17 @@ export function toSvg(model) {
   }
 
   for (const node of model.nodes) {
+    if (node.hidden) continue;
     const style = model.styles[node.style] ?? model.styles.default ?? {};
     parts.push(shapeMarkup(node, style));
-
-    const lines = textLines(node.text, node.w);
-    const startY = node.y + node.h / 2 - ((lines.length - 1) * 15) / 2 + 5;
+    const look = node.textLook ?? {};
+    const text = textAttributes(look);
+    const lines = listedLines(node);
+    const step = text.size * 1.15 * (look.lineSpacing ?? 1);
+    const middle = look.valign === 'top' ? node.y + text.size + 4 : look.valign === 'bottom' ? node.y + node.h - (lines.length - 1) * step - 6 : node.y + node.h / 2 - ((lines.length - 1) * step) / 2 + text.size * 0.38;
+    const x = text.anchor === 'start' ? node.x + 6 + (look.indent ?? 0) : text.anchor === 'end' ? node.x + node.w - 6 : node.x + node.w / 2;
     lines.forEach((line, i) => {
-      parts.push(
-        `<text x="${round(node.x + node.w / 2)}" y="${round(startY + i * 15)}" `
-        + 'text-anchor="middle" font-family="sans-serif" font-size="13" '
-        + `fill="#222222">${escape(line)}</text>`,
-      );
+      parts.push(`<text x="${round(x)}" y="${round(middle + i * step)}" ${text.attrs}>${escape(line)}</text>`);
     });
   }
 
@@ -230,6 +259,20 @@ export function toPrintPage(model) {
   const ox = -box.x;
   const oy = -box.y;
 
+  for (const o of [...(model.objects ?? [])].sort((p, q) => (p.z ?? 0) - (q.z ?? 0))) {
+    const at = { ...o, x: o.x + ox, y: o.y + oy };
+    if (o.kind === 'image') {
+      const m = /^data:[\w/+.-]+;base64,(.*)$/.exec(String(o.resource ?? ''));
+      if (m) primitives.push({ type: 'image', bytes: fromBase64(m[1]), x: at.x, y: at.y, w: o.w, h: o.h, stretch: true, ...(o.crop ? { crop: o.crop } : {}) });
+    } else if (o.kind === 'chart' || o.kind === 'formula') {
+      const drawn = customKind(o);
+      if (drawn) primitives.push(...svgToPrimitives(`<svg xmlns="http://www.w3.org/2000/svg" width="${o.w}" height="${o.h}">${drawn.content}</svg>`, { x: at.x, y: at.y }));
+    } else {
+      const placed = model.objects.map((x) => ({ ...x, x: x.x + ox, y: x.y + oy }));
+      for (const p of pagePaths(at, placed, OBJECT_DEFAULTS)) primitives.push({ type: 'path', d: p.d, fill: p.fill, ...(p.stroke ? { stroke: p.stroke, strokeWidth: p.strokeWidth } : {}) });
+    }
+  }
+
   const nodesById = new Map(model.nodes.map((n) => [n.id, n]));
 
   for (const edge of model.edges) {
@@ -256,31 +299,20 @@ export function toPrintPage(model) {
     const x = node.x + ox;
     const y = node.y + oy;
 
-    if (node.shape === 'ellipse') {
-      primitives.push({
-        type: 'ellipse', cx: x + node.w / 2, cy: y + node.h / 2,
-        rx: node.w / 2, ry: node.h / 2,
-        fill: style.fill, stroke: style.stroke, strokeWidth: style.strokeWidth ?? 2,
-      });
-    } else if (POLYGON_SHAPES.has(node.shape)) {
-      const points = polygonPoints(node.shape, x, y, node.w, node.h);
-      primitives.push({
-        type: 'polygon', points,
-        fill: style.fill, stroke: style.stroke, strokeWidth: style.strokeWidth ?? 2,
-      });
-    } else {
-      primitives.push({
-        type: 'rect', x, y, w: node.w, h: node.h,
-        fill: style.fill, stroke: style.stroke, strokeWidth: style.strokeWidth ?? 2,
-      });
+    for (const p of pagePaths(nodeObject({ ...node, x, y }, style))) {
+      primitives.push({ type: 'path', d: p.d, fill: p.fill, ...(p.stroke ? { stroke: p.stroke, strokeWidth: p.strokeWidth } : {}) });
     }
 
-    const lines = textLines(node.text, node.w);
-    const startY = y + node.h / 2 - ((lines.length - 1) * 14) / 2 - 4;
+    const look = node.textLook ?? {};
+    const size = Math.round((look.size ?? 13) * 0.85);
+    const lines = listedLines(node);
+    const step = size * 1.25 * (look.lineSpacing ?? 1);
+    const startY = y + node.h / 2 - ((lines.length - 1) * step) / 2 - 4;
+    const align = { left: 'left', right: 'right' }[look.align] ?? 'center';
     lines.forEach((line, i) => {
       primitives.push({
-        type: 'text', x: x + node.w / 2, y: startY + i * 14,
-        text: line, size: 11, align: 'center', fill: '#222222',
+        type: 'text', x: align === 'left' ? x + 6 : align === 'right' ? x + node.w - 6 : x + node.w / 2, y: startY + i * step,
+        text: line, size, align, fill: look.color ?? '#222222', bold: Boolean(look.bold), italic: Boolean(look.italic),
       });
     });
   }
@@ -288,24 +320,3 @@ export function toPrintPage(model) {
   return { width: box.width, height: box.height, primitives };
 }
 
-/** Shapes the print engine draws as filled polygons. */
-const POLYGON_SHAPES = new Set(['diamond', 'parallelogram', 'hexagon', 'triangle']);
-
-/** Corner coordinates of a polygon shape. */
-function polygonPoints(shape, x, y, w, h) {
-  switch (shape) {
-    case 'diamond':
-      return [[x + w / 2, y], [x + w, y + h / 2], [x + w / 2, y + h], [x, y + h / 2]];
-    case 'hexagon': {
-      const notch = Math.min(w * 0.18, 28);
-      return [[x + notch, y], [x + w - notch, y], [x + w, y + h / 2],
-        [x + w - notch, y + h], [x + notch, y + h], [x, y + h / 2]];
-    }
-    case 'triangle':
-      return [[x + w / 2, y], [x + w, y + h], [x, y + h]];
-    default: {
-      const slant = Math.min(w * 0.2, 30);
-      return [[x + slant, y], [x + w, y], [x + w - slant, y + h], [x, y + h]];
-    }
-  }
-}

@@ -10,10 +10,12 @@ import { drawTools } from './draw-tools.js';
 import { GraphModel } from './model.js';
 import { Renderer } from './render.js';
 import { Interaction } from './interaction.js';
+import { graphsDrawing } from './drawing.js';
 import { treeLayout } from './layout.js';
 import { createProperties } from './core/properties.js';
 import { aboutDialog, licencesDialog } from './core/about.js';
 import { templateManager } from './core/template-manager.js';
+import { startCenter } from './core/start-center.js';
 import { searchEverywhere } from './core/everywhere.js';
 import { applyShortcuts, customizeDialog } from './core/customize.js';
 import { wireToolbars } from './core/toolbar.js';
@@ -22,11 +24,12 @@ import { createSpellChecker } from './core/spelling.js';
 import { spellingOverItems } from './core/spelling-items.js';
 import { SHAPES, ROUTINGS, PORTS } from './model.js';
 import { toSvg, toJson, toPng, toPrintPage } from './export.js';
-import { renderToPdf } from './core/pdf.js';
+import { renderToPdf, mergePdfPages } from './core/pdf.js';
 import { printPreview, pageControls, isPrintPreviewOpen } from './core/print.js';
 import { printablePages } from './printing.js';
 import { UndoStack } from './core/undo.js';
 import { showPanel, showChoice, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
+import { noteSignatures, packageSignatures, showSignatures } from './core/signatures/ui.js';
 import { readPackage, writePackage } from './core/package.js';
 import { withPassword, passwordFields, wirePasswordFields, passwordFrom, canProtect, PROTECTION } from './core/protection.js';
 import { readOdg, writeOdg } from './core/formats/odg.js';
@@ -34,9 +37,14 @@ import { readCanvas, writeCanvas } from './core/formats/canvas.js';
 import { THEMES } from './core/theme.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
 import { Keeper, MODES } from './core/keeper.js';
-import { parseMermaid } from './mermaid.js';
+import { parseMermaid } from './core/mermaid.js';
 import { loadSettings, updateSettings, settings, canPersist } from './settings.js';
+import { linkGraph, around, forceLayout } from './core/link-graph.js';
+import { startNode, choicesAt, arrive, take, explore } from './testmode.js';
+import { addChild, addSibling, mindMapLayout, listToMap, mapToList } from './mindmap.js';
+import { makeContainer, toggleContainer, isContainer } from './containers.js';
 import {
+  pickFolder, readMarkdownLinks,
   pickToOpen, pickToSave, readDocument, writeDocument, writeText, writeBytes,
   readText, readBytes, fileExists, runtimeInfo, onFilesDropped, baseName, withExtension, FILTERS,
 } from './io.js';
@@ -56,6 +64,31 @@ let model = new GraphModel();
 let undo = new UndoStack(model);
 let busy = false;
 
+// Drawing objects beside the nodes, with Draw's commands; the layer and Graphs' own interaction share the canvas.
+const drawing = graphsDrawing({
+  canvas, renderer, interaction,
+  model: () => model,
+  change: (mutate) => change(mutate),
+  draw: () => draw(),
+  refresh: () => refresh(),
+  toast: (message) => toast(message),
+  snapshot: () => model.snapshot(),
+  commit: (before) => interaction.onCommit(before),
+  editText: (id) => editText(id),
+  fitPage: () => { renderer.fit(model); draw(); },
+  pickImage: async () => {
+    const path = await pickToOpen(FILTERS.image, 'Choose an image');
+    if (!path) return null;
+    const extension = (/\.(\w+)$/.exec(path)?.[1] ?? 'png').toLowerCase();
+    return { bytes: await readBytes(path), type: { jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }[extension] ?? 'image/png', name: baseName(path) };
+  },
+  saveBytes: async (bytes, name) => {
+    const path = await pickToSave(name, FILTERS.image, 'Save Image');
+    if (path) { await writeBytes(path, bytes); toast(`Saved ${baseName(path)}`); }
+  },
+});
+interaction.ignore = (event) => Boolean(drawing.layer.tool || drawing.layer.pendingPath || event.target?.closest?.('[data-object], #draw-overlay [data-handle]'));
+
 /** Formats a diagram can be saved back into. */
 const WRITABLE = new Set(['grt', 'odg', 'fodg', 'canvas', 'otg']);
 const OPENABLE = /\.(grt|odg|fodg|otg|canvas|json)$/i;
@@ -69,6 +102,8 @@ function formatOf(path) {
  * read, and whether saving over it anyway was agreed to.
  */
 let file = { format: 'grt', losses: [], confirmed: false, password: null };
+/** The package of a signed file as it was opened, so its signatures can be checked again. */
+let signedPackage = null;
 
 // Notifications
 
@@ -116,6 +151,9 @@ let comparison = null;
 
 function draw() {
   renderer.draw(model, interaction.selection, { ...interaction.extras, hideComments: commentsHidden, diff: comparison });
+  drawing.renderOverlay(el('draw-overlay'));
+  drawing.renderPages(el('pages-pane'));
+  el('page-count').textContent = `${model.page.name} (${model.current + 1} of ${model.pages.length})`;
   syncText();
   el('empty-state').classList.toggle('hidden', model.nodes.length > 0);
   refresh();
@@ -167,6 +205,10 @@ function describeSelection() {
         ...Object.entries(node.data ?? {}).slice(0, 30).map(([key, value]) => ({ label: key, value: String(value), apply: set((v) => { node.data = { ...node.data, [key]: v }; model.dirty = true; }) })),
         { label: 'Duration in days', kind: 'number', value: node.data?.duration ?? '', min: 0, step: 0.5, apply: set((v) => { node.data = { ...node.data }; if (v === null) delete node.data.duration; else node.data.duration = String(v); model.dirty = true; }) },
       ] },
+      { title: 'Test mode', fields: [
+        { label: 'Start here', kind: 'checkbox', value: Boolean(node.data?.start), apply: set((v) => { node.data = { ...node.data }; if (v) node.data.start = 'yes'; else delete node.data.start; model.dirty = true; }) },
+        { label: 'On arrival, set', value: node.data?.set ?? '', apply: set((v) => { node.data = { ...node.data }; if (v) node.data.set = v; else delete node.data.set; model.dirty = true; }) },
+      ] },
     ];
   }
   if (nodes.length > 1) {
@@ -186,6 +228,9 @@ function describeSelection() {
       ...(edges.length === 1 ? [
         { label: 'Leaves from', kind: 'select', value: edge.fromPort, options: ports, row: 'ports', apply: set((v) => { edge.fromPort = v; model.dirty = true; }) },
         { label: 'Arrives at', kind: 'select', value: edge.toPort, options: ports, row: 'ports', apply: set((v) => { edge.toPort = v; model.dirty = true; }) },
+        // Test mode: a condition and values, written as Grid's formulas, such as coins >= 3 and coins = coins - 3.
+        { label: 'Only if', value: edge.data?.if ?? '', apply: set((v) => { edge.data = { ...edge.data }; if (v) edge.data.if = v; else delete edge.data.if; model.dirty = true; }) },
+        { label: 'Then set', value: edge.data?.set ?? '', apply: set((v) => { edge.data = { ...edge.data }; if (v) edge.data.set = v; else delete edge.data.set; model.dirty = true; }) },
       ] : []),
     ] }];
   }
@@ -209,6 +254,12 @@ interaction.onCommit = (before) => {
 };
 
 interaction.onEditText = (id) => editText(id);
+
+// A press on a container's mark opens or closes it.
+canvas.addEventListener('click', (event) => {
+  const mark = event.target.closest?.('[data-toggle]');
+  if (mark && model.node(mark.dataset.toggle)) change(() => toggleContainer(model, mark.dataset.toggle));
+});
 
 // Text editing
 
@@ -351,6 +402,7 @@ function runValidation() {
 function newDocument() {
   model = new GraphModel();
   file = { format: 'grt', losses: [], confirmed: false, password: null };
+  signedPackage = null;
   undo = new UndoStack(model);
   keeper.watch(model);
   interaction.attach(model);
@@ -399,6 +451,7 @@ async function openPath(path) {
   if (!opened) return;
   model.path = path;
   file = { format: 'grt', losses: [], confirmed: false, password: opened.password };
+  signedPackage = null;
   document.title = `${baseName(path)} - GRT Graphs`;
   toast(`Opened ${baseName(path)}`);
 }
@@ -408,8 +461,14 @@ async function importDocument(path, given) {
   const template = isTemplate(given);
   const format = baseFormat(given);
   if (!['odg', 'fodg', 'canvas'].includes(format)) throw new Error(`GRT Graphs does not open .${format} files`);
+  let signed = null;
   const opened = await withPassword(baseName(path), async (password) => {
-    if (format === 'odg') return readOdg(await readPackage(path, { password }));
+    if (format === 'odg') {
+      const pkg = await readPackage(path, { password });
+      const read = readOdg(pkg);
+      signed = await noteSignatures(pkg, read.losses, settings());
+      return read;
+    }
     if (format === 'fodg') return readOdg(await readText(path));
     return readCanvas(await readText(path));
   });
@@ -417,6 +476,7 @@ async function importDocument(path, given) {
   const result = opened.value;
 
   model = new GraphModel(result.document);
+  signedPackage = template ? null : signed;
   // A template starts a new drawing: nothing is saved back into it unless asked.
   model.path = template ? null : path;
   file = template ? { format: 'grt', losses: [], confirmed: false, password: null } : { format, losses: result.losses.lines(), confirmed: false, password: opened.password };
@@ -444,6 +504,7 @@ async function openRecovered(copy, meta) {
   const opened = await withPassword(meta.name || 'Untitled', (password) => loadGraph(copy, password));
   // Without its password the copy stays where it is, offered again next time.
   if (!opened) throw new Error('the copy is kept for next time');
+  signedPackage = null;
   model.path = meta.path ?? null;
   const format = formatOf(meta.path) ?? 'grt';
   file = {
@@ -647,6 +708,8 @@ async function save(forceDialog, { silent = false } = {}) {
   const revision = keeper.revision;
   if (!canProtect(format)) password = null;
   const lost = await writeAs(path, format, password);
+  // The file written, which the drawing now is, carries no signature.
+  signedPackage = null;
 
   const sameFile = path === model.path && format === file.format;
   model.path = path;
@@ -759,7 +822,15 @@ async function exportDocument() {
     // Through the shared engine, so the metadata clearing is the same code
     // GRT Read uses.
     const report = { replaced: 0 };
-    await writeBytes(path, await renderToPdf(toPrintPage(model), { report }));
+    // A page of the PDF for each page of the drawing.
+    const current = model.current;
+    const files = [];
+    for (let i = 0; i < model.pages.length; i += 1) {
+      model.goToPage(i);
+      files.push(await renderToPdf(toPrintPage(model), { report }));
+    }
+    model.goToPage(current);
+    await writeBytes(path, files.length === 1 ? files[0] : await mergePdfPages(files));
     if (report.replaced > 0) {
       toast(`Exported ${baseName(path)}, ${report.replaced} character(s) the PDF font cannot draw, replaced; printing to PDF keeps them`, true);
       return;
@@ -771,6 +842,146 @@ async function exportDocument() {
   }
 
   toast(`Exported ${baseName(path)}`);
+}
+
+// Test mode
+
+const shown = (value) => (value === null || value === undefined ? '' : typeof value === 'object' ? String(value.first ?? '') : String(value));
+
+/** Walks the diagram from the node chosen, or the start, offering the answers whose condition holds. */
+async function testMode() {
+  const start = startNode(model, [...interaction.selection].find((id) => model.node(id)));
+  if (!start) { toast('There is nothing to walk yet'); return; }
+  let state = { node: start, variables: arrive(model, start, new Map()) };
+  const trail = [];
+  for (let n = 0; n < 10000; n += 1) {
+    interaction.selection = new Set([state.node]);
+    draw();
+    const node = model.node(state.node);
+    const choices = choicesAt(model, state.node, state.variables);
+    const open = choices.filter((c) => c.open);
+    const values = [...state.variables].map(([k, v]) => `<li><code>${escapeHtml(k.toLowerCase())}</code> = ${escapeHtml(shown(v))}</li>`).join('');
+    const mistakes = choices.filter((c) => c.error).map((c) => `<li>The condition of “${escapeHtml(c.label)}” is a mistake: ${escapeHtml(c.error)}</li>`).join('');
+    const picked = await showChoice('Test mode', `<p class="test-words">${escapeHtml(node?.text || '(no words)')}</p>
+      ${!choices.length ? '<p class="hint">The end: nothing leads on from here.</p>' : !open.length ? '<p class="hint">Stuck: no answer is open here.</p>' : ''}
+      ${mistakes ? `<ul class="problem-list">${mistakes}</ul>` : ''}${values ? `<ul class="test-values">${values}</ul>` : ''}`, [
+      ...open.map((c, i) => ({ id: `c${i}`, label: c.label, primary: i === 0 })),
+      ...(trail.length ? [{ id: 'back', label: 'Back' }] : []),
+      { id: 'stop', label: open.length ? 'Stop' : 'Close', primary: !open.length },
+    ]);
+    if (!picked || picked === 'stop') break;
+    if (picked === 'back') { state = trail.pop(); continue; }
+    trail.push(state);
+    state = take(model, open[Number(picked.slice(1))].edge, state.variables);
+  }
+  draw();
+}
+
+/** Every way through, each answer taken in turn: where the walks end, where they get stuck, and conditions that are mistakes. */
+async function checkWays() {
+  const start = startNode(model, [...interaction.selection].find((id) => model.node(id)));
+  if (!start) { toast('There is nothing to walk yet'); return; }
+  const report = explore(model, start);
+  const name = (id) => escapeHtml(model.node(id)?.text || id);
+  const list = (map) => [...map].map(([id, times]) => `<li>${name(id)}${times > 1 ? ` (${times} ways)` : ''}</li>`).join('');
+  interaction.selection = new Set([...report.stuck.keys()]);
+  draw();
+  await showPanel('Every way through', `<p>${report.paths} way(s) walked from “${name(start)}”${report.cut ? ', and more not walked: the diagram has too many' : ''}.</p>
+    <h3>Endings</h3>${report.endings.size ? `<ul>${list(report.endings)}</ul>` : '<p class="hint">None.</p>'}
+    <h3>Stuck, with no answer open</h3>${report.stuck.size ? `<ul class="problem-list">${list(report.stuck)}</ul>` : '<p class="hint">Nowhere.</p>'}
+    ${report.mistakes.size ? `<h3>Conditions that are mistakes</h3><p>${report.mistakes.size} connector(s).</p>` : ''}
+    ${report.loops ? `<p class="hint">${report.loops} time(s) a walk came back to a node it had passed, and went no further round.</p>` : ''}`);
+}
+
+// Mind maps
+
+/** Tab: a child of the node chosen, the map laid out again, its words to type. */
+function mindChild() {
+  const id = [...interaction.selection].find((x) => model.node(x));
+  if (!id) return false;
+  let made = null;
+  change(() => { made = addChild(model, id); mindMapLayout(model, made); interaction.selection = new Set([made]); });
+  if (made) editText(made);
+  return true;
+}
+
+/** Enter: a sibling after the node chosen, the map laid out again. */
+function mindSibling() {
+  const id = [...interaction.selection].find((x) => model.node(x));
+  if (!id) return false;
+  let made = null;
+  change(() => { made = addSibling(model, id); mindMapLayout(model, made); interaction.selection = new Set([made]); });
+  if (made) editText(made);
+  return true;
+}
+
+/** A list, as Notes writes one, turned into a mind map. */
+async function mapFromList() {
+  if (!await showPanel('Mind map from a list', `<p class="fp-note" style="margin-top:0">One item a line; indent with spaces or tabs, or start with - or *, to make children.</p>
+    <textarea data-field="list" rows="12" spellcheck="false" style="width:100%;font:12px ui-monospace,monospace"></textarea>`, 'Make the map')) return;
+  const { list } = readFields();
+  if (!list?.trim()) return;
+  if (!await keeper.confirmLeave()) return;
+  loadDocument(listToMap(list), null);
+  toast(`A map of ${model.nodes.length} node(s)`);
+}
+
+/** The map from the node chosen, or from its root, as a list Notes and any Markdown editor take. */
+async function listFromMap() {
+  const id = [...interaction.selection].find((x) => model.node(x)) ?? startNode(model);
+  if (!id) { toast('There is no map to write'); return; }
+  const text = mapToList(model, id);
+  await showPanel('The map as a list', `<p class="fp-note" style="margin-top:0">Copy it into a note.</p>
+    <textarea data-field="list" rows="14" readonly style="width:100%;font:12px ui-monospace,monospace">${escapeHtml(text)}</textarea>`);
+}
+
+// The graph of a vault
+
+const GRAPH_LIMIT = 3000;
+
+/** A vault's notes and their links as a diagram: all of them, or those around one note. */
+async function openNotesGraph() {
+  const root = await pickFolder('Choose a vault, a folder of Markdown notes');
+  if (!root) return;
+  const { notes } = await readMarkdownLinks(root);
+  if (!notes.length) { toast('There are no Markdown notes in that folder'); return; }
+  const titles = [...new Set(notes.map((n) => n.title))].sort((a, b) => a.localeCompare(b));
+  const confirmed = await showPanel('Graph of the notes', `
+    <p class="fp-note" style="margin-top:0">${notes.length} note(s). Leave the note empty for all of them.</p>
+    <label>Around the note<input type="text" data-field="center" list="graph-titles" autocomplete="off" /></label>
+    <datalist id="graph-titles">${titles.slice(0, 5000).map((t) => `<option value="${escapeHtml(t)}"></option>`).join('')}</datalist>
+    <label>Links away<select data-field="depth"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option></select></label>`, 'Draw');
+  if (!confirmed) return;
+  const { center, depth } = readFields();
+  const index = new Map(notes.map((n) => [n.title.toLowerCase(), n.path]));
+  let graph = linkGraph(notes, (title) => index.get(title.toLowerCase()) ?? null);
+  const start = center?.trim() ? index.get(center.trim().toLowerCase()) : null;
+  if (center?.trim() && !start) { toast(`There is no note called ${center.trim()}`); return; }
+  if (start) graph = around(graph, start, Number(depth) || 2);
+  if (graph.nodes.length > GRAPH_LIMIT) {
+    // The most linked notes are kept, so what is drawn is still the vault's shape.
+    const degree = new Map();
+    for (const e of graph.edges) { degree.set(e.from, (degree.get(e.from) ?? 0) + 1); degree.set(e.to, (degree.get(e.to) ?? 0) + 1); }
+    const kept = new Set([...graph.nodes].sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0)).slice(0, GRAPH_LIMIT).map((n) => n.id));
+    graph = { nodes: graph.nodes.filter((n) => kept.has(n.id)), edges: graph.edges.filter((e) => kept.has(e.from) && kept.has(e.to)) };
+    toast(`The ${GRAPH_LIMIT} most linked notes are drawn`);
+  }
+  const positions = forceLayout(graph, { spacing: 110 });
+  const ids = new Map(graph.nodes.map((n, i) => [n.id, `n${i + 1}`]));
+  // Only titles go into the diagram: the folder's path, which names the person, stays out.
+  const doc = {
+    version: 1, type: 'graphs',
+    nodes: graph.nodes.map((n) => {
+      const w = Math.min(220, Math.max(60, [...n.title].length * 7 + 24));
+      const p = positions.get(n.id);
+      return { id: ids.get(n.id), text: n.title, shape: n.id === start ? 'round-rectangle' : 'ellipse', x: Math.round(p.x - w / 2), y: Math.round(p.y - 18), w, h: 36, data: {} };
+    }),
+    edges: graph.edges.map((e, i) => ({ id: `e${i + 1}`, from: ids.get(e.from), to: ids.get(e.to), fromPort: 'auto', toPort: 'auto', routing: 'straight', label: '', waypoints: [], data: {} })),
+    meta: { gridSize: 10, snapToGrid: false },
+  };
+  if (!await keeper.confirmLeave()) return;
+  loadDocument(doc, null);
+  toast(`${doc.nodes.length} note(s) and ${doc.edges.length} link(s)`);
 }
 
 // Import from Mermaid
@@ -846,7 +1057,7 @@ async function openSettings() {
       </select>
     </div>
     <p class="fp-note">${canPersist()
-    ? 'Stored as a settings.json holding these five values. No record of which documents were opened.'
+    ? 'Stored as a settings.json holding these values, your shortcuts and the authorities you trust for signatures. No record of which documents were opened.'
     : '<strong>Ephemeral mode:</strong> changes apply now but are not written to disk.'}</p>`,
   'Apply');
   if (!confirmed) return;
@@ -1061,9 +1272,11 @@ const tools = drawTools({
 
 const menus = graphsMenus({
   tools,
+  drawing,
   newFile: () => el('btn-new').click(),
   open: () => el('btn-open').click(),
   templates: () => templateManager({ extensions: ['otg'], open: openConfirmed, toast }),
+  startCenter: () => startCenter({ kind: 'drawing', extensions: ['otg'], newDocument: () => el('btn-new').click(), openFile: () => el('btn-open').click(), open: openConfirmed, templates: () => templateManager({ extensions: ['otg'], open: openConfirmed, toast }) }),
   everywhere: () => searchEverywhere({ kind: 'graphs', open: openConfirmed, toast }),
   // The text of nodes and the labels of lines, as Find goes through them.
   spelling: () => spellingOverItems({
@@ -1098,11 +1311,30 @@ const menus = graphsMenus({
   saveCopy: () => guard('Save', () => saveCopy()),
   importJson: () => el('btn-import').click(),
   importMermaid: () => guard('Import', () => importMermaid()),
+  notesGraph: () => guard('Graph of the notes', () => openNotesGraph()),
+  testMode: () => guard('Test mode', testMode),
+  makeContainer: () => {
+    let made = null;
+    change(() => { made = makeContainer(model, [...interaction.selection].filter((id) => model.node(id)), { x: Math.round(renderer.view.x + 60), y: Math.round(renderer.view.y + 60) }); interaction.selection = new Set([made]); });
+  },
+  toggleContainer: () => {
+    const id = [...interaction.selection].find((x) => isContainer(model.node(x)));
+    if (!id) { toast('Choose a container first'); return; }
+    change(() => toggleContainer(model, id));
+  },
+  checkWays: () => guard('Every way through', checkWays),
+  mindChild: () => { if (!mindChild()) toast('Choose a node first'); },
+  mindSibling: () => { if (!mindSibling()) toast('Choose a node first'); },
+  mindLayout: () => { const id = [...interaction.selection].find((x) => model.node(x)) ?? startNode(model); if (id) change(() => { mindMapLayout(model, id); }); },
+  mapFromList: () => guard('Mind map', mapFromList),
+  listFromMap: () => guard('Mind map', listFromMap),
   exportDocument: () => guard('Export', exportDocument),
   print: () => guard('Print', printDiagram),
   undo: () => step(-1),
   redo: () => step(1),
-  selectAll: () => { interaction.selection = new Set(model.nodes.map((n) => n.id)); draw(); },
+  selectAll: () => { interaction.selection = new Set(model.nodes.map((n) => n.id)); drawing.layer.selection = new Set(model.objects.map((o) => o.id)); draw(); },
+  togglePages: () => { el('pages-pane').hidden = !el('pages-pane').hidden; },
+  pagesShown: () => !el('pages-pane').hidden,
   deleteSelection: () => deleteSelection(),
   toggleComments: () => { commentsHidden = !commentsHidden; draw(); },
   commentsShown: () => !commentsHidden,
@@ -1125,6 +1357,17 @@ const menus = graphsMenus({
   about: async () => aboutDialog({ name: 'GRT Graphs', version: (await runtimeInfo()).version }),
   licences: () => licencesDialog({ name: 'GRT Graphs' }),
   inspect: () => guard('Inspect', inspectDiagram),
+  signatures: () => guard('Digital signatures', () => showSignatures({
+    title: 'Digital signatures',
+    check: (trusted) => (signedPackage ? packageSignatures(signedPackage, trusted) : []),
+    settings,
+    saveSettings: () => updateSettings({ trustedCertificates: settings().trustedCertificates }),
+    pickCertificate: async () => {
+      const chosen = await pickToOpen(FILTERS.certificate, 'Trust a certificate');
+      return chosen ? readBytes(chosen) : null;
+    },
+    toast,
+  })),
   compare: () => guard('Compare', compareDiagram),
   clearComparison: () => { comparison = null; draw(); },
   comparing: () => Boolean(comparison),
@@ -1193,6 +1436,13 @@ document.addEventListener('keydown', (event) => {
 
   const ctrl = event.ctrlKey || event.metaKey;
 
+  // With drawing objects chosen or a tool in hand, arrows, Tab, Delete and Escape are the drawing layer's.
+  const layer = drawing.layer;
+  if (!ctrl && (layer.selection.size || layer.tool || layer.pendingPath || layer.mode !== 'select') && layer.key(event)) {
+    event.preventDefault();
+    return;
+  }
+
   if (ctrl && event.key.toLowerCase() === 'k') {
     event.preventDefault();
     openPalette(commands());
@@ -1221,6 +1471,7 @@ document.addEventListener('keydown', (event) => {
   } else if (ctrl && event.key.toLowerCase() === 'a') {
     event.preventDefault();
     interaction.selection = new Set(model.nodes.map((n) => n.id));
+    drawing.layer.selection = new Set(model.objects.map((o) => o.id));
     draw();
   } else if (ctrl && event.key.toLowerCase() === 'z') {
     event.preventDefault();
@@ -1238,6 +1489,10 @@ document.addEventListener('keydown', (event) => {
     draw();
   } else if (event.key === 'F2' && interaction.selection.size === 1) {
     editText([...interaction.selection][0]);
+  } else if ((event.key === 'Tab' || event.key === 'Enter') && !event.shiftKey && !event.altKey && interaction.selection.size === 1 && model.node([...interaction.selection][0])) {
+    // A mind map grows from the keyboard: Tab a child, Enter a sibling.
+    event.preventDefault();
+    if (event.key === 'Tab') mindChild(); else mindSibling();
   }
 });
 

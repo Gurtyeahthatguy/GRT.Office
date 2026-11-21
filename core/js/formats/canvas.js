@@ -71,6 +71,8 @@ export function readCanvas(text) {
       h: Math.max(20, Number(raw.height) || 60),
       text: label,
       style: styleFor(raw.color, group),
+      // A canvas group is a container: what lies inside it moves with it and can be folded away.
+      ...(group ? { container: true, textLook: { valign: 'top', bold: true } } : {}),
       canvas: raw,
       data: {},
     });
@@ -147,7 +149,7 @@ export function writeCanvas(document) {
   const styles = document.styles ?? {};
   const nodes = (document.nodes ?? []).map((node) => {
     const original = node.canvas;
-    let card = original ? { ...original } : { id: node.id, type: 'text' };
+    let card = original ? { ...original } : { id: node.id, type: node.container ? 'group' : 'text' };
     const set = (key, value) => { card = place(card, key, value, NODE_ORDER); };
     const number = (key, value) => {
       if (original && Number(original[key]) === value) return;
@@ -160,11 +162,12 @@ export function writeCanvas(document) {
     }
     number('x', node.x);
     number('y', node.y);
-    number('width', node.w);
-    number('height', node.h);
+    // A closed container is written open, as a canvas has no closed groups.
+    number('width', node.collapsed ? node.expandedSize?.w ?? node.w : node.w);
+    number('height', node.collapsed ? node.expandedSize?.h ?? node.h : node.h);
     const color = colorOf(node.style, styles);
     if (!(original && original.color === color) && !(color === undefined && !('color' in card))) set('color', color);
-    if (!original && node.shape !== 'rounded' && node.shape !== 'rect') losses.add('Shapes, which canvas cards do not have');
+    if (!original && !node.container && node.shape !== 'rounded' && node.shape !== 'rect') losses.add('Shapes, which canvas cards do not have');
     return card;
   });
   const edges = (document.edges ?? []).map((edge) => {

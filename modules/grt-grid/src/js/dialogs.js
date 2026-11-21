@@ -1,6 +1,6 @@
 /** The dialogs of the Data, Format and Sheet commands: each asks, then hands the answer to the controller. */
 
-import { showPanel, showChoice, readFields, escapeHtml } from './core/panel.js';
+import { showPanel, showChoice, readFields, escapeHtml, tabbed } from './core/panel.js';
 import { columnName, a1, parseRef, parseRange } from './references.js';
 import { shownText } from './data.js';
 import { formatValue } from './format.js';
@@ -439,18 +439,21 @@ export async function formatCellsDialog(sheet) {
   const value = sheet.sheet.valueAt(row, col) ?? 1234.5;
   const known = NUMBER_FORMATS.some(([code]) => code === (look.format ?? ''));
   const check = (field, label) => `<label class="inline"><input type="checkbox" data-field="${field}"${look[field] ? ' checked' : ''}> ${label}</label>`;
-  const answer = showPanel(`Format ${areaLabel(sheet.selection)}`, `
+  const answer = showPanel(`Format ${areaLabel(sheet.selection)}`, tabbed(`
     <div class="format-preview"><span id="format-sample"></span></div>
+    <h3 class="form-heading">Numbers</h3>
     <div class="row">
       <label>Number<select data-field="formatChoice">${NUMBER_FORMATS.map(([code, label]) => option(code, label, look.format ?? '')).join('')}${option('custom', 'Custom', known ? '' : 'custom')}</select></label>
       <label>Format code<input data-field="formatCode" value="${escapeHtml(look.format ?? '')}" placeholder="#,##0.00"></label>
     </div>
+    <h3 class="form-heading">Font</h3>
     <div class="row">
       <label>Font<select data-field="font">${FONTS.map((f) => option(f, f || 'Default', look.font ?? '')).join('')}${look.font && !FONTS.includes(look.font) ? option(look.font, look.font, look.font) : ''}</select></label>
       <label>Size<input type="number" min="4" max="96" step="0.5" data-field="size" value="${look.size ?? ''}" placeholder="10"></label>
       <label>Text colour<input type="color" data-field="color" value="${look.color ?? '#000000'}"></label>
     </div>
     <div class="row">${check('bold', 'Bold')}${check('italic', 'Italic')}${check('underline', 'Underline')}${check('strike', 'Strikethrough')}</div>
+    <h3 class="form-heading">Alignment</h3>
     <div class="row">
       <label>Across<select data-field="align">${[['', 'By the value'], ['left', 'Left'], ['center', 'Centre'], ['right', 'Right'], ['justify', 'Justified']].map(([v, l]) => option(v, l, look.align ?? '')).join('')}</select></label>
       <label>Up and down<select data-field="valign">${[['', 'Bottom'], ['middle', 'Middle'], ['top', 'Top']].map(([v, l]) => option(v, l, look.valign ?? '')).join('')}</select></label>
@@ -458,15 +461,17 @@ export async function formatCellsDialog(sheet) {
       <label>Turn<input type="number" min="-90" max="90" data-field="rotate" value="${look.rotate ?? 0}"></label>
     </div>
     ${check('wrap', 'Wrap the text onto more lines')}
+    <h3 class="form-heading">Borders</h3>
     <div class="row">
       <label>Borders<select data-field="borders">${[['keep', 'As they are'], ['none', 'None'], ['outline', 'Around'], ['all', 'Around and inside'], ['inner', 'Inside'], ['bottom', 'Bottom'], ['top', 'Top']].map(([v, l]) => option(v, l, 'keep')).join('')}</select></label>
       <label>Line<select data-field="borderStyle">${[['1', 'Thin'], ['2', 'Medium'], ['3', 'Thick'], ['dashed', 'Dashed'], ['dotted', 'Dotted'], ['double', 'Double']].map(([v, l]) => option(v, l, '1')).join('')}</select></label>
       <label>Line colour<input type="color" data-field="borderColor" value="#000000"></label>
     </div>
+    <h3 class="form-heading">Background</h3>
     <div class="row">
       <label class="inline"><input type="checkbox" data-field="fill"${look.bg ? ' checked' : ''}> Fill</label>
       <label>Fill colour<input type="color" data-field="bg" value="${look.bg ?? '#ffff00'}"></label>
-    </div>`, 'Apply');
+    </div>`), 'Apply');
   const body = document.getElementById('panel-body');
   const sample = () => document.getElementById('format-sample');
   const read = () => {

@@ -52,6 +52,11 @@ export function tablesMenus({ actions, view, has }) {
         viewItem('query', 'Query'),
         viewItem('form', 'Form'),
         viewItem('report', 'Report'),
+        'separator',
+        { label: 'Tables', run: () => actions.showCategory('tables'), aliases: ['Database objects'] },
+        { label: 'Queries', run: () => actions.showCategory('queries') },
+        { label: 'Forms', run: () => actions.showCategory('forms') },
+        { label: 'Reports', run: () => actions.showCategory('reports') },
       ],
     },
     {

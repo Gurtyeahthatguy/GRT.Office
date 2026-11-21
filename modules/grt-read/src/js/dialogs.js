@@ -169,7 +169,7 @@ export function settingsForm(current, canPersist) {
 
     <p class="fp-note">
       ${canPersist
-    ? `Stored as a single settings.json holding these five values. There is no
+    ? `Stored as a single settings.json holding these values and the authorities you trust for signatures. There is no
        record of which documents were opened: no recent-files list, no
        history. The file says how the window looks and nothing about you.`
     : `<strong>Ephemeral mode:</strong> changes apply now but are not written to

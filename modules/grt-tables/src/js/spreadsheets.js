@@ -1,5 +1,7 @@
 /** Spreadsheets in and out: a sheet as rows to import, tables and results as sheets. */
 
+import { least } from './core/extent.js';
+
 const DAY = 86400000;
 const EPOCH = Date.UTC(1899, 11, 30);
 
@@ -59,8 +61,8 @@ export function sheetRows(sheet, styles = {}) {
     right = Math.max(right, col);
   }
   if (cells.length === 0) return [];
-  const top = Math.min(...cells.map(([row]) => row));
-  const left = Math.min(...cells.map(([, col]) => col));
+  const top = least(cells.map(([row]) => row));
+  const left = least(cells.map(([, col]) => col));
   const rows = Array.from({ length: bottom - top + 1 }, () => Array(right - left + 1).fill(''));
   for (const [row, col, text] of cells) rows[row - top][col - left] = text;
   // Rows left wholly empty between the data say nothing a table can keep.

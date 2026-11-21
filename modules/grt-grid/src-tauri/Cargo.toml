@@ -1,6 +1,6 @@
 [package]
 name = "grt-grid"
-version = "0.4.0"
+version = "0.5.0"
 description = "Local spreadsheet with formulas, recalculation and charts"
 authors = ["GRT Project"]
 license = "MIT"

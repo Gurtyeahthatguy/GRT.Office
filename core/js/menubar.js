@@ -30,7 +30,7 @@ const isOn = (test) => (typeof test === 'function' ? test() : test !== false);
 /**
  * Puts a menu bar in `host`.
  * @param {HTMLElement} host
- * @param {{label: string, items: Array}[]} menus each item {label, run, shortcut?, enabled?, checked?, aliases?, items?} or 'separator'
+ * @param {{label: string, items: Array}[]} menus each item {label, run, shortcut?, keys? (shown, left to the program), enabled?, checked?, aliases?, items?} or 'separator'
  */
 export function createMenubar(host, menus) {
   const doc = host.ownerDocument;
@@ -56,11 +56,11 @@ export function createMenubar(host, menus) {
     return button;
   });
 
-  /** The menu on screen: its index, its element, the items it lists, the one marked, and a submenu open from it. */
+  /** The menu on screen: its index, its element, the items it lists, the one marked, and the submenus open from it, outermost first. */
   let open = null;
 
   /** The rows of a list of items, each remembering its item and whether it can be chosen. */
-  function rows(element, items, onEnter) {
+  function rows(element, items, depth) {
     const entries = [];
     for (const item of items) {
       if (item === 'separator') {
@@ -72,20 +72,24 @@ export function createMenubar(host, menus) {
       row.setAttribute('role', checkable ? 'menuitemcheckbox' : 'menuitem');
       if (checkable) row.setAttribute('aria-checked', String(isOn(item.checked)));
       if (item.items) row.setAttribute('aria-haspopup', 'menu');
-      const enabled = item.items ? item.items.some((i) => i !== 'separator' && isOn(i.enabled ?? true)) : isOn(item.enabled ?? true);
+      const enabled = item.items ? hasEnabled(item.items) : isOn(item.enabled ?? true);
       if (!enabled) row.setAttribute('aria-disabled', 'true');
       const label = doc.createElement('span');
       label.textContent = item.label;
       const hint = doc.createElement('span');
       hint.className = 'grt-menu-hint';
-      hint.textContent = item.shortcut ?? '';
+      hint.textContent = item.shortcut ?? item.keys ?? '';
       row.append(label, hint);
       const entry = { row, item, enabled };
-      row.addEventListener('mouseenter', () => onEnter(entry));
+      row.addEventListener('mouseenter', () => {
+        markAt(depth, levelOf(depth).entries.indexOf(entry));
+        if (item.items) openSub(entry, depth);
+        else closeSubs(depth);
+      });
       row.addEventListener('mousedown', (event) => {
         event.preventDefault();
         if (!enabled) return;
-        if (item.items) openSub(entry);
+        if (item.items) openSub(entry, depth);
         else activate(item);
       });
       element.append(row);
@@ -94,23 +98,35 @@ export function createMenubar(host, menus) {
     return entries;
   }
 
-  function closeSub() {
-    if (!open?.sub) return;
-    open.sub.element.remove();
-    open.sub = null;
+  /** Whether a submenu has anything to choose, inside its own submenus too. */
+  function hasEnabled(items) {
+    return items.some((i) => i !== 'separator' && (i.items ? hasEnabled(i.items) : isOn(i.enabled ?? true)));
   }
 
-  /** Opens the submenu of a row beside it; `focusFirst` marks its first item, as the keyboard does. */
-  function openSub(entry, focusFirst = false) {
+  /** A level of the open menu: 0 is the menu itself, then each submenu. */
+  const levelOf = (depth) => (depth === 0 ? open : open.subs[depth - 1]);
+
+  /** Closes the submenus deeper than a level. */
+  function closeSubs(depth = 0) {
+    if (!open) return;
+    while (open.subs.length > depth) open.subs.pop().element.remove();
+  }
+
+  /** Opens the submenu of a row beside it, one level deeper than the row; `focusFirst` marks its first item, as the keyboard does. */
+  function openSub(entry, depth, focusFirst = false) {
     if (!open || !entry.item.items || !entry.enabled) return;
-    if (open.sub?.entry === entry) return;
-    closeSub();
+    if (open.subs[depth]?.entry === entry) {
+      if (focusFirst) markAt(depth + 1, open.subs[depth].entries.findIndex((e) => e.enabled));
+      return;
+    }
+    closeSubs(depth);
     const element = doc.createElement('div');
     element.className = 'grt-menu';
     element.setAttribute('role', 'menu');
     element.setAttribute('aria-label', entry.item.label);
     const sub = { entry, element, entries: [], at: -1 };
-    sub.entries = rows(element, entry.item.items, (e) => markSub(sub.entries.indexOf(e)));
+    open.subs.push(sub);
+    sub.entries = rows(element, entry.item.items, depth + 1);
     doc.body.append(element);
     const box = entry.row.getBoundingClientRect();
     const view = doc.defaultView;
@@ -118,19 +134,23 @@ export function createMenubar(host, menus) {
     const right = box.right + size.width + 4 > view.innerWidth ? box.left - size.width - 2 : box.right + 2;
     element.style.left = `${Math.round(Math.max(0, right))}px`;
     element.style.top = `${Math.round(Math.max(0, Math.min(box.top - 4, view.innerHeight - size.height - 4)))}px`;
-    open.sub = sub;
-    if (focusFirst) markSub(sub.entries.findIndex((e) => e.enabled));
+    if (focusFirst) markAt(depth + 1, sub.entries.findIndex((e) => e.enabled));
   }
 
-  function markSub(at) {
-    if (!open?.sub) return;
-    open.sub.entries.forEach((e, i) => e.row.classList.toggle('active', i === at));
-    open.sub.at = at;
+  /** Marks a row of a level, closing what was open below another row of it. */
+  function markAt(depth, at) {
+    if (!open) return;
+    const level = levelOf(depth);
+    if (!level) return;
+    if (open.subs[depth] && open.subs[depth].entry !== level.entries[at]) closeSubs(depth);
+    level.entries.forEach((e, i) => e.row.classList.toggle('active', i === at));
+    level.at = at;
+    level.entries[at]?.row.scrollIntoView?.({ block: 'nearest' });
   }
 
   function close() {
     if (!open) return;
-    closeSub();
+    closeSubs(0);
     open.element.remove();
     buttons[open.index].setAttribute('aria-expanded', 'false');
     doc.removeEventListener('keydown', onKey, true);
@@ -145,28 +165,16 @@ export function createMenubar(host, menus) {
     element.className = 'grt-menu';
     element.setAttribute('role', 'menu');
     element.setAttribute('aria-label', menu.label);
-    const entries = rows(element, menu.items, (entry) => {
-      mark(entries.indexOf(entry));
-      if (entry.item.items) openSub(entry);
-      else closeSub();
-    });
+    open = { index, element, entries: [], at: -1, subs: [] };
+    open.entries = rows(element, menu.items, 0);
     const box = buttons[index].getBoundingClientRect();
     element.style.left = `${Math.round(box.left)}px`;
     element.style.top = `${Math.round(box.bottom + 2)}px`;
     doc.body.append(element);
     buttons[index].setAttribute('aria-expanded', 'true');
-    open = { index, element, entries, at: -1, sub: null };
-    if (focusFirst) mark(entries.findIndex((e) => e.enabled));
+    if (focusFirst) markAt(0, open.entries.findIndex((e) => e.enabled));
     doc.addEventListener('keydown', onKey, true);
     doc.addEventListener('mousedown', onOutside, true);
-  }
-
-  function mark(at) {
-    if (!open) return;
-    if (open.sub && open.sub.entry !== open.entries[at]) closeSub();
-    open.entries.forEach((e, i) => e.row.classList.toggle('active', i === at));
-    open.at = at;
-    open.entries[at]?.row.scrollIntoView?.({ block: 'nearest' });
   }
 
   function activate(item) {
@@ -176,14 +184,17 @@ export function createMenubar(host, menus) {
 
   function onOutside(event) {
     if (!open) return;
-    if (open.element.contains(event.target) || open.sub?.element.contains(event.target) || host.contains(event.target)) return;
+    if (open.element.contains(event.target) || open.subs.some((sub) => sub.element.contains(event.target)) || host.contains(event.target)) return;
     close();
   }
 
   function onKey(event) {
     if (!open) return;
-    const sub = open.sub;
-    const { entries } = sub && sub.at >= 0 ? sub : open;
+    // The keys work in the deepest level that has a row marked.
+    let depth = open.subs.length;
+    while (depth > 0 && levelOf(depth).at < 0) depth -= 1;
+    const level = levelOf(depth);
+    const { entries } = level;
     const step = (from, by) => {
       for (let i = 1; i <= entries.length; i += 1) {
         const next = (from + by * i + entries.length * 2) % entries.length;
@@ -191,24 +202,23 @@ export function createMenubar(host, menus) {
       }
       return from;
     };
-    const inSub = Boolean(sub && sub.at >= 0);
-    const at = inSub ? sub.at : open.at;
-    const pick = inSub ? markSub : mark;
+    const at = level.at;
+    const pick = (i) => markAt(depth, i);
     switch (event.key) {
-      case 'Escape': if (inSub) { closeSub(); } else { close(); buttons[0].focus(); } break;
+      case 'Escape': if (depth > 0) { closeSubs(depth - 1); } else { close(); buttons[0].focus(); } break;
       case 'ArrowDown': pick(step(at, 1)); break;
       case 'ArrowUp': pick(step(at < 0 ? 0 : at, -1)); break;
       case 'ArrowRight':
-        if (!inSub && entries[at]?.item.items) openSub(entries[at], true);
+        if (entries[at]?.item.items) openSub(entries[at], depth, true);
         else show((open.index + 1) % menus.length, true);
         break;
       case 'ArrowLeft':
-        if (inSub) closeSub();
+        if (depth > 0) closeSubs(depth - 1);
         else show((open.index - 1 + menus.length) % menus.length, true);
         break;
       case 'Enter': case ' ':
         if (at >= 0 && entries[at].enabled) {
-          if (entries[at].item.items) openSub(entries[at], true);
+          if (entries[at].item.items) openSub(entries[at], depth, true);
           else activate(entries[at].item);
         }
         break;
@@ -241,8 +251,9 @@ export function createMenubar(host, menus) {
   const bound = () => menus.flatMap((menu) => leaves(menu.items)).filter(({ item }) => item.run && item.shortcut && chordOf(item.shortcut)).map(({ item }) => item);
   doc.defaultView.addEventListener('keydown', (event) => {
     if (open || event.defaultPrevented || busyElsewhere(doc, event)) return;
-    const item = bound().find((each) => matches(chordOf(each.shortcut), event));
-    if (!item || !isOn(item.enabled ?? true)) return;
+    // Two items may share keys in different places, as Writer's soft hyphen and Back One: the one that can run now answers.
+    const item = bound().find((each) => matches(chordOf(each.shortcut), event) && isOn(each.enabled ?? true));
+    if (!item) return;
     event.preventDefault();
     item.run();
   });
@@ -390,7 +401,7 @@ export function paletteEntries(menus) {
       out.push({
         id: [menu.label, ...path, item.label].join('/'),
         label: item.label,
-        hint: item.shortcut ?? '',
+        hint: item.shortcut ?? item.keys ?? '',
         detail: [menu.label, ...path].join(' › '),
         aliases: item.aliases ?? [],
         enabled: () => isOn(item.enabled ?? true),

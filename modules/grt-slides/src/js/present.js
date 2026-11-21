@@ -1,6 +1,6 @@
 /** Projection. */
 
-import { elementMarkup } from './export.js';
+import { elementMarkup, backgroundCss } from './export.js';
 
 export class Presentation {
   /**
@@ -149,7 +149,7 @@ export class Presentation {
     surface.className = 'present-surface';
     surface.style.width = `${this.model.canvas.w}px`;
     surface.style.height = `${this.model.canvas.h}px`;
-    surface.style.background = this.model.slideBackground(slide.id);
+    surface.style.background = backgroundCss(this.model, slide.id, this.images ?? new Map());
 
     surface.innerHTML = this.model.renderList(slide.id)
       .map((element) => elementMarkup(element, this.model, this.images ?? new Map()))

@@ -1,3 +1,4 @@
+import { clipboardItems } from './core/clipboard.js';
 /** Slides' menus, in the order and with the names of LibreOffice Impress's; PowerPoint's names and GRT's older ones are aliases. */
 
 /**
@@ -5,11 +6,14 @@
  */
 export function slidesMenus({ a, has }) {
   const t = a.text;
+  const d = a.drawing.act;
+  const dm = a.drawing.menus;
   return [
     {
       label: 'File',
       items: [
         { label: 'New', shortcut: 'Ctrl+N', run: a.newFile, aliases: ['New presentation'] },
+        { label: 'Start Center…', run: a.startCenter, aliases: ['Start Center', 'Start screen', 'Home'] },
         { label: 'Open…', shortcut: 'Ctrl+O', run: a.open },
         { label: 'Templates', items: [
           { label: 'Manage Templates', shortcut: 'Ctrl+Shift+N', run: a.templates, aliases: ['Templates…', 'Templates', 'New from template'] },
@@ -28,6 +32,7 @@ export function slidesMenus({ a, has }) {
         'separator',
         { label: 'Properties…', run: () => a.comments.properties(), aliases: ['Document properties', 'Statistics'] },
         { label: 'Inspect Document…', run: a.inspect, aliases: ['Document inspector', 'Remove personal information', 'Clean copy', 'Prepare for sharing'] },
+        { label: 'Digital Signatures…', run: a.signatures, aliases: ['Digital signatures', 'Signatures', 'Verify signature', 'Signed document'] },
       ],
     },
     {
@@ -36,7 +41,16 @@ export function slidesMenus({ a, has }) {
         { label: 'Undo', shortcut: 'Ctrl+Z', run: a.undo },
         { label: 'Redo', shortcut: 'Ctrl+Y', run: a.redo },
         'separator',
+        ...clipboardItems(),
+        'separator',
+        dm.selectFirst(),
+        'separator',
         { label: 'Delete', run: a.deleteSelection, aliases: ['Delete selection'] },
+        // While text is edited Shift+F3 is Cycle Case's, as in Impress.
+        { label: 'Duplicate…', shortcut: 'Shift+F3', run: d.duplicate, aliases: ['Duplicate'], enabled: () => !document.querySelector('.editing') },
+        'separator',
+        { label: 'Toggle Point Edit Mode', shortcut: 'F8', run: d.pointEdit, checked: () => a.drawing.layerMode() === 'points', aliases: ['Points', 'Edit Points'] },
+        { label: 'Gluepoints', run: d.glue, checked: () => a.drawing.layerMode() === 'glue', aliases: ['Glue points', 'Edit Glue Points'] },
         'separator',
         { label: 'Find Toolbar', shortcut: 'Ctrl+F', run: () => a.finder.open(), aliases: ['Find', 'Search', 'vnd.sun.star.findbar:FocusToFindbar'] },
         { label: 'Search Everywhere…', run: a.everywhere, aliases: ['Search everywhere', 'Search in files', 'Find in folder', 'Search all documents'] },
@@ -55,6 +69,11 @@ export function slidesMenus({ a, has }) {
         { label: 'Comments', run: a.toggleComments, checked: a.commentsShown, aliases: ['Show comments'] },
         'separator',
         { label: 'Sidebar', run: a.toggleSidebar, aliases: ['Properties sidebar'] },
+        { label: 'Grid and Helplines', items: [
+          { label: 'Display Grid', run: () => a.view('showGrid'), checked: () => a.viewOn('showGrid'), aliases: ['Grid', 'Show grid'] },
+          { label: 'Snap to Grid', run: () => a.view('snapToGrid'), checked: () => a.viewOn('snapToGrid') },
+          { label: 'Helplines While Moving', run: () => a.view('helplines'), checked: () => a.viewOn('helplines'), aliases: ['Guides while moving'] },
+        ] },
       ],
     },
     {
@@ -66,16 +85,16 @@ export function slidesMenus({ a, has }) {
         { label: 'OLE Object', items: [
           { label: 'Formula Object…', run: a.addFormula, aliases: ['Formula…', 'Equation', 'Math'] },
         ] },
-        { label: 'Shape', items: [
-          { label: 'Basic Shapes', run: a.addShape, aliases: ['Shape', 'Insert Shape'] },
-        ] },
+        dm.shape(),
         'separator',
         { label: 'Text Box', shortcut: 'F2', run: a.addText, aliases: ['Text box', 'Insert Text Box', 'Text'] },
+        { label: 'Snap Guide…', run: d.snapGuide, aliases: ['Snap Point/Line', 'Insert Snap Guide'] },
         'separator',
         { label: 'Special Character…', run: t.special, aliases: ['Special character', 'Symbol'] },
         { label: 'Comment', shortcut: 'Ctrl+Alt+C', run: () => a.comments.comment(), aliases: ['Insert Comment', 'Note', 'Annotation'] },
         { label: 'Hyperlink…', run: t.hyperlink, aliases: ['Insert Hyperlink', 'Link', 'URL'] },
-        { label: 'Formatting Mark', items: t.marks.map((m) => ({ label: m.label, shortcut: m.shortcut, run: () => t.insertChars(m.char) })) },
+        // Marks go into the text being edited; otherwise their keys move the object chosen, as in Impress.
+        { label: 'Formatting Mark', items: t.marks.map((m) => ({ label: m.label, shortcut: m.shortcut, run: () => t.insertChars(m.char), enabled: () => !!document.querySelector('.editing') })) },
         'separator',
         { label: 'Header and Footer…', run: a.footer, aliases: ['Header and footer…', 'Slide Number', 'Footer', 'Date and time', 'Page number'] },
       ],
@@ -164,10 +183,24 @@ export function slidesMenus({ a, has }) {
           'separator',
           { label: 'Properties…', run: a.editTable, aliases: ['Table rows and columns…', 'Table Properties'] },
         ] },
-        { label: 'Arrange', items: [
-          { label: 'Bring to Front', shortcut: 'Ctrl+Shift++', run: a.front, aliases: ['Bring to front'] },
-          { label: 'Send to Back', shortcut: 'Ctrl+Shift+-', run: a.back, aliases: ['Send to back'] },
+        { label: 'Align Text', items: [
+          { label: 'Top', run: () => a.valign('top'), aliases: ['Align text to top'] },
+          { label: 'Center', run: () => a.valign('middle'), aliases: ['Center vertically'] },
+          { label: 'Bottom', run: () => a.valign('bottom'), aliases: ['Align text to bottom'] },
         ] },
+        'separator',
+        dm.image(),
+        dm.textBoxAndShape({ points: false }),
+        { label: 'Text along Path', run: d.textPath, aliases: ['Fontwork', 'Text on a curve'] },
+        ...dm.nameItems(),
+        'separator',
+        { label: 'Rotate', run: d.rotateDialog, aliases: ['Rotation'] },
+        dm.flip('Flip', 'impress'),
+        dm.convert(),
+        dm.alignObjects(),
+        { label: 'Distribute Selection', run: d.distribute, aliases: ['Distribute…', 'Distribute'] },
+        dm.arrange('impress'),
+        dm.group('Group Shapes'),
         { label: 'Embed Font…', run: a.addFont, aliases: ['Add a font…'] },
       ],
     },
@@ -184,6 +217,9 @@ export function slidesMenus({ a, has }) {
         { label: 'Change Slide Master…', run: a.masters, aliases: ['Masters…', 'Master Slides'] },
         { label: 'Master Objects', run: a.masterObjects, checked: has.masterObjects, aliases: ['Master objects', 'Show master objects'] },
         { label: 'Section Starting Here…', run: a.section, aliases: ['Section starting here…', 'Section'] },
+        'separator',
+        { label: 'Set Background Image…', run: a.setBackgroundImage, aliases: ['Background image'] },
+        { label: 'Save Background Image…', run: a.saveBackgroundImage },
         'separator',
         { label: 'Show Slide', run: () => a.hideSlide(false), enabled: has.hidden, aliases: ['Show slide'] },
         { label: 'Hide Slide', run: () => a.hideSlide(true), enabled: () => !has.hidden(), aliases: ['Hide slide'] },
@@ -209,6 +245,8 @@ export function slidesMenus({ a, has }) {
         'separator',
         { label: 'Redact', run: a.redact, aliases: ['Cover text', 'Black out'] },
         { label: 'Auto-Redact…', run: a.autoRedact, aliases: ['Find sensitive data', 'Redact automatically'] },
+        'separator',
+        { label: 'Minimize Presentation…', run: a.minimize, aliases: ['Compress pictures', 'Make smaller', 'Presentation Minimizer'] },
         'separator',
         { label: 'Customize…', run: a.customize, aliases: ['Customize', 'Keyboard shortcuts', 'Shortcut keys', 'Key bindings'] },
         { label: 'Options…', shortcut: 'Ctrl+,', run: a.settings, aliases: ['Settings…', 'Preferences'] },

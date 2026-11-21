@@ -3,6 +3,7 @@
 import { NS, tag, xmlDocument } from '../xml.js';
 import { fromMm } from '../units.js';
 import { pageDimensions, DEFAULT_PAGE, normaliseRunning, normaliseHeadingNumbers, normaliseNoteSettings } from '../editor/model.js';
+import { writeDocxDrawing } from './docx-drawings.js';
 import { documentFields, runListsOf, referenceText } from '../editor/fields.js';
 import { ooxmlChartPart, OOXML_CHART_TYPE, REL_CHART, C as CHART } from './chart-object.js';
 import { mathmlToOmml, OMML } from './math-ml.js';
@@ -93,6 +94,9 @@ class WordWriter {
     ];
     this.media = new Map();
     this.drawings = 0;
+    // Shapes, pictures and text boxes over the text, each written where it is anchored; a picture used twice is one file.
+    this.textDrawings = Array.isArray(document.drawings) ? document.drawings : [];
+    this.mediaRels = new Map();
     this.nums = [];
     this.bands = [];
     this.footnotes = [];
@@ -125,9 +129,26 @@ class WordWriter {
     let columns = 1;
     let gap = 6;
     const sections = this.doc.blocks.some((block) => block.kind === 'section');
+    const known = new Set(this.doc.blocks.map((b) => b.id));
+    // Drawings on a page go in the first paragraph, placed from the page; Word has no anchor to a page of its own.
+    const onPages = this.textDrawings.filter((o) => o.anchor?.type === 'page' || ((o.anchor?.type === 'paragraph' || o.anchor?.type === 'char') && !known.has(o.anchor.block)));
+    if (onPages.some((o) => o.anchor?.type === 'page' && (o.anchor.page ?? 1) > 1)) this.losses.add('Drawings anchored to pages after the first, put on the first page');
+    let first = true;
     for (const block of this.doc.blocks) {
       if (block.kind !== 'section') {
-        body.push(...this.block(block));
+        const written = this.block(block);
+        const anchored = [...(first ? onPages.map((o) => (o.anchor?.type === 'page' ? o : { ...o, anchor: { type: 'page', page: 1 } })) : []),
+          ...this.textDrawings.filter((o) => (o.anchor?.type === 'paragraph' || o.anchor?.type === 'char') && o.anchor.block === block.id)];
+        if (anchored.length) {
+          const runs = anchored.map((o) => this.drawingRun(o)).filter(Boolean);
+          const paragraph = firstParagraph(written);
+          if (paragraph) {
+            const at = paragraph.children[0]?.name === 'w:pPr' ? 1 : 0;
+            paragraph.children.splice(at, 0, ...runs);
+          } else written.unshift(tag('w:p', {}, runs));
+        }
+        first = false;
+        body.push(...written);
         continue;
       }
       body.push(tag('w:p', {}, tag('w:pPr', {}, this.sectionBreak(columns, gap))));
@@ -160,6 +181,7 @@ class WordWriter {
     }
     const documentXml = xmlDocument(tag('w:document', {
       'xmlns:w': NS.w, 'xmlns:r': NS.r, 'xmlns:wp': NS.wp, 'xmlns:a': NS.a, 'xmlns:pic': NS.pic, 'xmlns:m': OMML,
+      ...(this.textDrawings.length ? { 'xmlns:wps': 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape', 'xmlns:wpg': 'http://schemas.microsoft.com/office/word/2010/wordprocessingGroup' } : {}),
     }, tag('w:body', {}, body, section)));
 
     const overrides = [
@@ -605,6 +627,11 @@ class WordWriter {
         return [tag('w:r', {}, style, tag(end ? 'w:endnoteReference' : 'w:footnoteReference', { 'w:id': String(id), 'w:customMarkFollows': object.mark ? '1' : null })),
           object.mark ? tag('w:r', {}, style, tag('w:t', {}, object.mark)) : null].filter(Boolean);
       }
+      case 'drawing': {
+        const o = this.textDrawings.find((d) => d.id === object.id);
+        const run = o ? this.drawingRun({ ...o, anchor: { type: 'as-char' } }) : null;
+        return run ? [run] : [];
+      }
       case 'math': {
         const omml = object.mathml ? mathmlToOmml(object.mathml, !!object.display) : null;
         if (omml) return [omml];
@@ -659,6 +686,29 @@ class WordWriter {
           : block.hangingAt ? tag('w:ind', { 'w:left': String(block.hangingAt) }) : null,
         block.align && block.align !== 'left' ? tag('w:jc', { 'w:val': ALIGN[block.align] }) : null),
       runs);
+  }
+
+  /** One drawing of the text as a run holding its w:drawing. */
+  drawingRun(o) {
+    const m = this.page.margins;
+    const px = (mm) => (mm * 96) / 25.4;
+    const drawing = writeDocxDrawing(o, {
+      nextId: () => { this.drawings += 1; return this.drawings; },
+      page: { left: px(m.left), top: px(m.top) },
+      picture: (resource) => {
+        if (this.mediaRels.has(resource)) return this.mediaRels.get(resource);
+        const bytes = this.images.get(resource);
+        if (!bytes) { this.losses.add('Pictures whose file was missing'); return null; }
+        const name = `media/${resource.split('/').pop()}`;
+        this.media.set(name, bytes);
+        const id = `rId${this.rels.length + 1}`;
+        this.rels.push({ id, type: REL.image, target: name });
+        this.mediaRels.set(resource, id);
+        return id;
+      },
+    });
+    if (!drawing) { this.losses.add(o.kind === 'scene3d' ? '3D objects, which Word cannot hold, left out' : 'Drawings that could not be written, left out'); return null; }
+    return tag('w:r', {}, drawing);
   }
 
   image(block) {
@@ -805,6 +855,7 @@ class WordWriter {
     return [run].map((run) => {
       const props = [
         run.cstyle && this.doc.charStyles?.[run.cstyle] ? tag('w:rStyle', { 'w:val': charId(run.cstyle) }) : null,
+        run.font ? tag('w:rFonts', { 'w:ascii': run.font, 'w:hAnsi': run.font, 'w:cs': run.font, 'w:eastAsia': run.font }) : null,
         run.bold ? tag('w:b', {}) : null,
         run.italic ? tag('w:i', {}) : null,
         run.strike ? tag('w:strike', {}) : null,
@@ -879,3 +930,13 @@ function splitLines(runs) {
   return lines;
 }
 
+/** The first paragraph among written elements, looking inside tables. */
+function firstParagraph(elements) {
+  for (const element of elements) {
+    if (!element || typeof element !== 'object') continue;
+    if (element.name === 'w:p') return element;
+    const inner = firstParagraph(element.children ?? []);
+    if (inner) return inner;
+  }
+  return null;
+}

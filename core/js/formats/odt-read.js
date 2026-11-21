@@ -2,7 +2,7 @@
 
 import { NS, kids, kid, attr, is, parseXml } from '../xml.js';
 import { parseLength } from '../units.js';
-import { normaliseRuns, pageSizeFields, normaliseTable, TABLE_LIMITS, OBJECT, styleKey, BULLETS, normalisePara } from '../editor/model.js';
+import { normaliseRuns, pageSizeFields, normaliseTable, TABLE_LIMITS, OBJECT, styleKey, BULLETS, normalisePara, pageDimensions } from '../editor/model.js';
 
 /** Paragraph styles Paper has its own name for, or that belong to something else; any other named style is one of the person's. */
 const KNOWN_PARAGRAPH = /^(Standard|Text_20_body|Text body|Default_20_Paragraph_20_Style|Heading.*|Title|Subtitle|Quotations|Quote|Preformatted.*|Source_20_Code|Caption|Figure|Table|Illustration|Drawing|Text|Table_20_(Contents|Heading)|Contents.*|Index.*|Footnote|Endnote|List.*|Numbering.*|Header|Footer|Frame_20_contents|Signature|Salutation|Horizontal_20_Line|Sender|Addressee|Marginalia|Hanging_20_indent|First_20_line_20_indent|Text_20_body_20_indent)$/;
@@ -16,6 +16,9 @@ import {
   outlineNumbered, headingNumbersOf, noteSettingsOf,
 } from './odf.js';
 import { declareExternal } from './external.js';
+import { isTextDrawing, anchorTypeOf, readTextDrawing, settleTextDrawing } from './odt-drawings.js';
+import { namedFills } from './draw-odf.js';
+import { cleanColours } from './colour.js';
 
 const PT_PER_MM = 72 / 25.4;
 const PX_PER_MM = 96 / 25.4;
@@ -38,13 +41,18 @@ export function readOdt(source) {
     styles: new OdfStyles(named, docs.content),
     masterStyles: new OdfStyles(named, docs.styles ?? docs.content),
     pkg: typeof source === 'string' ? null : source,
+    fills: namedFills((docs.styles ?? docs.content)?.documentElement),
   });
   declareExternal(source, reader.losses);
   return reader.read(docs.content);
 }
 
 class TextReader {
-  constructor({ styles, masterStyles, pkg }) {
+  constructor({ styles, masterStyles, pkg, fills = null }) {
+    this.fills = fills;
+    // Drawings anchored in the text, and those met in a paragraph before it has a block to anchor to.
+    this.drawings = [];
+    this.pendingDrawings = [];
     this.styles = styles;
     this.masterStyles = masterStyles;
     this.pkg = pkg;
@@ -90,15 +98,22 @@ class TextReader {
 
     const blocks = mergeCode(this.blocks);
     if (blocks.length === 0) blocks.push(paragraph('body', 'left', []));
+    this.anchorPending(blocks[blocks.length - 1]);
+    const page = this.page();
+    const size = pageDimensions(page);
+    const across = (page.orientation === 'landscape' ? size.h : size.w);
+    const geometry = { column: (across - page.margins.left - page.margins.right) * PX_PER_MM, left: page.margins.left * PX_PER_MM, right: page.margins.right * PX_PER_MM, top: page.margins.top * PX_PER_MM };
+    const drawings = this.drawings.map((o) => settleTextDrawing(o, geometry));
     return {
       document: {
         version: 1,
         type: 'paper',
-        page: this.page(),
+        page,
         styles: this.paperStyles(),
         charStyles: this.charStyles(),
         fonts: [],
         blocks,
+        ...(drawings.length ? { drawings } : {}),
         headingNumbers: headingNumbersOf(this.styles),
         noteSettings: noteSettingsOf(this.styles),
       },
@@ -168,6 +183,10 @@ class TextReader {
     }
     if (is(node, NS.table, 'table')) {
       this.table(node, context);
+      return;
+    }
+    if (isTextDrawing(node) && this.takesAsDrawing(node)) {
+      this.drawing(node, null);
       return;
     }
     if (is(node, NS.draw, 'frame') || is(node, NS.draw, 'a')) {
@@ -246,6 +265,8 @@ class TextReader {
     const segments = this.inline(node, own, baseline, { ...context, align, marks });
 
     const breakBefore = props['break-before'] === 'page' || (changesPage && this.blocks.length > 0);
+    const firstBlock = this.blocks.length;
+    const pending = this.pendingDrawings.length;
 
     segments.forEach((segment, index) => {
       if (segment.image) {
@@ -271,6 +292,62 @@ class TextReader {
       }
       this.blocks.push(block);
     });
+    // Drawings anchored to this paragraph hang on the first block it made.
+    if (pending || this.pendingDrawings.length) this.anchorPending(this.blocks[firstBlock]);
+  }
+
+  /** Drawings waiting for a paragraph anchored to a block, which then gets an id of its own. */
+  anchorPending(block) {
+    if (!block || !this.pendingDrawings.length) return;
+    block.id ??= makeId('b');
+    for (const o of this.pendingDrawings) o.anchor.block = block.id;
+    this.pendingDrawings = [];
+  }
+
+  /**
+   * Whether a draw element is read as a drawing over the text: shapes always; a picture or a frame of text when the text runs round it
+   * or it sits on the page, since one that stands alone in its line reads better as a block.
+   */
+  takesAsDrawing(node) {
+    if (node.localName !== 'frame') return true;
+    if (kid(node, NS.draw, 'object') || kid(node, NS.draw, 'object-ole')) return false;
+    const type = anchorTypeOf(node);
+    if (type === 'as-char') return false;
+    if (type === 'page') return true;
+    const props = this.styles.resolve('graphic', attr(node, NS.draw, 'style-name'), 'graphic');
+    return Boolean(props.wrap) && props.wrap !== 'none';
+  }
+
+  /** One drawing of the text read, kept with the document's drawings; anchored to a paragraph, it waits for the paragraph's block. */
+  drawing(node) {
+    const o = readTextDrawing(node, {
+      styles: this.styles, fills: this.fills, losses: this.losses, id: () => makeId('d'),
+      picture: (href) => this.drawingPicture(href),
+    });
+    if (!o) {
+      this.losses.add('Drawings and embedded objects');
+      return null;
+    }
+    if (this.drawings.length >= 2000) {
+      this.losses.add('Drawings past the two thousandth, left out');
+      return null;
+    }
+    this.drawings.push(o);
+    if (o.anchor.type === 'paragraph' || o.anchor.type === 'char') this.pendingDrawings.push(o);
+    return o;
+  }
+
+  /** A picture a drawing shows, added to the document's resources. */
+  drawingPicture(href) {
+    const path = internalHref(href);
+    const ext = path ? extensionOf(path) : null;
+    if (!path || !DRAWABLE.has(ext) || !this.pkg?.has(path)) {
+      this.losses.add(path ? 'Pictures in a format the program cannot show, such as WMF or EMF' : 'Pictures linked from outside the file');
+      return null;
+    }
+    const resource = this.uniqueResource(path.split('/').pop());
+    this.images.set(resource, this.pkg.bytes(path));
+    return resource;
   }
 
   /** A paragraph's content as segments: runs, broken where pictures and line breaks fall. */
@@ -294,10 +371,7 @@ class TextReader {
       if (look.highlight && look.highlight !== baseline.highlight) run.highlight = look.highlight;
       if (look.size && baseline.size && Math.abs(look.size - baseline.size) > 0.1) run.size = look.size;
       if (look.lang && look.lang !== baseline.lang) run.lang = look.lang;
-      if (look.font && baseline.font && look.font !== baseline.font
-        && fontKind(look.font, look.generic) !== fontKind(baseline.font, baseline.generic)) {
-        this.losses.add('Fonts that differ from the paragraph’s, shown in its font');
-      }
+      if (look.font && look.font !== baseline.font) run.font = look.font;
       current().runs.push(run);
     };
 
@@ -474,6 +548,14 @@ class TextReader {
               walk(child, props);
               continue;
           }
+        }
+        if (isTextDrawing(child) && this.takesAsDrawing(child)) {
+          const drawn = this.drawing(child, look);
+          if (drawn?.anchor.type === 'as-char') {
+            emit(OBJECT, look, { type: 'drawing', id: drawn.id });
+            state.lastSpace = false;
+          }
+          continue;
         }
         const formula = is(child, NS.draw, 'frame') ? this.formulaObject(kid(child, NS.draw, 'object')) : null;
         if (formula) {
@@ -932,6 +1014,7 @@ class TextReader {
     for (const child of kids(layout, NS.style, 'page-layout-properties')) {
       for (const attribute of child.attributes) props[attribute.localName] = attribute.value;
     }
+    cleanColours(props);
     const width = parseLength(props['page-width']) ?? 210;
     const height = parseLength(props['page-height']) ?? 297;
     const landscape = props['print-orientation'] === 'landscape' || width > height;

@@ -2,6 +2,7 @@
 
 import { ERROR, isError, isBlank, toNumber, collectNumbers, typedNumber, Matrix } from '../engine/values.js';
 import { criterion } from './criteria.js';
+import { least, greatest } from '../core/extent.js';
 
 const blockOf = (arg) => (arg?.matrix ?? new Matrix([[arg?.value ?? null]]));
 
@@ -13,7 +14,7 @@ function numbers(args) {
     if (arg.matrix || arg.reference) {
       const found = collectNumbers(arg.matrix ? arg.matrix.flat : arg.values);
       if (isError(found)) return found;
-      out.push(...found);
+      for (const n of found) out.push(n);
     } else {
       const n = typedNumber(arg.value);
       if (isError(n)) return n;
@@ -157,8 +158,8 @@ const SUBTOTAL_FUNCTIONS = {
   1: (l) => (l.length ? mean(l) : ERROR.div0),
   2: (l) => l.length,
   3: (l, all) => all,
-  4: (l) => (l.length ? Math.max(...l) : 0),
-  5: (l) => (l.length ? Math.min(...l) : 0),
+  4: (l) => (l.length ? greatest(l) : 0),
+  5: (l) => (l.length ? least(l) : 0),
   6: (l) => l.reduce((a, b) => a * b, 1),
   7: (l) => deviation(l, true),
   8: (l) => deviation(l, false),
@@ -202,8 +203,8 @@ function subtotal(args, context) {
 export const STATISTICS = {
   SUBTOTAL: subtotal,
   AVERAGEA: (args) => { const l = numbersA(args); return isError(l) ? l : l.length === 0 ? ERROR.div0 : mean(l); },
-  MAXA: (args) => { const l = numbersA(args); return isError(l) ? l : l.length === 0 ? 0 : Math.max(...l); },
-  MINA: (args) => { const l = numbersA(args); return isError(l) ? l : l.length === 0 ? 0 : Math.min(...l); },
+  MAXA: (args) => { const l = numbersA(args); return isError(l) ? l : l.length === 0 ? 0 : greatest(l); },
+  MINA: (args) => { const l = numbersA(args); return isError(l) ? l : l.length === 0 ? 0 : least(l); },
   VAR: (args) => variance(numbers(args), true),
   'VAR.S': (args) => variance(numbers(args), true),
   VARP: (args) => variance(numbers(args), false),
@@ -262,7 +263,7 @@ export const STATISTICS = {
     return isError(hits) ? hits : hits.length;
   },
   AVERAGEIFS: (args) => conditional(args[0], args.slice(1), (found) => (found.length === 0 ? ERROR.div0 : mean(found))),
-  MAXIFS: (args) => conditional(args[0], args.slice(1), (found) => (found.length === 0 ? 0 : Math.max(...found))),
-  MINIFS: (args) => conditional(args[0], args.slice(1), (found) => (found.length === 0 ? 0 : Math.min(...found))),
+  MAXIFS: (args) => conditional(args[0], args.slice(1), (found) => (found.length === 0 ? 0 : greatest(found))),
+  MINIFS: (args) => conditional(args[0], args.slice(1), (found) => (found.length === 0 ? 0 : least(found))),
   SUMIFS: (args) => conditional(args[0], args.slice(1), (found) => sum(found)),
 };

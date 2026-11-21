@@ -1,7 +1,7 @@
 /** Importing Mermaid flowcharts. */
 
 import { describe, it, expect } from 'vitest';
-import { parseMermaid } from '../src/js/mermaid.js';
+import { parseMermaid } from '../src/js/core/mermaid.js';
 import { GraphModel } from '../src/js/model.js';
 
 describe('Basic flowcharts', () => {
@@ -44,10 +44,10 @@ describe('Shapes', () => {
       C --> D([Stadium])`);
 
     const shapeOf = (id) => document.nodes.find((n) => n.id === id).shape;
-    expect(shapeOf('A')).toBe('rect');
+    expect(shapeOf('A')).toBe('rectangle');
     expect(shapeOf('B')).toBe('ellipse');
     expect(shapeOf('C')).toBe('diamond');
-    expect(shapeOf('D')).toBe('rounded');
+    expect(shapeOf('D')).toBe('round-rectangle');
   });
 
   it('does not read a stadium as a bracket containing a parenthesis', () => {

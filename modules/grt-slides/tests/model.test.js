@@ -232,3 +232,25 @@ describe('hidden slides and the box layouts', async () => {
     expect(slide2).toContain('idx="4"');
   });
 });
+
+describe('a file whose numbers and colours are not', () => {
+  it('opens with numbers for places and sizes and colours that are colours', () => {
+    const bad = '1"><b>x';
+    const model = new SlidesModel();
+    model.load({
+      version: 1, canvas: { w: bad, h: 1e12 }, theme: { background: bad, accent: '#C0FFEE' },
+      masters: [{ id: 'm1', background: bad, elements: [{ kind: 'shape', shape: 'rect', x: bad, y: '20', w: null, h: 50, fill: bad }] }],
+      slides: [{ id: 's1', background: bad, elements: [{ kind: 'text', x: bad, y: 5, w: 10, h: 10, color: bad, content: [{ text: 'x' }] }, { kind: 'shape', x: 1, y: 1, w: 1, h: 1, fill: 'none' }] }],
+    });
+    expect(model.canvas).toEqual({ w: 1920, h: 20000 });
+    expect(model.theme.background).toBe('#ffffff');
+    expect(model.theme.accent).toBe('#c0ffee');
+    const [shape] = model.masters[0].elements;
+    expect([shape.x, shape.y, shape.w, shape.h, shape.fill]).toEqual([0, 20, 100, 50, null]);
+    expect(model.masters[0].background).toBeNull();
+    const [text, none] = model.slides[0].elements;
+    expect([text.x, text.color]).toEqual([0, null]);
+    expect(none.fill).toBe('none');
+    expect(model.slides[0].background).toBeNull();
+  });
+});

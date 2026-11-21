@@ -10,6 +10,11 @@ const count = (svg, tag) => (svg.match(new RegExp(`<${tag}[ >]`, 'g')) ?? []).le
 const months = { categories: ['Jan', 'Feb', 'Mar'], series: [{ name: 'Rome', values: [1, 2, 3] }, { name: 'Milan', values: [4, 5, 6] }] };
 
 describe('the chart engine', () => {
+  it('draws the most series and points it takes, a quarter of a million values, without failing', () => {
+    const series = Array.from({ length: 64 }, (_, k) => ({ name: `S${k}`, values: Array.from({ length: 4000 }, (_, i) => (i % 97) - k) }));
+    expect(chartSvg({ type: 'line', categories: Array.from({ length: 4000 }, (_, i) => `c${i}`), series })).toMatch(/^<svg/);
+  });
+
   it('steps the scale by 1, 2 or 5 times a power of ten', () => {
     expect(niceScale(0, 87)).toMatchObject({ min: 0, max: 100, step: 20 });
     expect(niceScale(-3, 7).ticks).toEqual([-4, -2, 0, 2, 4, 6, 8]);

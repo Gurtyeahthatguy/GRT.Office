@@ -254,6 +254,7 @@ pub fn run() {
             grt_app::commands::list_templates,
             grt_app::commands::templates_folder,
             grt_app::commands::write_package,
+            grt_app::notes_graph::read_markdown_links,
             read_file,
             write_file_atomic,
             file_exists,

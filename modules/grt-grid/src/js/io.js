@@ -7,18 +7,28 @@ export const FILTERS = {
   ods: [{ name: 'OpenDocument spreadsheet', extensions: ['ods'] }],
   fods: [{ name: 'Flat OpenDocument spreadsheet', extensions: ['fods'] }],
   xlsx: [{ name: 'Excel workbook', extensions: ['xlsx'] }],
+  xls: [{ name: 'Excel 97-2003 workbook', extensions: ['xls'] }],
+  xlt: [{ name: 'Excel 97-2003 template', extensions: ['xlt'] }],
+  xml: [{ name: 'Excel 2003 XML workbook', extensions: ['xml'] }],
   ots: [{ name: 'OpenDocument spreadsheet template', extensions: ['ots'] }],
   xltx: [{ name: 'Excel template', extensions: ['xltx'] }],
   spreadsheets: [
-    { name: 'Spreadsheets', extensions: ['grt', 'ods', 'fods', 'xlsx', 'ots', 'xltx', 'xltm'] },
+    { name: 'Spreadsheets', extensions: ['grt', 'ods', 'fods', 'xlsx', 'ots', 'xltx', 'xltm', 'xls', 'xlt', 'xlw', 'ett', 'xml'] },
     { name: 'GRT spreadsheet', extensions: ['grt'] },
     { name: 'OpenDocument spreadsheet', extensions: ['ods', 'fods'] },
-    { name: 'Excel workbook', extensions: ['xlsx'] },
-    { name: 'Templates', extensions: ['ots', 'xltx', 'xltm'] },
+    { name: 'Excel workbook', extensions: ['xlsx', 'xls', 'xlw', 'xml'] },
+    { name: 'Templates', extensions: ['ots', 'xltx', 'xltm', 'xlt', 'ett'] },
   ],
   csv: [{ name: 'Comma-separated values', extensions: ['csv', 'tsv', 'txt'] }],
   pdf: [{ name: 'PDF', extensions: ['pdf'] }],
+  image: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'] }],
+  certificate: [{ name: 'Certificate', extensions: ['pem', 'crt', 'cer', 'der'] }],
 };
+
+/** A file the person chose, as bytes. */
+export async function readBytes(path) {
+  return new Uint8Array(await invoke('read_file', { path }));
+}
 
 function toPath(result) {
   if (!result) return null;

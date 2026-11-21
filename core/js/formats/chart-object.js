@@ -5,6 +5,7 @@ import { parseLength } from '../units.js';
 import { ROOT_NAMESPACES, ODF_VERSION } from './odf.js';
 import { KINDS, MAX_SERIES } from './chart-place.js';
 import { SERIES_COLORS } from '../charts.js';
+import { cleanColours } from './colour.js';
 
 export const CHART_NS = 'urn:oasis:names:tc:opendocument:xmlns:chart:1.0';
 export const CHART_MIMETYPE = 'application/vnd.oasis.opendocument.chart';
@@ -144,7 +145,7 @@ export function readOdfChartDocument(root) {
     const style = kids(kid(root, NS.office, 'automatic-styles'), NS.style, 'style').find((s) => attr(s, NS.style, 'name') === name);
     const props = {};
     for (const a of kid(style, NS.style, 'chart-properties')?.attributes ?? []) props[a.localName] = a.value;
-    return props;
+    return cleanColours(props);
   };
   const plotProps = styleOf(attr(plot, CHART_NS, 'style-name'));
   const kind = (attr(chart, CHART_NS, 'class') ?? '').replace(/^chart:/, '');

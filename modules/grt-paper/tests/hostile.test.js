@@ -166,3 +166,24 @@ describe('pictures', () => {
     expect(drawable(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>'))).toBe(true);
   });
 });
+
+describe('colours that are not colours', () => {
+  const cellAndRun = (colour) => `<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.3"><office:automatic-styles><style:style style:name="c" style:family="table-cell"><style:table-cell-properties fo:background-color="${colour}"/></style:style><style:style style:name="t" style:family="text"><style:text-properties fo:color="${colour}"/></style:style></office:automatic-styles><office:body><office:text><table:table><table:table-row><table:table-cell table:style-name="c"><text:p><text:span text:style-name="t">x</text:span></text:p></table:table-cell></table:table-row></table:table></office:text></office:body></office:document-content>`;
+  const cellOf = async (colour) => (await readOdt(odfPackage('text', cellAndRun(colour)))).document.blocks[0].rows[0].cells[0];
+
+  it('are dropped, so no file can put markup into a style or a dialog', async () => {
+    const cell = await cellOf('&quot;&gt;&lt;b&gt;x');
+    expect(cell.bg).toBeUndefined();
+    expect(cell.runs[0].color).toBeUndefined();
+    const word = await readDocx(docx('', '<w:p><w:r><w:rPr><w:color w:val="&quot;&gt;x"/><w:shd w:fill="1&quot;"/></w:rPr><w:t>x</w:t></w:r></w:p>'));
+    const run = word.document.blocks[0].runs[0];
+    expect(run.color ?? null).toBeNull();
+    expect(run.highlight ?? null).toBeNull();
+  });
+
+  it('are kept when they are #rrggbb', async () => {
+    const cell = await cellOf('#C0FFEE');
+    expect(cell.bg).toBe('#c0ffee');
+    expect(cell.runs[0].color).toBe('#c0ffee');
+  });
+});

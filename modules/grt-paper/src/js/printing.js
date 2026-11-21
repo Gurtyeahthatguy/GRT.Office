@@ -5,6 +5,7 @@ import { documentFields } from './core/editor/fields.js';
 import { fillPageNumbers } from './long.js';
 import { slotFor } from './core/editor/model.js';
 import { makePage, flowBreaks, flowPage, measuringColumn, picturesReady } from './core/print.js';
+import { drawingHolder } from './core/editor/drawings.js';
 
 const blockId = (element) => element.dataset.block ?? element.dataset.blockContainer;
 
@@ -44,6 +45,10 @@ export async function printablePages(model, images = new Map()) {
       },
     });
     footnoteBox.remove();
+    // The last page reaches down to its lowest drawing, as far as the page goes, so one below the last line is not cut off.
+    const last = windows[windows.length - 1];
+    const lowest = Math.max(0, ...[...column.querySelectorAll('.text-drawing')].map((d) => d.getBoundingClientRect().bottom - origin));
+    if (last && lowest > last.end) last.end = Math.min(last.start + box.contentHeight * MM, lowest);
 
     // Page numbers of the contents, the index and references, from where their targets landed.
     const pageAt = (top) => {
@@ -70,6 +75,12 @@ export async function printablePages(model, images = new Map()) {
       });
       for (const field of text.querySelectorAll('.field-page')) field.textContent = String(index + 1);
       page.append(text);
+      // Drawings anchored to this page, from the top left of its text area; those in the background under the text.
+      for (const o of (model.drawings ?? []).filter((d) => d.anchor?.type === 'page' && Math.min(d.anchor.page, windows.length) === index + 1)) {
+        const drawn = drawingHolder(o, { objects: model.drawings, image: (x) => images.get(x.resource) ?? null });
+        Object.assign(drawn.style, { left: `calc(${margins.left}mm + ${o.x}px)`, top: `calc(${margins.top}mm + ${o.y}px)`, zIndex: o.wrap === 'background' ? '0' : '2' });
+        if (o.wrap === 'background') page.prepend(drawn); else page.append(drawn);
+      }
       const own = footnotesIn(window.start, window.end);
       if (own.length) {
         const feet = document.createElement('div');

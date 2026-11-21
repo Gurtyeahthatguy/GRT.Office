@@ -1,6 +1,8 @@
 /** The suite's print engine. */
 
-import { PDFDocument, StandardFonts, rgb } from '../../vendor/pdf-lib.esm.js';
+import {
+  PDFDocument, StandardFonts, rgb, pushGraphicsState, popGraphicsState, rectangle, clip, endPath,
+} from '../../vendor/pdf-lib.esm.js';
 import { stripMetadata, auditBytes } from './metadata.js';
 
 /**
@@ -187,6 +189,17 @@ export async function renderToPdf(page, options = {}) {
             borderColor: rgb(0.75, 0.75, 0.75),
             borderWidth: 1,
           });
+          break;
+        }
+
+        if (item.stretch || item.crop) {
+          // A drawing object's picture fills its box; a cropped one is drawn whole and clipped to what shows.
+          const c = item.crop ?? { l: 0, t: 0, r: 0, b: 0 };
+          const fullW = item.w / Math.max(1 - c.l - c.r, 0.05);
+          const fullH = item.h / Math.max(1 - c.t - c.b, 0.05);
+          pdfPage.pushOperators(pushGraphicsState(), rectangle(item.x, flip(item.y + item.h), item.w, item.h), clip(), endPath());
+          pdfPage.drawImage(embedded, { x: item.x - c.l * fullW, y: flip(item.y + item.h) - c.b * fullH, width: fullW, height: fullH });
+          pdfPage.pushOperators(popGraphicsState());
           break;
         }
 

@@ -1,5 +1,7 @@
 /** The table designer, and the SQL it is about to run. */
 
+import { greatest } from './core/extent.js';
+
 /** The types lists, and what SQLite stores them as. */
 export const TYPES = [
   { id: 'TEXT', label: 'Text', sqlite: 'TEXT' },
@@ -223,7 +225,7 @@ export function guessType(declared) {
 export function inferSchema(rows, { sampleSize = 200 } = {}) {
   if (!rows || rows.length === 0) return { header: false, columns: [] };
 
-  const width = Math.max(...rows.map((row) => row.length));
+  const width = greatest(rows.map((row) => row.length));
   const header = looksLikeHeader(rows);
   const body = (header ? rows.slice(1) : rows).slice(0, sampleSize);
 

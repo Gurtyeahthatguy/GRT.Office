@@ -353,3 +353,36 @@ describe('functions that could leak or hang', () => {
     expect(run('=LEN(REPT("ab",1000))')).toBe(2000);
   });
 });
+
+describe('wildcards', () => {
+  it('match as LibreOffice reads *, ? and ~', () => {
+    const data = { A1: 'apple', A2: 'Apricot', A3: 'a*b', A4: 'banana' };
+    expect(run('=COUNTIF(A1:A4,"ap*")', data)).toBe(2);
+    expect(run('=COUNTIF(A1:A4,"?pple")', data)).toBe(1);
+    expect(run('=COUNTIF(A1:A4,"a~*b")', data)).toBe(1);
+    expect(run('=COUNTIF(A1:A4,"*an*a")', data)).toBe(1);
+    expect(run('=SEARCH("p*c","Apricot")')).toBe(2);
+    expect(run('=SEARCH("o?","Apricot",2)')).toBe(6);
+    expect(run('=SEARCHB("c*t","Apricot")')).toBe(5);
+    expect(run('=XLOOKUP("ban*",A1:A4,A1:A4,,2)', data)).toBe('banana');
+  });
+
+  it('take no long time with many stars on a long text', () => {
+    const start = performance.now();
+    expect(run(`=COUNTIF(A1,"${'*a'.repeat(12)}*b")`, { A1: 'a'.repeat(5000) })).toBe(0);
+    expect(run(`=SEARCH("${'a*'.repeat(12)}b",A1)`, { A1: 'a'.repeat(5000) })).toBe(ERROR.value);
+    expect(performance.now() - start).toBeLessThan(2000);
+  });
+});
+
+describe('ranges of hundreds of thousands of numbers', () => {
+  it('are summed, counted and ranked, not turned into #VALUE!', () => {
+    model = new GridModel();
+    engine = new Engine(model);
+    sheetId = model.sheet.id;
+    for (let r = 0; r < 300000; r += 1) engine.setValue(sheetId, r, 0, (r % 1000) - 1);
+    const formulas = ['=SUM(A1:A300000)', '=MAX(A:A)', '=MIN(A1:A300000)', '=MAXIFS(A1:A300000,A1:A300000,"<500")', '=MINA(A1:A300000)', '=SUBTOTAL(4,A1:A300000)', '=COUNT(A1:A300000)', '=LARGE(A1:A300000,1)'];
+    formulas.forEach((f, i) => engine.setFormula(sheetId, i, 2, f));
+    expect(formulas.map((_, i) => model.sheet.valueAt(i, 2))).toEqual([300 * (999 * 1000 / 2 - 1000), 998, -1, 499, -1, 998, 300000, 998]);
+  }, 120000);
+});

@@ -2,6 +2,37 @@
 
 import { Renderer, runElements, styleCss } from './core/editor/render.js';
 import { linkTarget } from './links.js';
+import { mermaidSvg } from './core/mermaid.js';
+import { drawingHolder } from './core/editor/drawings.js';
+import { cleanSketch } from './core/draw/sketch.js';
+
+/** The width a drawing is shown at, at most. */
+const DRAWING_WIDTH = 720;
+
+/** A drawing kept in the note as a code block of its own: shown as the picture, pressed to change it. */
+function drawingElement(block) {
+  const box = document.createElement('div');
+  box.className = 'block drawing-block';
+  box.dataset.block = block.id;
+  box.dataset.action = 'edit-drawing';
+  box.setAttribute('contenteditable', 'false');
+  box.title = 'A drawing: press to change it';
+  let drawing;
+  try { drawing = cleanSketch(JSON.parse((block.runs ?? []).map((r) => r.text).join(''))); } catch { drawing = null; }
+  if (!drawing) { box.textContent = 'A drawing that cannot be read'; return box; }
+  const page = document.createElement('div');
+  page.className = 'drawing-page';
+  Object.assign(page.style, { width: `${drawing.w}px`, height: `${drawing.h}px`, zoom: String(Math.min(1, DRAWING_WIDTH / drawing.w)) });
+  for (const o of [...drawing.objects].sort((a, b) => (a.z ?? 0) - (b.z ?? 0))) {
+    const holder = drawingHolder(o, { objects: drawing.objects });
+    Object.assign(holder.style, { left: `${o.x}px`, top: `${o.y}px` });
+    page.append(holder);
+  }
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', `A drawing of ${drawing.objects.length} object(s)`);
+  box.append(page);
+  return box;
+}
 
 const TONE_MARK = { note: 'i', warning: '!', idea: '*' };
 
@@ -20,6 +51,7 @@ export class NotesRenderer extends Renderer {
 
   blockElement(block, model, images) {
     if (block.kind === 'embed') return this.embedElement(block, model, images);
+    if (block.kind === 'code' && block.language === 'grt-drawing') return drawingElement(block);
     if (block.kind === 'raw') {
       const element = super.blockElement({ ...block, kind: 'code', style: 'code' }, model, images);
       element.classList.add('raw');
@@ -30,6 +62,15 @@ export class NotesRenderer extends Renderer {
     const element = block.kind === 'todo' ? this.todoElement(block, model)
       : block.kind === 'callout' ? this.calloutElement(block, model)
         : super.blockElement(block, model, images);
+
+    // A Mermaid block shows its diagram under the source, out of the text's way.
+    if (block.kind === 'code' && /^mermaid\b/i.test(block.language ?? '')) {
+      const diagram = document.createElement('div');
+      diagram.className = 'mermaid-diagram';
+      diagram.setAttribute('contenteditable', 'false');
+      diagram.innerHTML = mermaidSvg((block.runs ?? []).map((r) => r.text).join(''));
+      element.append(diagram);
+    }
 
     // Links are marked here, once, on whatever the renderer produced.
     if (block.kind !== 'code') {

@@ -147,7 +147,9 @@ export function parseExpression(source) {
     for (;;) {
       if (peek()?.value === '.') {
         take('.');
-        node = { type: 'member', object: node, name: take().value };
+        const name = take();
+        if (name?.type !== 'id') throw new Error('Expected a name after . in the formula');
+        node = { type: 'member', object: node, name: name.value };
       } else if (peek()?.value === '(') {
         take('(');
         const args = [];
@@ -177,7 +179,7 @@ export function parseExpression(source) {
 }
 
 const DAY = 86400000;
-const isDate = (v) => v instanceof Date;
+const isDate = (v) => v instanceof Date && !Number.isNaN(v.getTime());
 /** A link value: an object with its target, never a string, whose own `link` is a function. */
 const isLink = (v) => !!v && typeof v === 'object' && typeof v.link === 'string';
 const truthy = (v) => !(v === null || v === undefined || v === false || v === 0 || v === '' || (Array.isArray(v) && v.length === 0));
@@ -220,7 +222,6 @@ const text = (v) => (v === null || v === undefined ? '' : isDate(v) ? v.toISOStr
 
 /** The methods values answer to, by kind. */
 function method(value, name, args, file) {
-  const s = typeof value === 'string' ? value : null;
   const list = Array.isArray(value) ? value : null;
   const has = (needle) => (list ? list.some((v) => equal(v, needle) || (typeof v === 'string' && typeof needle === 'string' && v.toLowerCase() === needle.toLowerCase())) : String(value ?? '').toLowerCase().includes(String(needle ?? '').toLowerCase()));
   switch (name) {

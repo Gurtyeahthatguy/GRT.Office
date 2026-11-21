@@ -26,8 +26,13 @@ import {
 } from './dialogs.js';
 import {
   pickPdfToOpen, pickPdfToSave, pickDirectory, readFileBytes, writeFileBytes, readPdf, writePdf, fileExists,
-  runtimeInfo, onFilesDropped, baseName, withSuffix, joinPath,
+  runtimeInfo, onFilesDropped, baseName, withSuffix, joinPath, pickImageToOpen, pickCertificateToOpen,
 } from './io.js';
+import { formFields } from './forms.js';
+import { isSignedPdf, verifyPdfSignatures } from './core/signatures/pdf.js';
+import { showSignatures, signatureLine, trustedOf } from './core/signatures/ui.js';
+import { recogniser, wordsOf, OCR_LANGUAGES } from './ocr.js';
+import { stripMetadata as stripPictureMetadata } from './core/image-metadata.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -49,6 +54,8 @@ const thumbs = new Thumbnails(ui.thumbs, viewer);
 let model = null;
 /** The password the document is saved with, or null. */
 let password = null;
+/** The opened PDF as stored, kept when it is signed so the signatures can be checked again. */
+let signedBytes = null;
 let undo = null;
 let busy = false;
 let searchHits = [];
@@ -111,7 +118,32 @@ async function openPath(path) {
   await showDocument({ watermark: null, pageNumbers: null, metadata: null });
 
   document.title = `${baseName(path)} - GRT Read`;
+  // The signatures are over the file as stored, so a file opened with a password is checked in its sealed form.
+  signedBytes = null;
+  const stored = password ? await readFileBytes(path).catch(() => null) : bytes;
+  if (stored && isSignedPdf(stored)) {
+    signedBytes = stored;
+    const results = await verifyPdfSignatures(stored, trustedOf(settings())).catch(() => []);
+    const ok = results.length > 0 && results.every((r) => r.intact && r.whole !== false);
+    toast(`${results.map(signatureLine).join('; ') || 'A signature that could not be read'}. Saving writes a copy without signatures.`, !ok);
+    return;
+  }
   toast(`Opened ${baseName(path)}: ${pageCount} page${pageCount === 1 ? '' : 's'}`);
+}
+
+/** Digital Signatures: the opened PDF's signatures, checked again against the trusted authorities. */
+async function digitalSignatures() {
+  await showSignatures({
+    title: 'Digital signatures',
+    check: (trusted) => (signedBytes ? verifyPdfSignatures(signedBytes, trusted) : []),
+    settings,
+    saveSettings: () => updateSettings({ trustedCertificates: settings().trustedCertificates }),
+    pickCertificate: async () => {
+      const chosen = await pickCertificateToOpen();
+      return chosen ? readFileBytes(chosen) : null;
+    },
+    toast,
+  });
 }
 
 /** Opening another PDF drops the current one: ask first if it has unsaved work. */
@@ -131,6 +163,7 @@ async function openRecovered(file, meta) {
     sealedWith = opened.password;
   }
   const session = decodeSession(raw);
+  signedBytes = null;
 
   await viewer.reset();
   const counts = [];
@@ -146,7 +179,7 @@ async function openRecovered(file, meta) {
   for (let id = 1; id < session.sources.length; id += 1) {
     model.appendSource(session.sources[id], counts[id]);
   }
-  model.restore({ pages: session.pages, sourceCount: session.sources.length, dirty: true });
+  model.restore({ pages: session.pages, sourceCount: session.sources.length, forms: session.forms, dirty: true });
   await showDocument(session.exportOptions);
 
   const name = meta.name || 'Untitled';
@@ -292,19 +325,141 @@ function setMarkMode(mode) {
   ui.pages.classList.toggle('marking', viewer.markMode !== 'select');
   el('btn-highlight').setAttribute('aria-pressed', String(viewer.markMode === 'highlight'));
   el('btn-redact').setAttribute('aria-pressed', String(viewer.markMode === 'redact'));
+  for (const [id, kind] of [['btn-note', 'note'], ['btn-text', 'text'], ['btn-picture', 'image']]) el(id).setAttribute('aria-pressed', String(viewer.markMode === kind));
 
   if (viewer.markMode === 'redact') {
     toast('Redact: what you cover is deleted from the file, not hidden');
   } else if (viewer.markMode === 'highlight') {
     toast('Highlight: drag over the page. Nothing is removed');
+  } else if (viewer.markMode === 'note') {
+    toast('Note: drag where it goes, then write it');
+  } else if (viewer.markMode === 'text') {
+    toast('Text: drag the box it goes in, then write it');
+  } else if (viewer.markMode === 'image') {
+    toast('Signature: drag the box the picture goes in');
   }
 }
 
+/** What a note or a text says, asked for once its place is drawn. */
+async function askWords(type) {
+  const text = type === 'note' ? 'Note' : 'Text';
+  const extra = type === 'text' ? `<div class="form-grid"><label>Size<input type="number" data-field="size" min="4" max="200" value="12"></label>
+    <label>Colour<input type="color" data-field="color" value="#000000"></label></div>` : '';
+  if (!(await showPanel(text, `<label>${text}<textarea data-field="text" rows="5" maxlength="10000"></textarea></label>${extra}`, 'Add'))) return null;
+  const fields = readFields();
+  if (!fields.text.trim()) return null;
+  return type === 'text' ? { text: fields.text, size: Number(fields.size), color: fields.color } : { text: fields.text };
+}
+
 viewer.onMarkDrawn = (viewIndex, type, rect) => guard('Mark', async () => {
-  undo.do(() => model.addMark(viewIndex, type, rect));
+  let extra = {};
+  if (type === 'note' || type === 'text') {
+    extra = await askWords(type);
+    if (!extra) return;
+  } else if (type === 'image') {
+    const path = await pickImageToOpen('Choose the picture of a signature, or any picture');
+    if (!path) return;
+    const raw = await readFileBytes(path);
+    const png = raw[0] === 0x89 && raw[1] === 0x50;
+    const jpg = raw[0] === 0xff && raw[1] === 0xd8;
+    if (!png && !jpg) { toast('Choose a PNG or a JPEG picture'); return; }
+    // The picture goes in without what its camera or its program wrote into it.
+    let bytes = raw;
+    try { bytes = stripPictureMetadata(raw); } catch { /* kept as it came */ }
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    extra = { image: `data:image/${png ? 'png' : 'jpeg'};base64,${btoa(binary)}` };
+    setMarkMode('image');
+  }
+  undo.do(() => model.addMark(viewIndex, type, rect, extra));
   await rebuild();
   updatePageIndicator();
 });
+
+/**
+ * Recognise Text: the pictures of pages read by Tesseract, here, and their words laid invisibly over them when saved,
+ * so a scanned document can be searched and copied from.
+ */
+async function recogniseText() {
+  const ok = await showPanel('Recognise Text (OCR)', `
+    <fieldset><legend>Languages</legend>${Object.entries(OCR_LANGUAGES).map(([code, name]) => `<label class="check"><input type="checkbox" data-field="lang-${code}"${code === 'ita' || code === 'eng' ? ' checked' : ''}> ${name}</label>`).join('')}</fieldset>
+    <label>Pages<select data-field="scope"><option value="all">Every page</option><option value="chosen">The chosen pages</option></select></label>
+    <p class="hint">The recognition runs on this computer; nothing is sent anywhere and nothing is kept once it is done.</p>`, 'Recognise');
+  if (!ok) return;
+  const fields = readFields();
+  const languages = Object.keys(OCR_LANGUAGES).filter((code) => fields[`lang-${code}`]);
+  if (!languages.length) { toast('Choose a language'); return; }
+  const pages = fields.scope === 'all' ? model.visiblePages.map((_, i) => i) : targetPages();
+  const results = [];
+  let done = 0;
+  const worker = await recogniser(languages, (progress) => toast(`Recognising page ${done + 1} of ${pages.length}: ${Math.round(progress * 100)}%`));
+  try {
+    for (const viewIndex of pages) {
+      const step = model.visiblePages[viewIndex];
+      const doc = step ? viewer.docs.get(step.sourceId) : null;
+      if (!doc) continue;
+      const page = await doc.getPage(step.originalIndex + 1);
+      // About 200 dots an inch, the resolution Tesseract reads best, within a size the webview can draw.
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(200 / 72, 5000 / Math.max(base.width, base.height));
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      await page.render({ canvasContext: canvas.getContext('2d', { alpha: false }), viewport }).promise;
+      results.push({ viewIndex, words: await wordsOf(worker, canvas) });
+      canvas.width = 0;
+      canvas.height = 0;
+      done += 1;
+    }
+  } finally {
+    await worker.terminate();
+  }
+  undo.do(() => {
+    for (const { viewIndex, words } of results) {
+      const page = model.visiblePages[viewIndex];
+      // Recognised again, a page's old words give way to the new.
+      page.marks = page.marks.filter((m) => m.type !== 'ocr');
+      if (words.length) model.addMark(viewIndex, 'ocr', { x: 0, y: 0, width: 1, height: 1 }, { words });
+    }
+  });
+  await rebuild();
+  const total = results.reduce((n, r) => n + r.words.length, 0);
+  toast(`${total} word(s) recognised on ${results.length} page(s); save to keep them in the file`);
+}
+
+/** Fill Form: the fields of every PDF in the document, their answers written in for good when the file is saved. */
+async function fillForm() {
+  const all = [];
+  for (const [id, source] of model.sources.entries()) {
+    for (const field of await formFields(source.bytes)) all.push({ ...field, source: id, value: model.forms[id]?.[field.name] ?? field.value });
+  }
+  if (!all.length) { toast('This PDF has no form to fill'); return; }
+  const input = (f, i) => {
+    const key = `f${i}`;
+    if (f.kind === 'check') return `<label class="check"><input type="checkbox" data-field="${key}"${f.value ? ' checked' : ''}> ${escapeHtml(f.name)}</label>`;
+    if (f.kind === 'choice' || f.kind === 'radio') {
+      return `<label>${escapeHtml(f.name)}<select data-field="${key}"><option value=""></option>${f.options.map((o) => `<option${o === f.value ? ' selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select></label>`;
+    }
+    return f.multiline
+      ? `<label>${escapeHtml(f.name)}<textarea data-field="${key}" rows="3"${f.max ? ` maxlength="${f.max}"` : ''}>${escapeHtml(f.value)}</textarea></label>`
+      : `<label>${escapeHtml(f.name)}<input type="text" data-field="${key}" value="${escapeHtml(f.value)}"${f.max ? ` maxlength="${f.max}"` : ''}></label>`;
+  };
+  const ok = await showPanel('Fill Form', `<div class="form-fields">${all.map(input).join('')}</div>
+    <p class="hint">The answers become part of the pages when the file is saved, so every reader shows them the same and they cannot be changed by mistake.</p>`, 'OK');
+  if (!ok) return;
+  const fields = readFields();
+  undo.do(() => {
+    const forms = {};
+    all.forEach((f, i) => {
+      forms[f.source] ??= {};
+      forms[f.source][f.name] = f.kind === 'check' ? Boolean(fields[`f${i}`]) : String(fields[`f${i}`] ?? '');
+    });
+    model.forms = forms;
+    model.dirty = true;
+  });
+  toast(`${all.length} field(s) filled; they are written in when you save`);
+}
 
 function clearMarks() {
   return guard('Clear marks', async () => {
@@ -435,7 +590,11 @@ function runSearch() {
 // Producing bytes
 
 function buildOptions(audit = true) {
-  return { audit, ...exportOptions };
+  return {
+    audit, ...exportOptions, forms: model?.forms ?? {},
+    onDropped: (count) => toast(`${count} character(s) the standard font cannot write were left out of added text`),
+    onRefused: (names) => toast(`Fields that could not be written: ${names.slice(0, 5).join(', ')}`),
+  };
 }
 
 /** Counts the panel needs, which the bytes alone cannot reveal. */
@@ -485,6 +644,18 @@ async function saveDocument(forceDialog, { silent = false } = {}) {
     if (!path) return false;
   }
   if (silent && settings().fingerprintBeforeSave) return false;
+  // A signed file is never overwritten unasked: the copy written carries no signature.
+  if (signedBytes && path === model.path) {
+    if (silent) return false;
+    const choice = await showChoice(`Save over “${baseName(path)}”?`, `<p>This PDF is signed. GRT checks digital signatures and does
+      not make them, so the file written in its place carries none.</p>`, [
+      { id: 'cancel', label: 'Cancel' },
+      { id: 'copy', label: 'Save a copy…', primary: true },
+      { id: 'over', label: 'Save over it' },
+    ]);
+    if (choice === 'copy') return saveDocument(true);
+    if (choice !== 'over') return false;
+  }
 
   const revision = keeper.revision;
   const bytes = await buildBytesFromPlan(model, model.buildPlan(), buildOptions());
@@ -495,6 +666,8 @@ async function saveDocument(forceDialog, { silent = false } = {}) {
   }
 
   password = sealWith;
+  // The file written, which the document now is, carries no signature.
+  signedBytes = null;
   model.path = path;
   model.dirty = keeper.revision !== revision;
   undo.markSaved();
@@ -766,6 +939,12 @@ function commands() {
 
     needsDoc('Highlight mode', 'H', () => setMarkMode('highlight')),
     needsDoc('Redact mode', 'R', () => setMarkMode('redact')),
+    needsDoc('Add a note', 'N', () => setMarkMode('note')),
+    needsDoc('Add text', 'T', () => setMarkMode('text')),
+    needsDoc('Place a signature image or picture…', '', () => setMarkMode('image')),
+    needsDoc('Fill form…', '', () => guard('Fill form', fillForm)),
+    needsDoc('Recognise text (OCR)…', 'OCR', () => guard('Recognise text', recogniseText)),
+    needsDoc('Digital signatures…', '', () => guard('Digital signatures', digitalSignatures)),
     needsDoc('Clear marks on the selection', '', () => clearMarks()),
 
     needsDoc('Watermark and page numbers…', '', () => editStamp()),
@@ -804,6 +983,11 @@ el('btn-crop').onclick = () => cropPages();
 el('btn-highlight').onclick = () => setMarkMode('highlight');
 el('btn-redact').onclick = () => setMarkMode('redact');
 el('btn-clear-marks').onclick = () => clearMarks();
+el('btn-note').onclick = () => setMarkMode('note');
+el('btn-text').onclick = () => setMarkMode('text');
+el('btn-picture').onclick = () => setMarkMode('image');
+el('btn-form').onclick = () => guard('Fill form', fillForm);
+el('btn-ocr').onclick = () => guard('Recognise text', recogniseText);
 el('btn-metadata').onclick = () => editMetadata();
 el('btn-fingerprint').onclick = () => showFingerprint();
 el('btn-print').onclick = () => guard('Print', printDocument);
@@ -878,6 +1062,10 @@ document.addEventListener('keydown', (event) => {
     setMarkMode('highlight');
   } else if (event.key.toLowerCase() === 'r' && !typing && !ctrl && model) {
     setMarkMode('redact');
+  } else if (event.key.toLowerCase() === 'n' && !typing && !ctrl && model) {
+    setMarkMode('note');
+  } else if (event.key.toLowerCase() === 't' && !typing && !ctrl && model) {
+    setMarkMode('text');
   } else if (event.key === 'Escape') {
     // Escape leaves marking first, and only clears the selection once there
     // is no mode to leave.

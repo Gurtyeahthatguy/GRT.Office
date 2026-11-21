@@ -57,6 +57,11 @@ profile grt-notes /usr/bin/grt-notes {
   owner "@{HOME}/GRT Notes/" rw,
   owner "@{HOME}/GRT Notes/**" rwk,
 
+  # Backups on an external disk: its folders are browsed, and only .grtbackup files and their temporary twins are read or written.
+  /{,run/}media/*/{,**/} r,
+  owner /{,run/}media/*/**.grtbackup rwk,
+  owner /{,run/}media/*/**/.grt-write-* rw,
+
   deny @{HOME}/.ssh/{,**} rwklx,
   deny @{HOME}/.gnupg/{,**} rwklx,
   deny @{HOME}/.mozilla/{,**} rwklx,

@@ -2,6 +2,7 @@
 
 import { ERROR, isError, isBlank, toNumber, toText, toBoolean, compare, Matrix } from '../engine/values.js';
 import { columnName } from '../references.js';
+import { wildcard } from './criteria.js';
 
 /** An argument as a block, a single value as a block of one. */
 const blockOf = (arg) => (arg?.matrix ?? new Matrix([[arg?.value ?? null]]));
@@ -22,15 +23,7 @@ const rowsOf = (m) => m.data.map((row) => Array.from({ length: m.cols }, (_, c) 
 
 /** A text pattern with wildcards, for XLOOKUP's match mode 2. */
 function wildcardTest(needle) {
-  let out = '';
-  const text = String(needle);
-  for (let i = 0; i < text.length; i += 1) {
-    const c = text[i];
-    if (c === '~' && i + 1 < text.length) { i += 1; out += text[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); } else if (c === '*') out += '[\\s\\S]*';
-    else if (c === '?') out += '[\\s\\S]';
-    else out += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-  const pattern = new RegExp(`^${out}$`, 'i');
+  const pattern = wildcard(needle);
   return (value) => typeof value === 'string' && pattern.test(value);
 }
 

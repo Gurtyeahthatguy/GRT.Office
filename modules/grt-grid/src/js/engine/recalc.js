@@ -311,8 +311,8 @@ export class Engine {
         .filter((id) => this.formulas.has(id) && !(done.has(id) && !this.anchorsOver([...spilled]).includes(id))));
       if (next.size > 0) {
         const more = this.evaluateSet(next, round + 1);
-        evaluated.push(...more.evaluated);
-        cyclic.push(...more.cyclic);
+        for (const id of more.evaluated) evaluated.push(id);
+        for (const id of more.cyclic) cyclic.push(id);
       }
     }
 

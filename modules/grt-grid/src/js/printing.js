@@ -1,6 +1,8 @@
 /** Sheets on paper: which cells land on which page, drawn for the printer or as PDF. */
 
 import { svgToPrimitives } from './core/svg-primitives.js';
+import { drawingPrimitives } from './core/draw/print.js';
+import { drawingHolder, TEXT_DRAWING_DEFAULTS } from './core/editor/drawings.js';
 import { formatValue, alignmentFor } from './format.js';
 import { parseRef, parseRange, formatRange, a1 } from './references.js';
 import { makePage, paperSize } from './core/print.js';
@@ -51,9 +53,29 @@ export function formatRows(rows) {
   return rows.top === rows.bottom ? String(rows.top + 1) : `${rows.top + 1}:${rows.bottom + 1}`;
 }
 
-/** What a sheet prints when nothing narrower is asked for. */
-export function printedArea(sheet) {
-  return sheet.print.area ?? sheet.usedBounds();
+/**
+ * What a sheet prints when nothing narrower is asked for: its cells, and as far as its drawings and charts reach, as Calc prints them.
+ * @param {{x: number, y: number, width: number, height: number, sheetId: string}[]} objects in the sheet's pixels
+ */
+export function printedArea(sheet, objects = []) {
+  if (sheet.print.area) return sheet.print.area;
+  const used = sheet.usedBounds();
+  const own = objects.filter((o) => o.sheetId === sheet.id);
+  if (!own.length) return used;
+  const indexAt = (axis, pixels) => {
+    let at = 0;
+    let index = 0;
+    while (index < (axis === 'rows' ? 1048575 : 16383)) {
+      const size = axis === 'rows' ? sheet.rowHeight(index) : sheet.columnWidth(index);
+      if (at + size > pixels) return index;
+      at += size;
+      index += 1;
+    }
+    return index;
+  };
+  const bottom = indexAt('rows', Math.max(...own.map((o) => o.y + o.height)) - 1);
+  const right = indexAt('cols', Math.max(...own.map((o) => o.x + o.width)) - 1);
+  return { top: used?.top ?? 0, left: used?.left ?? 0, bottom: Math.max(used?.bottom ?? 0, bottom), right: Math.max(used?.right ?? 0, right) };
 }
 
 function range(from, to) {
@@ -163,7 +185,14 @@ function pageCharts(sheet, page, charts) {
   const y1 = lineStart(sheet, 'rows', page.rows[page.rows.length - 1] + 1);
   const repeat = page.repeat.reduce((sum, row) => sum + sheet.rowHeight(row), 0);
   return charts.filter((c) => c.sheetId === sheet.id && c.x >= x0 && c.x < x1 && c.y >= y0 && c.y < y1)
-    .map((c) => ({ ...c, x: c.x - x0, y: c.y - y0 + repeat }));
+    .map((c) => ({ ...c, x: c.x - x0, y: c.y - y0 + repeat, ...(c.object ? { object: moved(c.object, -x0, repeat - y0) } : {}) }));
+}
+
+/** A drawing moved onto a page, members of groups with it. */
+function moved(o, dx, dy) {
+  const out = { ...o, x: o.x + dx, y: o.y + dy };
+  if (o.children) out.children = o.children.map((c) => moved(c, dx, dy));
+  return out;
 }
 
 /** One printed page, drawn in the page's own DOM. */
@@ -206,6 +235,14 @@ function pageElement(sheet, styles, page, layout, setup, running, charts = []) {
   }
 
   for (const chart of pageCharts(sheet, page, charts)) {
+    if (chart.object) {
+      // A drawing of the sheet: over the cells, or under them when it is in the background.
+      const holder = drawingHolder(chart.object, { image: (o) => o.resource });
+      holder.classList.add('sheet-drawing');
+      Object.assign(holder.style, { left: `${chart.object.x}px`, top: `${chart.object.y}px` });
+      if (chart.object.background) { holder.style.zIndex = '0'; canvas.prepend(holder); } else canvas.append(holder);
+      continue;
+    }
     const frame = document.createElement('div');
     frame.className = 'print-chart';
     Object.assign(frame.style, { position: 'absolute', left: `${chart.x}px`, top: `${chart.y}px`, width: `${chart.width}px`, height: `${chart.height}px` });
@@ -277,6 +314,10 @@ export function pdfPages(planned, styles, charts = []) {
     const { xs, ys, cells } = pageCells(plan.sheet, styles, plan.page);
     const bottom = height - margin;
     const right = width - margin;
+    const onPage = pageCharts(plan.sheet, plan.page, charts);
+    const drawn = (o) => drawingPrimitives(o, { x: margin, y: margin, scale: k, defaults: TEXT_DRAWING_DEFAULTS });
+    // Drawings in the background go first, under the cells.
+    for (const item of onPage) if (item.object?.background) primitives.push(...drawn(item.object));
 
     for (const cell of cells) {
       const [x, y] = at(cell.x, cell.y);
@@ -311,9 +352,10 @@ export function pdfPages(planned, styles, charts = []) {
       }
     }
 
-    for (const chart of pageCharts(plan.sheet, plan.page, charts)) {
+    for (const chart of onPage) {
       const [cx, cy] = at(chart.x, chart.y);
       if (cx >= right || cy >= bottom) continue;
+      if (chart.object) { if (!chart.object.background) primitives.push(...drawn(chart.object)); continue; }
       primitives.push(...svgToPrimitives(chart.svg, { x: cx, y: cy, scale: k }));
     }
 

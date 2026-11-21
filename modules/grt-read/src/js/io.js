@@ -15,6 +15,22 @@ function toPath(result) {
   return null;
 }
 
+/** A picture to place, such as a signature: PNG or JPEG. */
+export async function pickImageToOpen(title = 'Choose a picture') {
+  const result = await invoke('plugin:dialog|open', {
+    options: { title, multiple: false, directory: false, filters: [{ name: 'Picture', extensions: ['png', 'jpg', 'jpeg'] }] },
+  });
+  return toPath(result);
+}
+
+/** A certificate to trust, in PEM or DER. */
+export async function pickCertificateToOpen(title = 'Trust a certificate') {
+  const result = await invoke('plugin:dialog|open', {
+    options: { title, multiple: false, directory: false, filters: [{ name: 'Certificate', extensions: ['pem', 'crt', 'cer', 'der'] }] },
+  });
+  return toPath(result);
+}
+
 /** Native "open file" dialog. */
 export async function pickPdfToOpen(title = 'Open PDF') {
   const result = await invoke('plugin:dialog|open', {

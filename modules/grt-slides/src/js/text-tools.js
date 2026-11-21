@@ -8,6 +8,9 @@ import {
   editMarkup, readEdit, offsetIn, selectIn, formatPart, mapPart, paragraphsIn, parasFor, setList, shiftLevel, moveParagraphs,
 } from './paragraphs.js';
 
+/** A letter or digit of a word, apostrophes inside it included. */
+const WORD = /[\p{L}\p{N}'’]/u;
+
 /**
  * @param {{model: () => Object, slideId: () => string, editing: () => ?{node: HTMLElement, id: string},
  *   chosen: () => Object[], change: Function, toast: Function, baseSize: (element: Object) => number}} app
@@ -120,9 +123,17 @@ export function textTools(app) {
   }
 
   function textCase(mode) {
-    apply((v, from, to) => {
-      if (from === to) return null;
-      const text = v.content.map((r) => r.text).join('').slice(from, to);
+    apply((v, start, end) => {
+      // With nothing chosen the word at the caret changes, as in Impress, and the caret stays.
+      const all = v.content.map((r) => r.text).join('');
+      let from = start;
+      let to = end;
+      if (from === to) {
+        while (from > 0 && WORD.test(all[from - 1])) from -= 1;
+        while (to < all.length && WORD.test(all[to])) to += 1;
+        if (from === to) return null;
+      }
+      const text = all.slice(from, to);
       const whole = changeCase(text, mode);
       let content;
       if (whole.length === text.length) {
@@ -133,7 +144,8 @@ export function textTools(app) {
           return { ...run, text: piece };
         }));
       } else content = mapPart(v.content, from, to, (runs) => runs.map((run) => ({ ...run, text: changeCase(run.text, mode) })));
-      return { ...v, content, to: from + content.map((r) => r.text).join('').length - (v.content.map((r) => r.text).join('').length - to) };
+      if (start === end) return { ...v, content, from: start, to: start };
+      return { ...v, content, to: from + content.map((r) => r.text).join('').length - (all.length - to) };
     });
   }
 

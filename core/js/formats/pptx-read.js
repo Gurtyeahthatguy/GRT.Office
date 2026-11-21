@@ -5,11 +5,12 @@ import { NS, kids, kid, is } from '../xml.js';
 import { Losses } from '../losses.js';
 import { relationships, mainPart, readPart, relIs } from './ooxml.js';
 import { fontKind } from './odf.js';
-import { presetOutline, mirrorOutline } from '../paths.js';
 import {
-  readDrawingTheme, readColorMap, colorOf, isTransparent, readXfrm, groupTransform, unwrap, toPx, customGeometry,
+  readDrawingTheme, readColorMap, colorOf, isTransparent, readXfrm, groupTransform, unwrap, toPx,
 } from './drawingml.js';
 import { declareExternal } from './external.js';
+import { readDrawingMl, linkOoxmlConnectors } from './draw-ooxml.js';
+import { greatest } from '../extent.js';
 
 const P = NS.p;
 const A = NS.a;
@@ -19,14 +20,6 @@ const COMMENT_UNITS = 576 / 96;
 const TABLE_URI = 'http://schemas.openxmlformats.org/drawingml/2006/table';
 const PT_TO_PX = 96 / 72;
 
-/** PowerPoint's shapes, as the ones Slides draws. */
-const SHAPES = {
-  rect: 'rect', roundRect: 'rounded', snipRoundRect: 'rounded', round1Rect: 'rounded', round2SameRect: 'rounded',
-  ellipse: 'ellipse', diamond: 'diamond', hexagon: 'hexagon', octagon: 'hexagon', triangle: 'triangle',
-  parallelogram: 'parallelogram', flowChartProcess: 'rect', flowChartDecision: 'diamond',
-  flowChartTerminator: 'rounded', flowChartAlternateProcess: 'rounded', flowChartPredefinedProcess: 'rect',
-  flowChartConnector: 'ellipse', flowChartInputOutput: 'parallelogram', flowChartPreparation: 'hexagon',
-};
 const LINES = new Set(['line', 'straightConnector1', 'bentConnector2', 'bentConnector3', 'curvedConnector3']);
 
 /**
@@ -231,6 +224,7 @@ class PptxReader {
 
     const elements = [];
     this.shapes(spTree(root), context, elements);
+    linkOoxmlConnectors(elements);
     elements.forEach((element, i) => { element.z = i + 1; });
 
     const showsLayout = root.getAttribute('showMasterSp') !== '0';
@@ -330,6 +324,10 @@ class PptxReader {
     if (node.localName === 'grpSp') {
       const xfrm = kid(kid(node, P, 'grpSpPr'), A, 'xfrm');
       if (Number(xfrm?.getAttribute('rot') ?? 0) !== 0) this.losses.add('Rotated groups, shown unrotated');
+      // A group of drawings stays a group; one with text, pictures of objects or placeholders is opened up.
+      const plain = [...node.getElementsByTagNameNS(P, 'txBody')].every((t) => !t.textContent.trim()) && !node.getElementsByTagNameNS(P, 'graphicFrame').length && !node.getElementsByTagNameNS(P, 'ph').length;
+      const group = plain ? readDrawingMl(node, this.drawingContext(context, place)) : null;
+      if (group) { out.push({ ...group, data: {} }); return; }
       this.shapes(node, context, out, groupTransform(xfrm, place));
       return;
     }
@@ -342,6 +340,11 @@ class PptxReader {
       return;
     }
     if (node.localName === 'cxnSp') {
+      const cxn = kid(kid(node, P, 'nvCxnSpPr'), P, 'cNvCxnSpPr');
+      if (kid(cxn, A, 'stCxn') || kid(cxn, A, 'endCxn')) {
+        const connector = readDrawingMl(node, this.drawingContext(context, place));
+        if (connector) { out.push({ ...connector, data: {} }); return; }
+      }
       this.line(node, context, out, place);
       return;
     }
@@ -359,26 +362,12 @@ class PptxReader {
       this.line(node, context, out, place);
       return;
     }
-    const style = kid(node, P, 'style');
-    const fill = this.fill(spPr, style, context);
-    const stroke = this.stroke(spPr, style, context);
     const text = this.text(node, ph, inherited, context, box);
-
-    const custom = geometry === 'custom'
-      ? customGeometry(kid(spPr, A, 'custGeom'), Number(kid(xfrm, A, 'ext')?.getAttribute('cx') ?? 0), Number(kid(xfrm, A, 'ext')?.getAttribute('cy') ?? 0))
-      : null;
-    const shapeFill = custom && !custom.filled ? 'none' : fill;
-    const drawn = geometry && (shapeFill !== 'none' || stroke);
-    if (drawn) {
-      if (geometry === 'custom' && !custom) this.losses.add('Freeform shapes, drawn as rectangles');
-      else if (geometry !== 'custom' && !SHAPES[geometry]) this.losses.add('Shapes Slides does not have, drawn as rectangles');
-      let outline = custom ? { shape: 'path', path: custom.path } : { shape: SHAPES[geometry] ?? 'rect' };
-      const asymmetric = (raw.flipH && ['path', 'parallelogram'].includes(outline.shape)) || (raw.flipV && ['path', 'triangle'].includes(outline.shape));
-      if (asymmetric) outline = { shape: 'path', path: mirrorOutline(presetOutline(outline.shape, outline.path), raw.flipH, raw.flipV) };
-      out.push({
-        id: this.id('e'), kind: 'shape', ...rounded(box), ...outline,
-        fill: shapeFill, ...(stroke ? { stroke: stroke.color, strokeWidth: stroke.width } : {}), data: {},
-      });
+    if (geometry) {
+      const drawn = readDrawingMl(node, { ...this.drawingContext(context, place), place: () => box, xfrm: raw });
+      if (drawn && drawn.kind !== 'text-only' && (drawn.fillLook?.type !== 'none' || drawn.line?.style !== 'none')) {
+        out.push({ ...drawn, ...rounded(drawn), data: {} });
+      }
     }
     if (text) {
       // A slide's own title or body placeholder stays one, so a layout can place it again.
@@ -387,6 +376,22 @@ class PptxReader {
       const placeholder = { title: 'title', ctrTitle: 'title', subTitle: 'subtitle', body: bodies ? `body${bodies + 1}` : 'body' }[type] ?? null;
       out.push({ id: this.id('e'), kind: 'text', ...rounded(box), ...text, ...(placeholder ? { placeholder } : {}), data: {} });
     }
+  }
+
+  /** What the drawing reader needs: where boxes land, colours by the slide's theme, pictures by relationship. */
+  drawingContext(context, place) {
+    return {
+      place,
+      color: (holder) => colorOf(holder, context.theme, context.colorMap),
+      fromEmu: (emu) => toPx(emu),
+      picture: (relId) => {
+        const rel = context.rels?.get(relId);
+        return rel && !rel.external ? this.image(rel.target) : null;
+      },
+      id: () => this.id('e'),
+      losses: this.losses,
+      group: (xfrm) => groupTransform(xfrm, place),
+    };
   }
 
   /** Where a slide's placeholder inherits from: its layout's, then its master's. */
@@ -465,16 +470,18 @@ class PptxReader {
     const box = place(raw);
     const fill = kid(node, P, 'blipFill');
     const blip = kid(fill, A, 'blip');
-    if (kid(fill, A, 'srcRect') && [...kid(fill, A, 'srcRect').attributes].some((a) => Number(a.value) !== 0)) {
-      this.losses.add('Cropped pictures, shown whole');
-    }
     if (node.getElementsByTagNameNS(P, 'videoFile').length > 0 || kid(kid(kid(node, P, 'nvPicPr'), P, 'nvPr'), A, 'videoFile')) {
       this.losses.add('Video and sound');
     }
     const rel = context.rels?.get(blip?.getAttributeNS(NS.r, 'embed'));
     const resource = rel && !rel.external ? this.image(rel.target) : null;
-    if (!resource) this.losses.add('Pictures that could not be read, left as empty frames');
-    out.push({ id: this.id('e'), kind: 'image', ...rounded(box), resource, fit: 'cover', data: {} });
+    if (!resource) {
+      this.losses.add('Pictures that could not be read, left as empty frames');
+      out.push({ id: this.id('e'), kind: 'image', ...rounded(box), resource, fit: 'fill', data: {} });
+      return;
+    }
+    const read = readDrawingMl(node, this.drawingContext(context, place)) ?? {};
+    out.push({ ...read, id: read.id ?? this.id('e'), kind: 'image', ...rounded(box), resource, fit: 'fill', data: {} });
   }
 
   /** A picture's bytes, stored once under a resource name of its own. */
@@ -512,7 +519,7 @@ class PptxReader {
     }
     const table = kid(data, A, 'tbl');
     const rows = kids(table, A, 'tr');
-    const cols = kids(kid(table, A, 'tblGrid'), A, 'gridCol').length || Math.max(...rows.map((tr) => kids(tr, A, 'tc').length), 1);
+    const cols = kids(kid(table, A, 'tblGrid'), A, 'gridCol').length || Math.max(greatest(rows.slice(0, 1000).map((tr) => kids(tr, A, 'tc').length)), 1);
     let size = null;
     const merges = [];
     const widths = kids(kid(table, A, 'tblGrid'), A, 'gridCol').slice(0, 64).map((g) => Number(g.getAttribute('w')));

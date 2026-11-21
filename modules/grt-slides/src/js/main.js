@@ -24,15 +24,18 @@ import { toHtml, slideToSvg, slideToPrintPage } from './export.js';
 import { describeFont, fontMediaType } from './fonts.js';
 import { UndoStack } from './core/undo.js';
 import { showPanel, showChoice, readFields, isDialogOpen, escapeHtml } from './core/panel.js';
+import { noteSignatures, packageSignatures, showSignatures } from './core/signatures/ui.js';
 import { readPackage, writePackage } from './core/package.js';
 import { withPassword, passwordFields, wirePasswordFields, passwordFrom, canProtect, PROTECTION } from './core/protection.js';
 import { readOdp, writeOdp } from './core/formats/odp.js';
 import { readPptx } from './core/formats/pptx-read.js';
 import { writePptx } from './core/formats/pptx-write.js';
+import { readPpt, writePpt } from './core/formats/ppt.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
 import { createMenubar, paletteEntries } from './core/menubar.js';
 import { aboutDialog, licencesDialog } from './core/about.js';
 import { templateManager } from './core/template-manager.js';
+import { startCenter } from './core/start-center.js';
 import { searchEverywhere } from './core/everywhere.js';
 import { applyShortcuts, customizeDialog } from './core/customize.js';
 import { wireToolbars } from './core/toolbar.js';
@@ -42,6 +45,10 @@ import { createSpellChecker } from './core/spelling.js';
 import { spellingOverItems } from './core/spelling-items.js';
 import { applyEdits } from './core/autocorrect.js';
 import { slidesMenus } from './menus.js';
+import { drawCommands } from './core/draw/commands.js';
+import { naturalSize } from './core/images.js';
+import { decodePixels, encodePixels } from './core/draw/image-filters.js';
+import { makeId } from './ids.js';
 import { THEMES } from './core/theme.js';
 import { Keeper, MODES } from './core/keeper.js';
 import { renderToPdf, mergePdfPages } from './core/pdf.js';
@@ -52,7 +59,7 @@ import { stripMetadata, neutralName } from './core/image-metadata.js';
 import {
   pickToOpen, pickToSave, readDocument, readResource, writeDocument, writeText,
   writeBytes, readFileBytes, readText, stagePart, clearStaged, fileExists,
-  runtimeInfo, onFilesDropped, baseName, withExtension, toDataUrl, FILTERS,
+  runtimeInfo, onFilesDropped, baseName, withExtension, toDataUrl, FILTERS, mediaTypeFor,
 } from './io.js';
 import { isTemplate, baseFormat, asTemplate } from './core/formats/templates.js';
 import { chartDialog, slideFormulaDialog, layoutDialog, mastersDialog } from './extras.js';
@@ -79,8 +86,8 @@ let images = new Map();
 let imageBytes = new Map();
 
 /** Formats a presentation can be saved back into. */
-const WRITABLE = new Set(['grt', 'odp', 'fodp', 'pptx', 'otp', 'potx']);
-const OPENABLE = /\.(grt|odp|fodp|pptx|otp|potx|potm)$/i;
+const WRITABLE = new Set(['grt', 'odp', 'fodp', 'pptx', 'otp', 'potx', 'ppt', 'pps', 'pot']);
+const OPENABLE = /\.(grt|odp|fodp|pptx|otp|potx|potm|ppt|pps|pot)$/i;
 
 function formatOf(path) {
   return (/\.([^.\\/]+)$/.exec(path ?? '')?.[1] ?? '').toLowerCase() || null;
@@ -91,6 +98,8 @@ function formatOf(path) {
  * read, and whether saving over it anyway was agreed to.
  */
 let file = { format: 'grt', losses: [], confirmed: false, password: null };
+/** The package of a signed file as it was opened, so its signatures can be checked again. */
+let signedPackage = null;
 
 // Notifications
 
@@ -135,11 +144,27 @@ async function guard(label, action) {
 let commentsHidden = false;
 
 function draw() {
-  renderer.draw(model, currentSlideId, interaction.selection, { ...interaction.extras, hideComments: commentsHidden }, images);
+  renderer.draw(model, currentSlideId, interaction.selection, { hideComments: commentsHidden, overlay: interaction.model ? interaction.overlay() : [] }, images);
   thumbs.draw(model, currentSlideId, images);
   el('notes').value = model.slide(currentSlideId)?.notes ?? '';
   tables.mark();
   refresh();
+}
+
+/** The grid, snapping and helplines as the settings say. */
+function applyView() {
+  interaction.snapEnabled = settings().snapToGrid;
+  interaction.helplines = settings().helplines;
+  el('surface').classList.toggle('show-grid', Boolean(settings().showGrid));
+}
+
+/** Where the one element chosen is and how big, in centimetres, as Impress's status bar says. */
+function placeText() {
+  if (interaction.selection?.size !== 1) return '';
+  const e = model.element(currentSlideId, [...interaction.selection][0]);
+  if (!e) return '';
+  const cm = (px) => (px / (96 / 2.54)).toFixed(2);
+  return `${cm(e.x)} / ${cm(e.y)} cm, ${cm(e.w)} × ${cm(e.h)} cm`;
 }
 
 function refresh() {
@@ -483,7 +508,7 @@ function addText() {
 function addShape() {
   change(() => {
     const created = model.addElement(currentSlideId, {
-      kind: 'shape', shape: 'rect', x: 300, y: 300, w: 500, h: 300,
+      kind: 'shape', shape: 'rectangle', x: 300, y: 300, w: 500, h: 300,
     });
     interaction.selection = new Set([created.id]);
   });
@@ -781,6 +806,7 @@ function step(direction) {
 function newDocument() {
   model = new SlidesModel();
   file = { format: 'grt', losses: [], confirmed: false, password: null };
+  signedPackage = null;
   undo = new UndoStack(model);
   keeper.watch(model);
   images = new Map();
@@ -841,6 +867,7 @@ async function openPath(path) {
   if (!opened) return;
   model.path = path;
   file = { format: 'grt', losses: [], confirmed: false, password: opened.password };
+  signedPackage = null;
   document.title = `${baseName(path)} - GRT Slides`;
   toast(`Opened ${baseName(path)}: ${model.slides.length} slide(s)`);
 }
@@ -849,11 +876,15 @@ async function openPath(path) {
 async function importDocument(path, given) {
   const template = isTemplate(given);
   const format = baseFormat(given);
-  if (!['odp', 'fodp', 'pptx'].includes(format)) throw new Error(`GRT Slides does not open .${format} files`);
+  if (!['odp', 'fodp', 'pptx', 'ppt', 'pps', 'pot', 'dps', 'dpt'].includes(format)) throw new Error(`GRT Slides does not open .${format} files`);
+  let signed = null;
   const opened = await withPassword(baseName(path), async (password) => {
     if (format === 'fodp') return readOdp(await readText(path));
+    if (['ppt', 'pps', 'pot', 'dps', 'dpt'].includes(format)) return readPpt(await readFileBytes(path));
     const pkg = await readPackage(path, { password });
-    return format === 'odp' ? readOdp(pkg) : readPptx(pkg);
+    const read = format === 'odp' ? readOdp(pkg) : readPptx(pkg);
+    signed = await noteSignatures(pkg, read.losses, settings());
+    return read;
   });
   if (!opened) return;
   const result = opened.value;
@@ -872,6 +903,7 @@ async function importDocument(path, given) {
     await stagePart(name, bytes);
   }
   model = new SlidesModel(result.document);
+  signedPackage = template ? null : signed;
   // A template starts a new presentation: nothing is saved back into it unless asked.
   model.path = template ? null : path;
   file = template ? { format: 'grt', losses: [], confirmed: false, password: null } : { format, losses: result.losses.lines(), confirmed: false, password: opened.password };
@@ -900,6 +932,7 @@ async function openRecovered(copy, meta) {
   const opened = await withPassword(meta.name || 'Untitled', (password) => loadDocument(copy, password));
   // Without its password the copy stays where it is, offered again next time.
   if (!opened) throw new Error('the copy is kept for next time');
+  signedPackage = null;
   model.path = meta.path ?? null;
   const format = formatOf(meta.path) ?? 'grt';
   file = {
@@ -936,6 +969,9 @@ const FORMAT_NAMES = {
   fodp: 'Flat OpenDocument presentation (.fodp)',
   otp: 'OpenDocument template (.otp)',
   potx: 'PowerPoint template (.potx)',
+  ppt: 'PowerPoint 97-2003 presentation (.ppt)',
+  pps: 'PowerPoint 97-2003 show (.pps)',
+  pot: 'PowerPoint 97-2003 template (.pot)',
 };
 
 /** Asks which format to save in, with or without a password, then where. */
@@ -990,6 +1026,12 @@ async function writeAs(path, format, password = null) {
     await writeText(path, text);
     return losses.lines();
   }
+  if (['ppt', 'pps', 'pot'].includes(format)) {
+    // PowerPoint 97's own password scheme is too weak to offer, so none is written.
+    const { bytes, losses } = writePpt(json, imageBytes);
+    await writeBytes(path, bytes);
+    return losses.lines();
+  }
   const { entries, losses } = baseFormat(format) === 'odp' ? writeOdp(json, imageBytes) : writePptx(json, imageBytes);
   await writePackage(path, isTemplate(format) ? asTemplate(entries, format) : entries, { protection: PROTECTION[format], password });
   return losses.lines();
@@ -1027,6 +1069,8 @@ async function save(forceDialog, { silent = false } = {}) {
   const revision = keeper.revision;
   if (!canProtect(format)) password = null;
   const lost = await writeAs(path, format, password);
+  // The file written, which the presentation now is, carries no signature.
+  signedPackage = null;
 
   const sameFile = path === model.path && format === file.format;
   model.path = path;
@@ -1154,7 +1198,7 @@ async function openSettings() {
       <input type="checkbox" data-field="autoShrinkText" ${current.autoShrinkText ? 'checked' : ''} />
     </div>
     <p class="fp-note">${canPersist()
-    ? 'Stored as a settings.json holding these five values. No record of which documents were opened.'
+    ? 'Stored as a settings.json holding these values, your shortcuts and the authorities you trust for signatures. No record of which documents were opened.'
     : '<strong>Ephemeral mode:</strong> changes apply now but are not written to disk.'}</p>`,
   'Apply');
   if (!confirmed) return;
@@ -1169,6 +1213,7 @@ async function openSettings() {
 
 function applySettings() {
   interaction.snapEnabled = settings().snapToGrid;
+  applyView();
   el('notes-panel').classList.toggle('hidden', !settings().showNotes);
 }
 
@@ -1451,6 +1496,96 @@ async function footerDialog() {
 
 // The menu bar, the same in every program, with Impress's names as aliases.
 
+// Drawing objects: the commands every program shares, with Slides' pictures kept as its other pictures are.
+const EXTENSIONS = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
+async function keepPicture(bytes, type) {
+  const name = await neutralName(bytes, `picture.${EXTENSIONS[type] ?? 'png'}`);
+  await stagePart(name, bytes);
+  images.set(name, toDataUrl(bytes, name));
+  imageBytes.set(name, bytes);
+  return name;
+}
+const drawing = drawCommands({
+  layer: interaction,
+  host: {
+    snapshot: () => model.snapshot(), commit: (before) => interaction.onCommit(before), redraw: () => draw(), makeId: () => makeId('e'),
+    page: () => model.canvas, selectionChanged: () => refresh(),
+  },
+  toast,
+  unit: { per: 1, label: 'px', inch: 96 },
+  images: {
+    bytes: (o) => (imageBytes.has(o.resource) ? { bytes: imageBytes.get(o.resource), type: mediaTypeFor(o.resource) } : null),
+    put: keepPicture,
+    href: (o) => images.get(o.resource),
+    natural: (o) => (imageBytes.has(o.resource) ? naturalSize(imageBytes.get(o.resource)) : null),
+    label: (o) => o.name ?? baseName(o.resource ?? 'Image'),
+    pick: async () => {
+      const path = await pickToOpen(FILTERS.image, 'Choose an image');
+      if (!path) return null;
+      return { bytes: stripMetadata(await readFileBytes(path)), type: mediaTypeFor(path), name: baseName(path) };
+    },
+    save: async (o) => {
+      const bytes = imageBytes.get(o.resource);
+      if (!bytes) { toast('The picture is missing'); return; }
+      const path = await pickToSave(`picture.${(o.resource ?? '').split('.').pop() || 'png'}`, FILTERS.image, 'Save Image');
+      if (path) { await writeBytes(path, stripMetadata(bytes)); toast(`Saved ${baseName(path)}`); }
+    },
+  },
+  guides: { add: (g) => model.addSnapGuide(currentSlideId, g) },
+});
+
+/** Tools, Minimize Presentation: every picture made again no larger than the slide shows it, as JPEG unless it needs transparency. */
+async function minimizePresentation() {
+  const html = '<p>Each picture is made again at the size it is shown, at the resolution chosen; pictures with transparency stay PNG.</p>'
+    + '<div class="form-grid"><label class="field"><span>Resolution</span><select data-field="dpi"><option value="96">96 DPI, for the screen</option><option value="150" selected>150 DPI, for projection</option><option value="300">300 DPI, for print</option></select></label>'
+    + '<label class="field"><span>JPEG quality</span><input type="number" data-field="quality" min="10" max="100" value="80"></label></div>';
+  if (!(await showPanel('Minimize Presentation', html, 'Minimize'))) return;
+  const f = readFields();
+  let before = 0;
+  let after = 0;
+  const done = new Map();
+  for (const slide of model.slides) {
+    for (const element of slide.elements) {
+      if (element.kind !== 'image' || !imageBytes.has(element.resource) || done.has(element.resource)) continue;
+      const bytes = imageBytes.get(element.resource);
+      before += bytes.length;
+      try {
+        const pixels = await decodePixels(bytes, mediaTypeFor(element.resource));
+        // The canvas is 96 pixels to the inch; the shown width in inches times the resolution is all a picture needs.
+        const want = Math.max(1, (element.w / 96) * Number(f.dpi));
+        const scale = Math.min(1, want / pixels.width);
+        let clear = false;
+        for (let i = 3; i < pixels.data.length; i += 4) if (pixels.data[i] < 255) { clear = true; break; }
+        const made = await encodePixels(pixels, { format: clear ? 'png' : 'jpeg', quality: Math.min(1, Math.max(0.1, f.quality / 100)), scale });
+        if (made.bytes.length < bytes.length) { done.set(element.resource, await keepPicture(made.bytes, made.type)); after += made.bytes.length; } else { done.set(element.resource, element.resource); after += bytes.length; }
+      } catch {
+        done.set(element.resource, element.resource);
+        after += bytes.length;
+      }
+    }
+  }
+  if (!done.size) { toast('There are no pictures to make smaller'); return; }
+  change(() => { for (const slide of model.slides) for (const element of slide.elements) if (element.kind === 'image' && done.has(element.resource)) element.resource = done.get(element.resource); });
+  toast(`Pictures went from ${Math.round(before / 1024)} KB to ${Math.round(after / 1024)} KB`);
+}
+
+/** Slide, Set Background Image: a picture filling the slide behind everything on it. */
+async function setBackgroundImage() {
+  const path = await pickToOpen(FILTERS.image, 'Choose a background image');
+  if (!path) return;
+  const resource = await keepPicture(stripMetadata(await readFileBytes(path)), mediaTypeFor(path));
+  change(() => model.setBackgroundImage(currentSlideId, resource));
+}
+
+/** Slide, Save Background Image: the slide's background picture, to a file. */
+async function saveBackgroundImage() {
+  const resource = model.slide(currentSlideId)?.backgroundImage;
+  const bytes = resource && imageBytes.get(resource);
+  if (!bytes) { toast('This slide has no background image'); return; }
+  const path = await pickToSave(`background.${resource.split('.').pop() || 'png'}`, FILTERS.image, 'Save Background Image');
+  if (path) { await writeBytes(path, stripMetadata(bytes)); toast(`Saved ${baseName(path)}`); }
+}
+
 const menus = slidesMenus({
   has: {
     sorter: () => el('workspace').classList.contains('sorter'),
@@ -1466,7 +1601,8 @@ const menus = slidesMenus({
     saveAs: () => guard('Save', () => save(true)),
     saveCopy: () => guard('Save', () => saveCopy()),
     saveTemplate: () => guard('Save', () => saveCopy('otp')),
-    templates: () => templateManager({ extensions: ['otp', 'potx', 'potm'], open: openConfirmed, toast }),
+    templates: () => templateManager({ extensions: ['otp', 'potx', 'potm', 'pot'], open: openConfirmed, toast }),
+    startCenter: () => startCenter({ kind: 'presentation', extensions: ['otp', 'potx', 'potm'], newDocument: () => guard('New', newDocumentConfirmed), openFile: () => el('btn-open').click(), open: openConfirmed, templates: () => templateManager({ extensions: ['otp', 'potx', 'potm', 'pot'], open: openConfirmed, toast }) }),
     everywhere: () => searchEverywhere({ kind: 'slides', open: openConfirmed, toast }),
     spelling: () => spellingOverItems({
       checker: spellChecker,
@@ -1520,6 +1656,8 @@ const menus = slidesMenus({
     sorterView: () => { el('workspace').classList.add('sorter'); draw(); },
     masters: () => masters(),
     toggleSidebar: () => { el('notes-panel').classList.toggle('hidden'); },
+    view: async (key) => { await updateSettings({ [key]: !settings()[key] }); applyView(); },
+    viewOn: (key) => Boolean(settings()[key]),
     addText: () => addText(),
     addImage: () => addImage(),
     addShape: () => addShape(),
@@ -1534,6 +1672,17 @@ const menus = slidesMenus({
     comments: notesOnSlides,
     redact: () => redactChosen(),
     inspect: () => guard('Inspect', inspectPresentation),
+    signatures: () => guard('Digital signatures', () => showSignatures({
+      title: 'Digital signatures',
+      check: (trusted) => (signedPackage ? packageSignatures(signedPackage, trusted) : []),
+      settings,
+      saveSettings: () => updateSettings({ trustedCertificates: settings().trustedCertificates }),
+      pickCertificate: async () => {
+        const chosen = await pickToOpen(FILTERS.certificate, 'Trust a certificate');
+        return chosen ? readFileBytes(chosen) : null;
+      },
+      toast,
+    })),
     autoRedact: () => guard('Auto-Redact', autoRedactDialog),
     redactedExport: () => guard('Export', redactedExport),
     toggleComments: () => { commentsHidden = !commentsHidden; draw(); },
@@ -1550,6 +1699,11 @@ const menus = slidesMenus({
     footer: () => footerDialog(),
     masterObjects: () => change(() => model.setMasterObjects(currentSlideId, Boolean(model.slide(currentSlideId)?.hideMaster))),
     stepSlide: (by) => stepSlide(by),
+    drawing,
+    minimize: () => guard('Minimize', minimizePresentation),
+    setBackgroundImage: () => guard('Background', setBackgroundImage),
+    saveBackgroundImage: () => guard('Background', saveBackgroundImage),
+    valign: (v) => { const ids = [...interaction.selection]; if (!ids.length) { toast('Select something first'); return; } change(() => model.setElementText(currentSlideId, ids, { valign: v })); },
     present: (from) => present(from),
     presenter: () => guard('Presenter', openPresenter),
     about: async () => aboutDialog({ name: 'GRT Slides', version: (await runtimeInfo()).version }),
@@ -1561,6 +1715,9 @@ toolbars = wireToolbars(document.querySelector('.toolbars'), menus);
 statusbar = createStatusBar(el('statusbar'), [
   { key: 'slide', title: 'The slide in front of you', text: () => `Slide ${Math.max(1, model.slides.findIndex((x) => x.id === currentSlideId) + 1)} of ${model.slides.length}` },
   { key: 'selected', title: 'What is selected', text: () => (interaction.selection?.size ? `${interaction.selection.size} selected` : '') },
+  { key: 'place', title: 'Position and size of the object chosen', text: () => placeText() },
+  { key: 'signature', title: 'The file was opened with digital signatures', text: () => (signedPackage ? 'Signed' : '') },
+  { key: 'zoom', title: 'How large the slide is shown', text: () => { const w = el('surface').getBoundingClientRect().width; return w && model.canvas?.w ? `${Math.round((w / model.canvas.w) * 100)}%` : ''; } },
   { key: 'master', title: 'The slide master', text: () => { const id = model.slide(currentSlideId)?.master; return (id && model.master(id)?.name) || 'Default'; } },
   { key: 'language', title: 'The language Spelling starts with', text: () => LANGUAGE_NAMES.get(settings().spellLanguage) ?? settings().spellLanguage ?? '' },
   { key: 'modified', title: 'The presentation has changes not yet saved', text: () => (model.dirty ? 'Unsaved changes' : ''), grow: true },
@@ -1734,7 +1891,18 @@ document.addEventListener('keydown', (event) => {
 
   const ctrl = event.ctrlKey || event.metaKey;
 
-  if (event.key === 'F5') {
+  // Arrows, Tab, Escape and Enter belong to the drawing layer first; Delete too while points are being edited.
+  if (!ctrl && (!['Delete', 'Backspace'].includes(event.key) || interaction.mode === 'points') && interaction.key(event)) {
+    event.preventDefault();
+    return;
+  }
+
+  // F2 edits the one text box chosen, as in Impress; Insert, Text Box still adds one.
+  const [only, ...more] = interaction.selection;
+  if (event.key === 'F2' && !ctrl && !event.shiftKey && !event.altKey && only && !more.length && model.element(currentSlideId, only)?.kind === 'text') {
+    event.preventDefault();
+    editText(only);
+  } else if (event.key === 'F5') {
     event.preventDefault();
     present(event.shiftKey ? null : 0);
   } else if (ctrl && event.key.toLowerCase() === 'k') {

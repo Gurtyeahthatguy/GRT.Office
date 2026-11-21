@@ -535,3 +535,14 @@ main {
 }
 .link-preview p { margin: 6px 0 0; white-space: pre-wrap; color: var(--text-dim); max-height: 12em; overflow: hidden; }
 .version-text { white-space: pre-wrap; max-height: 50vh; overflow-y: auto; font-size: 13px; border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
+
+/* A Mermaid block's diagram, drawn under its source. */
+.surface pre .mermaid-diagram { display: block; margin-top: 8px; padding: 8px; background: #fff; border-radius: 4px; overflow-x: auto; white-space: normal; user-select: none; -webkit-user-select: none; }
+.surface pre .mermaid-diagram svg { display: block; max-width: 100%; height: auto; }
+
+/* A drawing kept in the note, shown as its picture. */
+.surface .drawing-block { margin: 8px 0; cursor: pointer; }
+.surface .drawing-page { position: relative; background: #fff; border: 1px solid var(--border, #ccc); border-radius: 4px; overflow: hidden; }
+.surface .drawing-page .text-drawing { position: absolute; display: block; transform-origin: center; }
+.surface .drawing-page .text-drawing svg { position: absolute; left: 0; top: 0; }
+.surface .drawing-page .drawing-text { position: absolute; inset: 0; display: flex; flex-direction: column; padding: 4px 6px; box-sizing: border-box; overflow: hidden; font-size: 14.67px; line-height: 1.3; color: #000; white-space: pre-wrap; }

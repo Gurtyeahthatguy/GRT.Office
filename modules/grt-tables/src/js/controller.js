@@ -402,7 +402,8 @@ export class TablesController {
     const result = await this.read(`SELECT name, body FROM ${OBJECTS} WHERE kind = ? ORDER BY name COLLATE NOCASE`, [kind]);
     return (result?.rows ?? []).map(([name, body]) => {
       try {
-        return { name, ...JSON.parse(body) };
+        // The name is the row's own, whatever the stored body says.
+        return { ...JSON.parse(body), name };
       } catch {
         return { name };
       }

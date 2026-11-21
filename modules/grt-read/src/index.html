@@ -45,6 +45,14 @@
         <button id="btn-metadata" title="Set metadata deliberately">Metadata</button>
       </div>
 
+      <div class="group needs-doc" role="toolbar" aria-label="Annotations and forms">
+        <button id="btn-note" title="Add a note (N)" aria-pressed="false">Note</button>
+        <button id="btn-text" title="Add text (T)" aria-pressed="false">Text</button>
+        <button id="btn-picture" title="Place a signature image or picture; not a digital signature" aria-pressed="false">Signature image</button>
+        <button id="btn-form" title="Fill the form">Form</button>
+        <button id="btn-ocr" title="Recognise the text of scanned pages, on this computer">OCR</button>
+      </div>
+
       <div class="group needs-doc">
         <input id="search-input" type="search" placeholder="Find text" autocomplete="off" />
         <button id="btn-search" title="Search the document">Find</button>
@@ -88,7 +96,7 @@
       </div>
     </div>
 
-    <div id="toast" class="toast hidden"></div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
     <script type="module" src="js/main.js"></script>
   </body>

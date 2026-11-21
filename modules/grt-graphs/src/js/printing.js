@@ -24,6 +24,20 @@ function drawing(svg, view, width, height) {
  * @returns {{width: number, height: number, pages: HTMLElement[]}}
  */
 export function printablePages(model, setup) {
+  // Every page of the drawing, as Draw prints them, each on as many sheets as it needs.
+  const current = model.current ?? 0;
+  const out = { pages: [] };
+  for (let i = 0; i < (model.pages?.length ?? 1); i += 1) {
+    model.goToPage?.(i);
+    const part = pageSheets(model, setup);
+    Object.assign(out, { width: part.width, height: part.height });
+    out.pages.push(...part.pages);
+  }
+  model.goToPage?.(current);
+  return out;
+}
+
+function pageSheets(model, setup) {
   const paper = paperSize(setup);
   const margin = Math.max(0, setup.margin ?? 10);
   const innerW = paper.width - 2 * margin;

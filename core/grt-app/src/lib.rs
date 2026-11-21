@@ -1,5 +1,7 @@
 //! What every GRT program's backend shares: the close guard, recovery copies and packages.
 
+pub mod backup;
+pub mod clipboard;
 pub mod close;
 pub mod commands;
 #[cfg(feature = "everywhere")]
@@ -10,6 +12,7 @@ mod gz;
 pub mod spelling;
 #[cfg(feature = "writing-tools")]
 pub mod wordtools;
+pub mod notes_graph;
 pub mod package;
 pub mod print;
 pub mod recovery;

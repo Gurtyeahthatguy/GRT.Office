@@ -252,14 +252,17 @@ describe('An element on the page', () => {
   });
 
   it('draws a freeform shape from its outline, and turns it in the PDF as on screen', async () => {
-    const { elementMarkup, shapeOutlineOnPage } = await import('../src/js/export.js');
+    const { elementMarkup } = await import('../src/js/export.js');
+    const { pagePaths } = await import('../src/js/core/draw/render.js');
     const model = new SlidesModel();
+    // An outline of the older kind, in a 0 to 100 box, becomes a path of its own nodes.
     const element = model.addElement(model.slides[0].id, { kind: 'shape', shape: 'path', path: 'M 0 0 L 100 0 L 0 100 Z', x: 100, y: 100, w: 200, h: 100 });
+    expect(element.kind).toBe('path');
     const holder = document.createElement('div');
     holder.innerHTML = elementMarkup(element, model);
-    expect(holder.querySelector('path').getAttribute('d')).toBe('M 0 0 L 100 0 L 0 100 Z');
-    expect(shapeOutlineOnPage(element)).toBe('M 100 100 L 300 100 L 100 200 Z');
+    expect(holder.querySelector('path').getAttribute('d')).toBe('M0 0L200 0L0 100L0 0Z');
+    expect(pagePaths(element)[0].d).toBe('M100 100L300 100L100 200L100 100Z');
     element.rotation = 90;
-    expect(shapeOutlineOnPage(element)).toBe('M 250 50 L 250 250 L 150 50 Z');
+    expect(pagePaths(element)[0].d).toBe('M250 50L250 250L150 50L250 50Z');
   });
 });

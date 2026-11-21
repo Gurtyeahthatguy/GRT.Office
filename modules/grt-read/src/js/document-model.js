@@ -10,6 +10,8 @@ export class DocumentModel {
     // Sources are kept whole and never mutated.
     this.sources = [{ id: 0, bytes }];
     this.path = path;
+    // Answers to the forms of each source, by field name, written in when the file is saved.
+    this.forms = {};
     this.pages = Array.from({ length: pageCount }, (_, i) => ({
       sourceId: 0,
       originalIndex: i,
@@ -116,13 +118,25 @@ export class DocumentModel {
    * @param {'highlight'|'redact'} type
    * @param {{x: number, y: number, width: number, height: number}} rect
    */
-  addMark(viewIndex, type, rect) {
+  addMark(viewIndex, type, rect, extra = {}) {
     const page = this.visiblePages[viewIndex];
     if (!page) throw new RangeError(`Page ${viewIndex} does not exist`);
     if (rect.width <= 0.001 || rect.height <= 0.001) return;
 
+    // What a note, a text or a picture carries besides its place.
+    const carried = {};
+    if (typeof extra.text === 'string') carried.text = extra.text.slice(0, 10000);
+    if (Number.isFinite(Number(extra.size))) carried.size = Math.max(4, Math.min(200, Number(extra.size)));
+    if (/^#[0-9a-f]{6}$/i.test(extra.color ?? '')) carried.color = extra.color;
+    if (typeof extra.image === 'string' && /^data:image\/(png|jpeg);base64,/.test(extra.image)) carried.image = extra.image;
+    if (Array.isArray(extra.words)) {
+      const unit = (v) => Number.isFinite(v) && v >= 0 && v <= 1;
+      carried.words = extra.words.slice(0, 20000).filter((w) => typeof w?.text === 'string' && [w.x, w.y, w.w, w.h].every(unit))
+        .map((w) => ({ text: w.text.slice(0, 200), x: w.x, y: w.y, w: w.w, h: w.h }));
+    }
     page.marks.push({
       type,
+      ...carried,
       rect: {
         x: clampFraction01(rect.x),
         y: clampFraction01(rect.y),
@@ -239,6 +253,7 @@ export class DocumentModel {
         marks: p.marks.map((m) => ({ ...m, rect: { ...m.rect } })),
       })),
       sourceCount: this.sources.length,
+      forms: structuredClone(this.forms ?? {}),
       dirty: this.dirty,
     };
   }
@@ -251,6 +266,7 @@ export class DocumentModel {
     // Sources added after the snapshot are dropped; sources are only ever
     // appended, so truncating is enough to undo an append.
     this.sources.length = snapshot.sourceCount ?? this.sources.length;
+    this.forms = structuredClone(snapshot.forms ?? {});
     this.dirty = snapshot.dirty;
   }
 }

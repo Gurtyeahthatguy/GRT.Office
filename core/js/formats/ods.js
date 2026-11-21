@@ -14,8 +14,12 @@ import { declareExternal } from './external.js';
 import { clearSpilled } from './spills.js';
 import { readOdsConditions, writeOdsConditions, readOdsValidations, writeOdsValidations } from './ods-rules.js';
 import { readOdsPivots, writeOdsPivots } from './ods-pivots.js';
-import { readOdsCharts, writeOdsCharts, hasOtherFrames } from './ods-charts.js';
+import { readOdsCharts, writeOdsCharts } from './ods-charts.js';
+import { readOdsDrawings, writeOdsDrawings, packagePicture, fromDataUrl } from './sheet-drawings.js';
+import { namedFills } from './draw-odf.js';
+import { internalHref, toBase64 } from './odf.js';
 import { cleanLook, withoutDefaults, sameLook, borderFromOdf, borderToOdf, SIDES } from './cell-look.js';
+import { cleanColours } from './colour.js';
 
 const PX_PER_MM = 96 / 25.4;
 const DEFAULT_WIDTH = 96;
@@ -25,6 +29,8 @@ const DAY = 86400000;
 /** Rows and columns a file may say are repeated, past which only blanks follow. */
 const ROW_LIMIT = 1048576;
 const COLUMN_LIMIT = 16384;
+/** The most cells the copies of one repeated row may make. */
+const REPEATED_CELLS = 100000;
 
 // Reading
 
@@ -57,6 +63,18 @@ export function readOds(source) {
   const sheets = tables.map((table) => readTable(table, reader, frozen));
   if (sheets.length === 0) throw new Error('This spreadsheet has no sheets');
   const charts = readOdsCharts(tables, sheets, typeof source === 'string' ? null : source, losses);
+  // Shapes, pictures and text boxes on each sheet, by cell or on the page; pictures kept inside the document.
+  const fills = namedFills((docs.styles ?? docs.content)?.documentElement);
+  let drawingCount = 0;
+  const drawings = tables.flatMap((table, i) => readOdsDrawings(table, i, {
+    styles, fills, losses,
+    id: () => { drawingCount += 1; return `d${drawingCount}`; },
+    picture: (href) => {
+      const found = typeof source === 'string' ? null : packagePicture(source, internalHref(href));
+      if (!found) losses.add('Pictures in sheets that could not be read, left out');
+      return found;
+    },
+  }));
   readOdsPivots(body, sheets, losses);
   readFilters(body, sheets, losses);
   const names = readNames(body, losses);
@@ -64,7 +82,7 @@ export function readOds(source) {
   const gridStyles = {};
   for (const [name, style] of reader.gridStyles) gridStyles[name] = style;
   return {
-    document: { version: 1, type: 'grid', sheets, styles: gridStyles, charts, ...(Object.keys(names).length ? { names } : {}) },
+    document: { version: 1, type: 'grid', sheets, styles: gridStyles, charts, ...(drawings.length ? { drawings } : {}), ...(Object.keys(names).length ? { names } : {}) },
     losses,
   };
 }
@@ -74,7 +92,6 @@ function readTable(table, reader, frozen) {
   const name = attr(table, NS.table, 'name') ?? 'Sheet';
   const tableStyle = styles.resolve('table', attr(table, NS.table, 'style-name'), 'table');
   const tab = /^#[0-9a-f]{6}$/i.test(tableStyle['tab-color'] ?? '') ? tableStyle['tab-color'].toLowerCase() : null;
-  if (hasOtherFrames(table)) losses.add('Pictures and drawings in sheets');
 
   const cells = {};
   const cols = {};
@@ -120,8 +137,10 @@ function readTable(table, reader, frozen) {
 
     const values = readRow(rowElement, reader, columnDefaults, rowDefault, row, merges, spans, Math.min(repeat, ROW_LIMIT - row));
     // A row repeated a million times is formatting reaching the bottom of the sheet.
-    if (values.size > 0 && repeat > 1000) losses.add('A row repeated more than a thousand times, kept a thousand times');
-    const times = values.size > 0 ? Math.min(repeat, 1000) : Math.min(repeat, ROW_LIMIT - row);
+    // Copies of a repeated row stop at a hundred thousand cells, so a file cannot make the sheet fill memory.
+    const copies = values.size > 0 ? Math.min(repeat, 1000, Math.max(1, Math.floor(REPEATED_CELLS / values.size))) : Math.min(repeat, ROW_LIMIT - row);
+    if (values.size > 0 && repeat > copies) losses.add(`A row repeated ${repeat > 1000 ? 'more than a thousand times' : `${repeat} times`}, kept ${copies} times`);
+    const times = copies;
     for (let r = 0; r < times; r += 1) {
       for (const [c, cell] of values) cells[`${row + r},${c}`] = { ...cell };
       if (height !== null && values.size > 0) {
@@ -261,6 +280,7 @@ function readPrint(table, reader) {
   for (const attribute of kid(layout, NS.style, 'page-layout-properties')?.attributes ?? []) {
     props[attribute.localName] = attribute.value;
   }
+  cleanColours(props);
 
   const width = parseLength(props['page-width']);
   const height = parseLength(props['page-height']);
@@ -648,13 +668,50 @@ export function writeOds(document, { flat = false } = {}) {
   const sheetList = document.sheets ?? [];
   const chartFiles = [];
   let objectNumber = 1;
+  // Drawings: one automatic graphic style a look, markers and fills named once, pictures put in the package.
+  const drawStyles = new Map();
+  const drawNamed = new Map();
+  const drawIds = new Map();
+  const pictures = new Map();
+  const drawCtx = (sheet) => ({
+    sheetName: sheet.name ?? 'Sheet1',
+    losses,
+    style: (props) => {
+      const key = JSON.stringify(props);
+      if (!drawStyles.has(key)) drawStyles.set(key, tag('style:style', { 'style:name': `gr${drawStyles.size + 1}`, 'style:family': 'graphic' }, tag('style:graphic-properties', props)));
+      return drawStyles.get(key).attrs['style:name'];
+    },
+    named: (kind, name, xml) => drawNamed.set(`${kind}:${name}`, xml),
+    odfId: (id) => { if (!drawIds.has(id)) drawIds.set(id, `shape${drawIds.size + 1}`); return drawIds.get(id); },
+    picture: (resource) => {
+      const data = fromDataUrl(resource);
+      if (!data) { losses.add('Pictures whose file was missing'); return null; }
+      if (!pictures.has(resource)) pictures.set(resource, { name: `Pictures/picture${pictures.size + 1}.${{ 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/svg+xml': 'svg', 'image/webp': 'webp' }[data.type] ?? 'png'}`, bytes: data.bytes, type: data.type });
+      return pictures.get(resource).name;
+    },
+  });
   const tables = sheetList.map((sheet, i) => {
     const own = (document.charts ?? []).filter((chart) => chartSheetIndex(chart, sheetList) === i);
     const { shapes, files } = writeOdsCharts(sheet, own, objectNumber, { flat });
     objectNumber += own.length;
     chartFiles.push(...files);
-    return writeTable(sheet, gridStyles, writer, validations.names[i], shapes);
+    const drawn = (document.drawings ?? []).filter((o) => chartSheetIndex(o, sheetList) === i);
+    const { page, cells } = drawn.length ? writeOdsDrawings(sheet, drawn, drawCtx(sheet)) : { page: [], cells: new Map() };
+    const allShapes = shapes || page.length ? tag('table:shapes', {}, ...(shapes?.children ?? []), ...page) : null;
+    return writeTable(sheet, gridStyles, writer, validations.names[i], allShapes, cells);
   });
+  if (flat && pictures.size) {
+    // A flat file carries its pictures inside the elements that show them.
+    const inline = (node) => {
+      for (const child of node?.children ?? []) {
+        if (child?.name === 'draw:image') {
+          const found = [...pictures.values()].find((p) => p.name === child.attrs['xlink:href']);
+          if (found) { child.attrs = {}; child.children = [tag('office:binary-data', {}, toBase64(found.bytes))]; }
+        } else if (child && typeof child === 'object') inline(child);
+      }
+    };
+    for (const table of tables) inline(table);
+  }
   const named = namedExpressions(document.names ?? {});
   const pivots = writeOdsPivots(sheetList, losses);
   const ranges = databaseRanges(document.sheets ?? []);
@@ -665,6 +722,7 @@ export function writeOds(document, { flat = false } = {}) {
     ...[...writer.rowStyles.values()],
     ...pages.map((page) => page.style),
     ...[...writer.cellStyles.values()].map((entry) => entry.element),
+    ...drawStyles.values(),
   ];
   const layouts = pages.map((page) => page.layout);
   const masters = pages.length > 0 ? tag('office:master-styles', {}, pages.map((page) => page.master)) : null;
@@ -684,7 +742,7 @@ export function writeOds(document, { flat = false } = {}) {
     for (const child of element.children) if (child?.name === 'style:map') addData(child.attrs['style:apply-style-name']);
   };
   if (!flat) for (const entry of writer.commonStyles.values()) addData(entry.data);
-  const named_styles = [...[...commonData].reverse(), ...[...writer.commonStyles.values(), ...writer.namedStyles.values()].map((entry) => entry.element)];
+  const named_styles = [...[...commonData].reverse(), ...[...writer.commonStyles.values(), ...writer.namedStyles.values()].map((entry) => entry.element), ...drawNamed.values()];
   const commonStyles = named_styles.length
     ? tag('office:styles', {}, tag('style:style', { 'style:name': 'Default', 'style:family': 'table-cell' }), named_styles) : null;
 
@@ -703,7 +761,8 @@ export function writeOds(document, { flat = false } = {}) {
   const content = tag('office:document-content', { ...ROOT_NAMESPACES, 'xmlns:calcext': NS.calcext, 'xmlns:tableooo': TABLEOOO, 'office:version': ODF_VERSION },
     tag('office:automatic-styles', {}, automatic),
     tag('office:body', {}, tag('office:spreadsheet', {}, calculation, validations.element, ...[tables].flat(), named, ranges, pivots)));
-  const files = [{ name: 'content.xml', data: xmlDocument(content), mediaType: 'text/xml' }, ...chartFiles];
+  const files = [{ name: 'content.xml', data: xmlDocument(content), mediaType: 'text/xml' }, ...chartFiles,
+    ...[...pictures.values()].map((p) => ({ name: p.name, data: p.bytes, mediaType: p.type }))];
   if (masters || named_styles.length) {
     files.push({
       name: 'styles.xml',
@@ -735,7 +794,7 @@ function chartSheetIndex(chart, sheets) {
   return found === -1 ? 0 : found;
 }
 
-function writeTable(sheet, gridStyles, writer, validations = [], shapes = null) {
+function writeTable(sheet, gridStyles, writer, validations = [], shapes = null, anchored = new Map()) {
   const print = sheetPrint(sheet);
   const cells = new Map(Object.entries(sheet.cells ?? {}).map(([key, cell]) => {
     const [row, col] = key.split(',').map(Number);
@@ -769,6 +828,14 @@ function writeTable(sheet, gridStyles, writer, validations = [], shapes = null) 
     maxCol = Math.max(maxCol, m.right);
   }
   const mergeAnchor = new Map(merges.map((m) => [`${m.top},${m.left}`, m]));
+  // Cells holding drawings anchored to them are written, empty or not.
+  const anchoredRows = new Set();
+  for (const key of anchored.keys()) {
+    const [r, c] = key.split(',').map(Number);
+    anchoredRows.add(r);
+    maxRow = Math.max(maxRow, r);
+    maxCol = Math.max(maxCol, c);
+  }
   for (const { area } of validations) {
     maxRow = Math.max(maxRow, area.bottom);
     maxCol = Math.max(maxCol, area.right);
@@ -801,7 +868,7 @@ function writeTable(sheet, gridStyles, writer, validations = [], shapes = null) 
     byRow.get(row)[col] = cell;
   }
   const marked = (r) => heights.has(r) || rowBreaks.has(r) || (header && (r === header.top || r === header.bottom + 1))
-    || rowVisibility(r) !== null || inMerge(r) || byRow.has(r);
+    || rowVisibility(r) !== null || inMerge(r) || byRow.has(r) || anchoredRows.has(r);
   const childrenOf = (r, rowCells) => {
     const children = [];
     for (let c = 0; c <= maxCol;) {
@@ -813,15 +880,17 @@ function writeTable(sheet, gridStyles, writer, validations = [], shapes = null) 
       const cell = rowCells[c];
       const merge = mergeAnchor.get(`${r},${c}`);
       const rule = validationAt(r, c);
-      if (!cell && !merge) {
+      const drawn = anchored.get(`${r},${c}`);
+      if (!cell && !merge && !drawn) {
         let run = 1;
         while (c + run <= maxCol && !rowCells[c + run] && !covered(r, c + run) && !mergeAnchor.has(`${r},${c + run}`)
-          && validationAt(r, c + run) === rule) run += 1;
+          && !anchored.has(`${r},${c + run}`) && validationAt(r, c + run) === rule) run += 1;
         children.push(tag('table:table-cell', { 'table:number-columns-repeated': run > 1 ? String(run) : null, 'table:content-validation-name': rule }));
         c += run;
         continue;
       }
       const written = cell ? writeCell(cell, gridStyles, writer) : tag('table:table-cell', {});
+      if (drawn) written.children.unshift(...drawn);
       if (rule) written.attrs['table:content-validation-name'] = rule;
       if (merge) {
         written.attrs['table:number-columns-spanned'] = String(merge.right - merge.left + 1);
@@ -837,7 +906,7 @@ function writeTable(sheet, gridStyles, writer, validations = [], shapes = null) 
   for (let r = 0; r <= maxRow;) {
     const rowCells = byRow.get(r) ?? [];
     const style = heights.has(r) || rowBreaks.has(r) ? rowStyle(heights.get(r) ?? null, rowBreaks.has(r), writer) : null;
-    if (rowCells.length === 0 && !inMerge(r)) {
+    if (rowCells.length === 0 && !inMerge(r) && !anchoredRows.has(r)) {
       const covering = coveringOf(r);
       let run = 1;
       while (r + run <= maxRow && !marked(r + run) && rowVisibility(r + run) === rowVisibility(r) && coveringOf(r + run) === covering) run += 1;
@@ -1013,7 +1082,8 @@ function writeCell(cell, gridStyles, writer) {
   const value = cell.v;
   let shown = null;
   if (typeof value === 'number' && Number.isFinite(value)) {
-    if (isDatePattern(style?.format)) {
+    // A date only between the years 1 and 9999: past them there is no such day, and the number is kept as it is.
+    if (isDatePattern(style?.format) && value >= -693593 && value <= 2958465) {
       if (isTimeOnly(style.format)) {
         attrs['office:value-type'] = 'time';
         attrs['office:time-value'] = isoDuration(value);

@@ -10,6 +10,12 @@ target/
 modules/*/src-tauri/gen/
 modules/*/src-tauri/icons/ios/
 modules/*/src/js/core/
+# Grid's formula engine, copied into Graphs for its test mode.
+modules/grt-graphs/src/js/engine/
+modules/grt-graphs/src/js/parser/
+modules/grt-graphs/src/js/functions/
+modules/grt-graphs/src/js/format.js
+modules/grt-graphs/src/js/references.js
 modules/*/src/css/design.css
 modules/*/src/vendor/*.js
 modules/*/src/vendor/LICENSE.*

@@ -9,6 +9,7 @@ import { makeBlock, runsText } from './core/editor/model.js';
 import { InputCapture } from './core/editor/input.js';
 import { EditorController } from './core/editor/controller.js';
 import { showPanel, readFields, escapeHtml, isDialogOpen } from './core/panel.js';
+import { linkGraph, around, forceLayout, graphSvg } from './core/link-graph.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
 import { THEMES, applyTheme } from './core/theme.js';
 import { SaveBeforeClose } from './core/closing.js';
@@ -26,6 +27,10 @@ import * as links from './links.js';
 import * as search from './search.js';
 import { noteToMarkdown, archiveToMarkdown, noteToDocument } from './export.js';
 import { writePackage } from './core/package.js';
+import { noteToSlides } from './core/formats/note-slides.js';
+import { editDrawing } from './core/draw/sketch.js';
+import { backUp, restoreBackup } from './core/backup.js';
+import { writeOdp } from './core/formats/odp.js';
 import { passwordFields, wirePasswordFields, passwordFrom, withPassword, PROTECTION } from './core/protection.js';
 import { writeOdt } from './core/formats/odt-write.js';
 import { writeDocx } from './core/formats/docx-write.js';
@@ -35,7 +40,7 @@ import * as io from './io.js';
 import * as locks from './locks.js';
 import * as settingsStore from './settings.js';
 import { insertFormula, editFormula } from './formulas.js';
-import { embedLoader, formatDate, fillTemplate, uniqueName, vaultSettings } from './extras.js';
+import { embedLoader, formatDate, fillTemplate, uniqueName, vaultSettings, insideVault } from './extras.js';
 import { parseYaml, runBase, noteFacts, cellText } from './bases.js';
 import { whenMathReady } from './core/math.js';
 
@@ -62,7 +67,6 @@ let catalogue = [];
 let titleIndex = links.buildTitleIndex([]);
 
 let renderer = null;
-let saveState = 'idle';
 let titleBefore = { title: '', ours: false };
 /** Spelling and grammar, with GRT's own dictionaries; made once the editor exists. */
 let proofing = null;
@@ -212,7 +216,6 @@ async function rebuildCatalogue(pages) {
 let typingSaveTimer = null;
 
 function showSaveState(state) {
-  saveState = state;
   const node = el('save-state');
   if (!node) return;
   node.textContent = {
@@ -426,7 +429,6 @@ function refreshAfterEdit({ typed = false } = {}) {
 // Views over the notes
 
 let basePath = null;
-let baseView = 0;
 const facts = new Map();
 
 /** What every note of the vault is to a view, read again only when the file changed. */
@@ -462,7 +464,6 @@ async function openBase(path, view = 0) {
     return;
   }
   basePath = path;
-  baseView = view;
   const result = runBase(base, await vaultFacts(), view);
   const panel = el('base-view');
   const tabs = result.views.map((v, i) => `<button class="base-tab${i === result.view.index ? ' current' : ''}" data-view="${i}">${escapeHtml(v.name)}</button>`).join('');
@@ -489,6 +490,64 @@ function closeBase() {
   basePath = null;
   el('base-view').classList.add('hidden');
   document.querySelector('.editor').classList.remove('hidden');
+}
+
+/** The notes and their links, around this note or all of them; a press on a note opens it. */
+async function showGraph(all) {
+  const graph = linkGraph(catalogue, (title) => links.resolve(title, titleIndex));
+  const shown = all || !notePath ? graph : around(graph, notePath, 2);
+  const positions = forceLayout(shown);
+  let chosen = null;
+  const closed = showPanel(all ? 'Graph of every note' : 'Graph of this note', `<div class="graph-view">${graphSvg(shown, positions, { current: notePath })}</div>
+    <p class="hint">${shown.nodes.length} note(s), ${shown.edges.length} link(s). Press a note, or choose it with Tab and Enter, to open it.</p>`);
+  const view = el('panel-body').querySelector('.graph-view');
+  const pick = (target) => {
+    const path = target.closest?.('[data-path]')?.dataset.path;
+    if (!path) return;
+    chosen = path;
+    el('panel-cancel').click();
+  };
+  view.addEventListener('click', (event) => pick(event.target));
+  view.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.stopPropagation(); pick(event.target); } });
+  await closed;
+  if (chosen && chosen !== notePath) await openNote(chosen);
+}
+
+/** A backup's step, its trouble said rather than thrown, the note saved first so the copy holds it. */
+async function guardBackup(run) {
+  try {
+    await saveNow();
+    await run();
+  } catch (error) {
+    await io.notify(String(error?.message ?? error), 'Backup');
+  }
+}
+
+/** Insert a drawing: made on a page of its own with Draw's tools, kept in the note as a block of its own. */
+async function insertDrawing() {
+  if (!editor) return;
+  const drawing = await editDrawing({ w: 800, h: 450, objects: [] }, { toast });
+  if (!drawing?.objects.length) return;
+  const block = makeBlock('code', { extra: { language: 'grt-drawing' } });
+  block.runs = [{ text: JSON.stringify(drawing) }];
+  insertBlock(block, { enter: false });
+}
+
+/** A press on a drawing opens it again on its page; Done puts the changes in the note as one step. */
+async function changeDrawing(id) {
+  const block = note?.block(id);
+  if (!block || !editor) return;
+  let start;
+  try { start = JSON.parse((block.runs ?? []).map((r) => r.text).join('')); } catch { start = null; }
+  const drawing = await editDrawing(start ?? {}, { toast });
+  if (!drawing) return;
+  editor.edit(() => {
+    const live = note.block(id);
+    if (live) live.runs = [{ text: JSON.stringify(drawing) }];
+    note.dirty = true;
+    return editor.selection;
+  });
+  refresh();
 }
 
 async function openNote(path) {
@@ -626,7 +685,7 @@ async function dailyNote() {
     await openNote(existing);
     return;
   }
-  const folder = await folderAt([conf.daily.folder, ...name.split('/').slice(0, -1)].filter(Boolean).join('/'));
+  const folder = await folderAt(insideVault([conf.daily.folder, ...name.split('/').slice(0, -1)].filter(Boolean).join('/')));
   let markdown = null;
   if (conf.daily.template) {
     try {
@@ -966,8 +1025,8 @@ async function quickNote() {
 
 // Export
 
-async function exportNote() {
-  let format = 'md';
+async function exportNote(preferred = 'md') {
+  let format = preferred;
   let problem = '';
   let password;
   for (;;) {
@@ -976,9 +1035,11 @@ async function exportNote() {
         <option value="md"${format === 'md' ? ' selected' : ''}>Markdown (.md)</option>
         <option value="odt"${format === 'odt' ? ' selected' : ''}>OpenDocument text (.odt)</option>
         <option value="docx"${format === 'docx' ? ' selected' : ''}>Word document (.docx)</option>
+        <option value="odp"${format === 'odp' ? ' selected' : ''}>Presentation (.odp), a slide for each heading</option>
       </select></label>
       ${passwordFields(null, problem)}
-      <p class="hint">OpenDocument and Word files open in GRT Paper, LibreOffice and Word.
+      <p class="hint">OpenDocument and Word files open in GRT Paper, LibreOffice and Word; the
+      presentation in GRT Slides, each first or second level heading a slide and what follows it its points.
       Markdown cannot carry a password.</p>
     `, 'Choose file');
     wirePasswordFields();
@@ -992,7 +1053,7 @@ async function exportNote() {
     }
     problem = protection.error;
   }
-  const filters = { md: io.FILTERS.md, odt: [{ name: 'OpenDocument text', extensions: ['odt'] }], docx: [{ name: 'Word document', extensions: ['docx'] }] };
+  const filters = { md: io.FILTERS.md, odt: [{ name: 'OpenDocument text', extensions: ['odt'] }], docx: [{ name: 'Word document', extensions: ['docx'] }], odp: [{ name: 'OpenDocument presentation', extensions: ['odp'] }] };
   const chosen = await io.pickToSave(`${tree.slugify(note.title || 'note')}.${format}`, filters[format]);
   if (!chosen) return;
   const path = /\.[^./\\]+$/.test(chosen) ? chosen.replace(/\.[^./\\]+$/, `.${format}`) : `${chosen}.${format}`;
@@ -1001,6 +1062,11 @@ async function exportNote() {
     const result = noteToMarkdown(note);
     await io.writeText(path, result.text);
     lost = result.lost;
+  } else if (format === 'odp') {
+    const { document, losses: dropped } = noteToSlides({ title: note.title, blocks: note.blocks });
+    const { entries, losses } = writeOdp(document, new Map());
+    await writePackage(path, entries, { protection: PROTECTION.odp, password });
+    lost = [...dropped.lines(), ...losses.lines()];
   } else {
     const { document, lost: dropped } = noteToDocument(note);
     const { entries, losses } = format === 'odt' ? writeOdt(document, new Map()) : writeDocx(document, new Map());
@@ -1884,6 +1950,12 @@ function onSurfaceClick(event) {
     return;
   }
 
+  const drawn = event.target.closest('[data-action="edit-drawing"]');
+  if (drawn) {
+    changeDrawing(drawn.dataset.block);
+    return;
+  }
+
   const embed = event.target.closest('[data-action="open-embed"]');
   const embedded = embed ? note?.block(embed.dataset.block) : null;
   if (embedded?.wiki) {
@@ -1911,6 +1983,9 @@ function onKey(event) {
   if (event.key === 'p') { event.preventDefault(); printNote(); return; }
   if (event.shiftKey && event.key.toLowerCase() === 'n') {
     event.preventDefault(); quickNote(); return;
+  }
+  if (event.shiftKey && event.key.toLowerCase() === 'g') {
+    event.preventDefault(); showGraph(false); return;
   }
   if (event.key === 'n') { event.preventDefault(); newNote(); }
 }
@@ -1973,13 +2048,18 @@ function commands() {
     { ...entry('Move this note to…', '', () => moveCurrentNote()), aliases: ['Move note', 'Move file to another folder'] },
     { ...entry('Merge this note into another…', '', () => mergeNote()), aliases: ['Merge notes', 'Note composer'] },
     { ...entry('Split this note from the caret on', '', () => splitNote()), aliases: ['Split note', 'Extract to a new note'] },
+    { ...entry('Show the graph', 'Ctrl+Shift+G', () => showGraph(false)), aliases: ['Graph view', 'Local graph', 'Links of this note'] },
+    { ...entry('Show the graph of every note', '', () => showGraph(true)), aliases: ['Graph view', 'Global graph'] },
     entry('Export this note…', '', () => exportNote()),
+    { ...entry('Open as a presentation…', '', () => exportNote('odp')), aliases: ['Presentation', 'Slides', 'Export as slides'] },
     entry('Print this note…', 'Ctrl+P', () => printNote()),
     entry('Properties of this note…', '', () => editProperties()),
     inVault()
       ? entry('Close the vault and go back to the GRT archive', '', () => closeVault())
       : entry('Open an Obsidian vault…', '', () => openVault()),
     entry('Export the whole archive as Markdown', '', () => exportArchive()),
+    { ...entry(inVault() ? 'Back up the vault…' : 'Back up the archive…', '', () => guardBackup(() => backUp({ folder: archive.root, what: inVault() ? 'the vault' : 'the archive', name: inVault() ? tree.baseName(archive.root) : 'GRT Notes', toast }))), aliases: ['Backup', 'Copy to an external disk', 'Encrypted backup'] },
+    { ...entry('Restore a backup…', '', () => guardBackup(() => restoreBackup({ toast }))), aliases: ['Restore', 'Backup'] },
     entry('Protect this notebook with a password…', '', () => protectNotebook()),
     entry('Remove the password from this notebook…', '', () => unprotectNotebook()),
     entry('Lock protected notebooks', '', () => lockNotebooks()),
@@ -1991,6 +2071,7 @@ function commands() {
     entry('Insert a to-do', '', () => insertBlock(makeTodo())),
     entry('Insert a callout', '', () => insertBlock(makeCallout('note'))),
     entry('Insert a code block', '', () => insertBlock(makeBlock('code'))),
+    { ...entry('Insert a drawing…', '', () => insertDrawing()), aliases: ['Drawing', 'Sketch', 'Draw', 'Shapes'] },
     { ...entry("Today's note", 'Ctrl+Shift+D', () => dailyNote()), aliases: ['Daily note', 'Open today’s daily note'] },
     { ...entry('New note with a unique name', '', async () => {
       const conf = await helperSettings();

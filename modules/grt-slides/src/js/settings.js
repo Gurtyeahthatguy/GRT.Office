@@ -10,6 +10,9 @@ const invoke = (...args) => window.__TAURI__.core.invoke(...args);
 export const DEFAULTS = {
   theme: 'system',
   snapToGrid: true,
+  // View, Grid and Helplines: the grid shown over the slide, and guides while moving.
+  showGrid: false,
+  helplines: true,
   showNotes: true,
   autoShrinkText: false,
   autosave: 'recovery',
@@ -17,6 +20,8 @@ export const DEFAULTS = {
   keyboard: {},
   // The dictionary the Spelling dialog starts with.
   spellLanguage: /^it\b/i.test(globalThis.navigator?.language ?? '') ? 'it-IT' : 'en-US',
+  // The certificates of the authorities whose signatures the person trusts, in base64.
+  trustedCertificates: [],
 };
 
 let current = { ...DEFAULTS };

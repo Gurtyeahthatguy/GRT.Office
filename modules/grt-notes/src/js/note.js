@@ -90,6 +90,9 @@ export class NoteDocument extends DocumentModel {
         pieces.push(runsText(block.runs ?? []));
       } else if (block.kind === 'embed') {
         if (block.target) pieces.push(String(block.target));
+      } else if (block.kind === 'code' && block.language === 'grt-drawing') {
+        // A drawing is searched by the words in its shapes, not by how it is kept.
+        try { for (const o of JSON.parse(runsText(block.runs ?? [])).objects ?? []) if (o.text) pieces.push(String(o.text)); } catch { /* not readable */ }
       } else {
         pieces.push(runsText(block.runs ?? []));
       }

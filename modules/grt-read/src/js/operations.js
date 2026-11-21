@@ -1,7 +1,7 @@
 /** Things drawn onto pages at save time. */
 
 import {
-  StandardFonts, degrees, rgb, PDFName, PDFArray, PDFRawStream, decodePDFRawStream,
+  StandardFonts, degrees, rgb, PDFName, PDFArray, PDFRawStream, decodePDFRawStream, PDFHexString, PDFString,
 } from '../vendor/pdf-lib.esm.js';
 import { redactContent } from './redact.js';
 
@@ -244,4 +244,88 @@ export function applyMarks(doc, pages, plan) {
   });
 
   return summary;
+}
+
+/** A colour as #rrggbb, or the fallback. */
+const colourOf = (hex, fallback) => {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex ?? '');
+  return m ? rgb(parseInt(m[1].slice(0, 2), 16) / 255, parseInt(m[1].slice(2, 4), 16) / 255, parseInt(m[1].slice(4, 6), 16) / 255) : fallback;
+};
+
+/** The bytes of a data address. */
+function bytesOfDataUrl(url) {
+  const m = /^data:([\w/+.-]+);base64,(.*)$/.exec(String(url ?? ''));
+  if (!m) return null;
+  const binary = atob(m[2]);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+  return { type: m[1], bytes: out };
+}
+
+/**
+ * What the person added on top of the pages: notes as the sticky notes every reader shows, text and pictures drawn in.
+ * @returns {Promise<{dropped: number}>} how many characters the standard font could not write
+ */
+export async function applyAdditions(doc, pages, plan) {
+  let font = null;
+  let dropped = 0;
+  for (const [i, page] of pages.entries()) {
+    for (const mark of plan[i]?.marks ?? []) {
+      if (!['note', 'text', 'image', 'ocr'].includes(mark.type)) continue;
+      const region = toUserSpace(page, mark.rect);
+      if (mark.type === 'ocr') {
+        // Recognised words as invisible text over the picture of the page, so the page can be searched and copied from.
+        font ??= await doc.embedFont(StandardFonts.Helvetica);
+        const supported = new Set(font.getCharacterSet());
+        const box = page.getMediaBox();
+        for (const word of mark.words ?? []) {
+          const text = [...word.text].filter((ch) => supported.has(ch.codePointAt(0))).join('');
+          if (!text) continue;
+          const width = word.w * box.width;
+          const height = word.h * box.height;
+          const natural = font.widthOfTextAtSize(text, 1) || 1;
+          const size = Math.max(1, Math.min(height * 1.1, width / natural));
+          page.drawText(text, { x: box.x + word.x * box.width, y: box.y + box.height * (1 - word.y - word.h) + height * 0.15, size, font, opacity: 0 });
+        }
+        continue;
+      }
+      if (mark.type === 'note') {
+        // A text annotation: its icon at the place, its words shown when it is opened.
+        const annotation = doc.context.obj({
+          Type: 'Annot', Subtype: 'Text', Rect: [region.x, region.y2 - 20, region.x + 20, region.y2],
+          Contents: PDFHexString.fromText(String(mark.text ?? '').slice(0, 10000)), Name: 'Comment', C: [1, 0.85, 0.2], F: 4,
+          NM: PDFString.of(`grt-note-${i}-${Math.round(region.x)}-${Math.round(region.y)}`),
+        });
+        const ref = doc.context.register(annotation);
+        const existing = page.node.lookup(PDFName.of('Annots'));
+        if (existing instanceof PDFArray) existing.push(ref);
+        else page.node.set(PDFName.of('Annots'), doc.context.obj([ref]));
+      } else if (mark.type === 'text') {
+        font ??= await doc.embedFont(StandardFonts.Helvetica);
+        // The standard font writes Western European letters; any other is left out and counted.
+        const supported = new Set(font.getCharacterSet());
+        const size = Math.max(4, Math.min(200, Number(mark.size) || 12));
+        const lines = String(mark.text ?? '').split('\n').map((line) => [...line].filter((ch) => {
+          if (supported.has(ch.codePointAt(0))) return true;
+          dropped += 1;
+          return false;
+        }).join(''));
+        lines.forEach((line, k) => {
+          page.drawText(line, { x: region.x + 2, y: region.y2 - size * (k + 1) * 1.15, size, font, color: colourOf(mark.color, rgb(0, 0, 0)) });
+        });
+      } else if (mark.type === 'image') {
+        const picture = bytesOfDataUrl(mark.image);
+        if (!picture) continue;
+        const embedded = picture.type === 'image/png' ? await doc.embedPng(picture.bytes) : await doc.embedJpg(picture.bytes);
+        // The picture keeps its proportions inside the region drawn for it.
+        const width = region.x2 - region.x;
+        const height = region.y2 - region.y;
+        const scale = Math.min(width / embedded.width, height / embedded.height);
+        const w = embedded.width * scale;
+        const h = embedded.height * scale;
+        page.drawImage(embedded, { x: region.x + (width - w) / 2, y: region.y + (height - h) / 2, width: w, height: h });
+      }
+    }
+  }
+  return { dropped };
 }

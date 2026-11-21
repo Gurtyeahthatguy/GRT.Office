@@ -125,7 +125,8 @@ export function readXlsxCharts(pkg, sheetPart, sheetRoot, sheet, sheetIndex, los
     const ref = frame?.getElementsByTagNameNS(C, 'chart')[0];
     const target = ref ? chartRels.get(ref.getAttributeNS(NS.r, 'id')) : null;
     if (!target || target.external || !/\/chart$/.test(target.type)) {
-      other = true;
+      // Shapes, pictures and groups are read as drawings; anything else is not kept.
+      if (!kids(anchor).some((k) => k.namespaceURI === XDR && ['sp', 'pic', 'grpSp', 'cxnSp'].includes(k.localName))) other = true;
       continue;
     }
     if (charts.length >= MAX_CHARTS) break;
@@ -273,9 +274,9 @@ const corner = (at) => [
  * @param {number} drawingNumber the drawing's number among the workbook's
  * @param {number} firstChart the number of the sheet's first chart part
  */
-export function writeXlsxCharts(document, sheet, charts, drawingNumber, firstChart) {
+export function writeXlsxCharts(document, sheet, charts, drawingNumber, firstChart, extra = { anchors: [], rels: [] }) {
   const anchors = [];
-  const rels = [];
+  const rels = [...extra.rels];
   const parts = [];
   charts.slice(0, MAX_CHARTS).forEach((chart, i) => {
     const number = firstChart + i;
@@ -295,7 +296,7 @@ export function writeXlsxCharts(document, sheet, charts, drawingNumber, firstCha
   const drawing = `xl/drawings/drawing${drawingNumber}.xml`;
   parts.push({
     name: drawing, type: DRAWING_TYPE,
-    data: xmlDocument(tag('xdr:wsDr', { 'xmlns:xdr': XDR, 'xmlns:a': NS.a, 'xmlns:r': NS.r }, anchors)),
+    data: xmlDocument(tag('xdr:wsDr', { 'xmlns:xdr': XDR, 'xmlns:a': NS.a, 'xmlns:r': NS.r }, anchors, extra.anchors)),
   });
   parts.push({ name: `xl/drawings/_rels/drawing${drawingNumber}.xml.rels`, data: rels, rels: true });
   return { parts, drawingTarget: `../drawings/drawing${drawingNumber}.xml` };

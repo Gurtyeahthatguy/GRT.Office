@@ -3,6 +3,7 @@
 import { makeId } from './ids.js';
 import { normaliseChartData } from '../formats/chart-object.js';
 import { CHART_TYPES as CHART_KINDS } from '../charts.js';
+import { cleanTextDrawings, drawingResources } from './drawings.js';
 
 export const FORMAT_VERSION = 1;
 
@@ -248,7 +249,7 @@ const DEFAULT_STYLES = {
 /** The character an object in the text stands on: a note, a bookmark, a reference, a field. */
 export const OBJECT = '\uFFFC';
 
-export const OBJECT_TYPES = ['note', 'bookmark', 'ref', 'seq', 'field', 'index', 'math', 'comment', 'cite', 'merge'];
+export const OBJECT_TYPES = ['note', 'bookmark', 'ref', 'seq', 'field', 'index', 'math', 'comment', 'cite', 'merge', 'drawing'];
 
 /** The kinds of source a citation names, as Writer's bibliography has them. */
 export const CITE_KINDS = ['book', 'article', 'website', 'thesis', 'report', 'misc'];
@@ -289,6 +290,8 @@ export function normaliseObject(object) {
     case 'cite': return normaliseCite(object);
     // A mail merge field: the column of the data whose value takes its place, record by record.
     case 'merge': return word(object.name, 100)?.trim() ? { type: 'merge', name: word(object.name, 100).trim() } : null;
+    // A drawing anchored as a character: the document's drawing of that id stands here in the line.
+    case 'drawing': return typeof object.id === 'string' && /^[\w.:-]{1,60}$/.test(object.id) ? { type: 'drawing', id: object.id } : null;
     default: return null;
   }
 }
@@ -318,6 +321,8 @@ export function normaliseRuns(runs) {
     if (run.color) clean.color = run.color;
     if (run.highlight) clean.highlight = run.highlight;
     if (run.size) clean.size = run.size;
+    // A font of the text's own, by its family's name, as the Font Name box gives it.
+    if (typeof run.font === 'string' && run.font.trim() && !/[<>{};]/.test(run.font)) clean.font = run.font.trim().slice(0, 100);
     const lang = cleanLang(run.lang);
     if (lang) clean.lang = lang;
     const link = safeLink(run.link);
@@ -359,6 +364,7 @@ export function sameFormatting(a, b) {
     && (a.cstyle ?? null) === (b.cstyle ?? null)
     && (a.highlight ?? null) === (b.highlight ?? null)
     && (a.size ?? null) === (b.size ?? null)
+    && (a.font ?? null) === (b.font ?? null)
     && (a.lang ?? null) === (b.lang ?? null)
     && (a.ins ?? null) === (b.ins ?? null)
     && (a.del ?? null) === (b.del ?? null)
@@ -485,6 +491,8 @@ export class DocumentModel {
     this.charStyles = {};
     this.blocks = [];
     this.fonts = [];
+    // Shapes, pictures and text boxes laid over the text, each anchored to a paragraph, a character or a page.
+    this.drawings = [];
     this.review = normaliseReview(null);
     this.path = null;
     this.dirty = false;
@@ -708,6 +716,7 @@ export class DocumentModel {
     for (const block of this.blocks) {
       if (block.kind === 'image' && block.resource) used.add(block.resource);
     }
+    for (const resource of drawingResources(this.drawings)) used.add(resource);
     return [...used];
   }
 
@@ -722,6 +731,7 @@ export class DocumentModel {
       charStyles: structuredClone(this.charStyles ?? {}),
       fonts: structuredClone(this.fonts),
       blocks: structuredClone(this.blocks),
+      ...(this.drawings?.length ? { drawings: structuredClone(this.drawings) } : {}),
       ...(this.headingNumbers ? { headingNumbers: { ...this.headingNumbers } } : {}),
       ...(JSON.stringify(this.noteSettings) !== JSON.stringify(NOTE_DEFAULTS) ? { noteSettings: structuredClone(this.noteSettings) } : {}),
       ...(this.review?.recording || this.review?.protect ? { review: { ...this.review } } : {}),
@@ -799,6 +809,7 @@ export class DocumentModel {
       }
     }
 
+    this.drawings = cleanTextDrawings(document.drawings, this.blocks);
     this.dirty = false;
   }
 
@@ -811,6 +822,7 @@ export class DocumentModel {
       charStyles: structuredClone(this.charStyles ?? {}),
       fonts: structuredClone(this.fonts),
       blocks: structuredClone(this.blocks),
+      drawings: structuredClone(this.drawings ?? []),
       headingNumbers: this.headingNumbers ? { ...this.headingNumbers } : null,
       noteSettings: structuredClone(this.noteSettings),
       review: { ...this.review },
@@ -824,6 +836,7 @@ export class DocumentModel {
     this.charStyles = structuredClone(snapshot.charStyles ?? {});
     this.fonts = structuredClone(snapshot.fonts ?? []);
     this.blocks = structuredClone(snapshot.blocks);
+    this.drawings = structuredClone(snapshot.drawings ?? []);
     this.headingNumbers = snapshot.headingNumbers ? { ...snapshot.headingNumbers } : null;
     this.noteSettings = normaliseNoteSettings(snapshot.noteSettings);
     this.review = normaliseReview(snapshot.review);

@@ -3,6 +3,7 @@
 import { parseXml, kids, attr, escapeAttr } from './core/xml.js';
 import { odfPackage, ODF_VERSION } from './core/formats/odf.js';
 import { quoteIdent } from './schema.js';
+import { greatest } from './core/extent.js';
 
 export const ODB_MIMETYPE = 'application/vnd.oasis.opendocument.base';
 const NS_DB = 'urn:oasis:names:tc:opendocument:xmlns:database:1.0';
@@ -884,11 +885,11 @@ export function writeOdb(database, { forms = [], reports = [] } = {}) {
     for (const row of table.rows) inserts.push(`INSERT INTO ${hsqlName(table.name)} VALUES(${row.map((v, i) => hsqlValue(v, types[i])).join(',')})`);
     const counter = table.columns.findIndex((c) => c.autoIncrement && c.name === single);
     if (counter !== -1) {
-      const next = Math.max(0, ...table.rows.map((r) => Number(r[counter]) + 1).filter(Number.isFinite));
+      const next = Math.max(0, greatest(table.rows.map((r) => Number(r[counter]) + 1).filter(Number.isFinite)));
       restarts.push(`ALTER TABLE ${hsqlName(table.name)} ALTER COLUMN ${hsqlName(table.columns[counter].name)} RESTART WITH ${next}`);
     }
   }
-  script.push(...later, ...restarts, 'CREATE USER SA PASSWORD ""', 'GRANT DBA TO SA', 'SET WRITE_DELAY 2', 'SET SCHEMA PUBLIC', ...inserts);
+  for (const line of [...later, ...restarts, 'CREATE USER SA PASSWORD ""', 'GRANT DBA TO SA', 'SET WRITE_DELAY 2', 'SET SCHEMA PUBLIC', ...inserts]) script.push(line);
   const properties = [
     '#HSQL Database Engine 1.8.0.10', 'hsqldb.cache_version=1.7.0', 'hsqldb.compatible_version=1.8.0', 'hsqldb.default_table_type=cached',
     'hsqldb.original_version=1.8.0', 'hsqldb.script_format=0', 'modified=no', 'readonly=false', 'sql.enforce_strict_size=true', 'version=1.8.0', '',

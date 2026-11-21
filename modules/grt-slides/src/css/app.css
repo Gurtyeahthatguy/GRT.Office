@@ -612,3 +612,8 @@ input[type="color"] {
 .el.table td.cell-chosen { background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .comment-mark { position: absolute; width: 44px; height: 36px; box-sizing: border-box; background: #ffe066; border: 2px solid #b8a000; border-radius: 4px; pointer-events: auto; cursor: pointer; }
 .redacted, td.redacted { background-color: #111 !important; color: #111 !important; }
+
+/* View, Grid and Helplines, Display Grid: dots every forty slide pixels, over the slide and under nothing pressable. */
+.surface.show-grid::after { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 50;
+  background-image: radial-gradient(circle, rgba(90, 90, 90, 0.55) 1px, transparent 1.4px);
+  background-size: calc(100% / 48) calc(100% / 27); background-position: calc(100% / -96) calc(100% / -54); }

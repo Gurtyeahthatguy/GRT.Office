@@ -1,5 +1,6 @@
 /** Grid's menus; each item names what LibreOffice and Excel call it, so the palette finds it by those names. */
 
+import { clipboardItems } from './core/clipboard.js';
 import * as dialogs from './dialogs.js';
 import * as sheets from './sheets.js';
 
@@ -8,6 +9,8 @@ import * as sheets from './sheets.js';
  */
 export function gridMenus({ sheet, actions, toast }) {
   const s = () => sheet();
+  const d = actions.drawing;
+  const dc = d.commands;
   // The look of the cell the cursor is on, which the buttons and ticks show, as in Calc.
   const here = () => s().styleAt(s().active.row, s().active.col);
   const many = () => !s().selectionIsSingle;
@@ -17,13 +20,15 @@ export function gridMenus({ sheet, actions, toast }) {
   const cols = () => s().selection.right - s().selection.left + 1;
 
   const t = actions.text;
-  const marks = t.marks.map((m) => ({ label: m.label.replace(/^\w/, (c) => c.toUpperCase()), shortcut: m.shortcut, run: () => t.insertChars(m.char) }));
+  // Marks go into a cell being typed, as in Calc: otherwise Ctrl+- is Delete Cells.
+  const marks = t.marks.map((m) => ({ label: m.label.replace(/^\w/, (c) => c.toUpperCase()), shortcut: m.shortcut, run: () => t.insertChars(m.char), enabled: () => s().editing !== null }));
 
   return [
     {
       label: 'File',
       items: [
         { label: 'New', shortcut: 'Ctrl+N', run: actions.newFile, aliases: ['New spreadsheet'] },
+        { label: 'Start Center…', run: actions.startCenter, aliases: ['Start Center', 'Start screen', 'Home'] },
         { label: 'Open…', shortcut: 'Ctrl+O', run: actions.open },
         { label: 'Import CSV…', run: actions.importCsv, aliases: ['Text CSV', 'Open CSV'] },
         { label: 'Templates', items: [
@@ -46,6 +51,7 @@ export function gridMenus({ sheet, actions, toast }) {
         'separator',
         { label: 'Properties…', run: actions.properties, aliases: ['Document properties', 'Statistics'] },
         { label: 'Inspect Document…', run: actions.inspect, aliases: ['Document inspector', 'Remove personal information', 'Clean copy', 'Prepare for sharing'] },
+        { label: 'Digital Signatures…', run: actions.signatures, aliases: ['Digital signatures', 'Signatures', 'Verify signature', 'Signed document'] },
       ],
     },
     {
@@ -53,6 +59,10 @@ export function gridMenus({ sheet, actions, toast }) {
       items: [
         { label: 'Undo', shortcut: 'Ctrl+Z', run: () => s().step(-1), enabled: () => s().undo.canUndo },
         { label: 'Redo', shortcut: 'Ctrl+Y', run: () => s().step(1), enabled: () => s().undo.canRedo },
+        'separator',
+        ...clipboardItems(),
+        'separator',
+        dc.menus.selectFirst(),
         'separator',
         { label: 'Paste Special', items: [
           { label: 'Paste Unformatted Text', shortcut: 'Ctrl+Alt+Shift+V', run: actions.pasteUnformatted, aliases: ['Paste unformatted text', 'Paste as plain text'] },
@@ -70,6 +80,7 @@ export function gridMenus({ sheet, actions, toast }) {
         ] },
         'separator',
         { label: 'Search Everywhere…', run: actions.everywhere, aliases: ['Search everywhere', 'Search in files', 'Find in folder', 'Search all documents'] },
+        { label: 'Toggle Point Edit Mode', shortcut: 'F8', run: dc.act.pointEdit, checked: () => dc.layerMode() === 'points', aliases: ['Points', 'Edit Points'] },
         { label: 'Find and Replace…', shortcut: 'Ctrl+H', run: () => dialogs.findReplaceDialog(s(), toast), aliases: ['Find and replace…', 'Find & Replace', 'Search', 'Replace', 'Find Toolbar', 'vnd.sun.star.findbar:FocusToFindbar'] },
       ],
     },
@@ -81,6 +92,11 @@ export function gridMenus({ sheet, actions, toast }) {
         { label: 'View Grid Lines', run: () => s().toggleView('gridlines'), checked: () => s().view.gridlines, aliases: ['Grid lines', 'Gridlines'] },
         { label: 'Comments', run: () => s().toggleView('comments'), checked: () => s().view.comments, aliases: ['Show all comments', 'View Comments'] },
         { label: 'Column/Row Highlighting', run: () => s().toggleView('crosshair'), checked: () => s().view.crosshair, aliases: ['Highlight row and column', 'Crosshair'] },
+        { label: 'Grid and Helplines', items: [
+          { label: 'Display Grid', run: () => actions.drawGrid('show'), checked: () => actions.drawGridOn('show'), aliases: ['Drawing grid', 'Show grid'] },
+          { label: 'Snap to Grid', run: () => actions.drawGrid('snap'), checked: () => actions.drawGridOn('snap') },
+          { label: 'Helplines While Moving', run: () => actions.drawGrid('helplines'), checked: () => actions.drawGridOn('helplines'), aliases: ['Guides while moving'] },
+        ] },
         'separator',
         { label: 'Sidebar', run: actions.toggleSidebar, aliases: ['Properties sidebar', 'Properties', 'Styles'] },
         { label: 'Function List', run: actions.functionList, aliases: ['Function list', 'Functions'] },
@@ -111,6 +127,15 @@ export function gridMenus({ sheet, actions, toast }) {
         { label: 'Chart…', run: () => dialogs.chartDialog(s()), aliases: ['Insert Chart', 'Chart', 'Graph', 'Pie chart', 'Bar chart', 'Line chart'] },
         { label: 'Export Chart as Image…', run: actions.exportChart, enabled: () => Boolean(s().chosenChart), aliases: ['Export chart as image…', 'Export as Image', 'Save chart as picture'] },
         { label: 'Pivot Table…', run: () => editPivot(s()), aliases: ['Pivot table…', 'DataPilot', 'Insert Pivot Table', 'Crosstab'] },
+        'separator',
+        { label: 'Image…', run: d.insert.image, aliases: ['Insert Image', 'Picture', 'Insert Picture'] },
+        { label: 'Headers and Footers…', run: actions.headersFooters, aliases: ['Header', 'Footer', 'Headers and footers'] },
+        { label: 'Text Box', run: d.insert.textBox, aliases: ['Insert Text Box', 'Draw text box'] },
+        dc.menus.shape(),
+        { label: 'OLE Object', items: [
+          { label: 'Formula Object…', run: d.insert.formula, aliases: ['Formula…', 'Insert Formula', 'Equation', 'Math'] },
+        ] },
+        { label: 'Signature Line…', run: d.insert.signatureLine, aliases: ['Insert signature line'] },
         'separator',
         { label: 'Function…', shortcut: 'Ctrl+F2', run: actions.functionList, aliases: ['Function', 'Function Wizard', 'Insert Function'] },
         { label: 'Named Range or Expression…', run: () => dialogs.namesDialog(s()), aliases: ['Named range…', 'Define Name', 'Define'] },
@@ -159,6 +184,9 @@ export function gridMenus({ sheet, actions, toast }) {
           { label: 'Center', run: () => s().formatCells({ valign: 'middle' }), checked: () => here().valign === 'middle', aliases: ['Centre vertically', 'Center Vertically'] },
           { label: 'Bottom', run: () => s().formatCells({ valign: 'bottom' }), checked: () => here().valign === 'bottom', aliases: ['Align bottom', 'Align Bottom'] },
           'separator',
+          { label: 'Increase Indent', run: () => s().changeIndent(1), aliases: ['Indent', 'Increase indent'] },
+          { label: 'Decrease Indent', run: () => s().changeIndent(-1), aliases: ['Outdent', 'Decrease indent'] },
+          'separator',
           { label: 'Wrap Text Automatically', run: () => s().toggleLook('wrap'), checked: () => Boolean(here().wrap), aliases: ['Wrap text', 'Wrap Text'] },
         ] },
         { label: 'Number Format', items: [
@@ -167,6 +195,9 @@ export function gridMenus({ sheet, actions, toast }) {
           { label: 'Thousands Separator', run: () => s().setNumberFormat('#,##0'), aliases: ['Number format: thousands separator'] },
           { label: 'Date', run: () => s().setNumberFormat('yyyy-mm-dd'), aliases: ['Number format: date', 'Format as Date'] },
           { label: 'Time', run: () => s().setNumberFormat('hh:mm:ss'), aliases: ['Number format: time', 'Format as Time'] },
+          'separator',
+          { label: 'Add Decimal Place', run: () => s().changeDecimals(1), aliases: ['Increase decimals', 'More decimals'] },
+          { label: 'Delete Decimal Place', run: () => s().changeDecimals(-1), aliases: ['Decrease decimals', 'Fewer decimals'] },
         ] },
         'separator',
         { label: 'Cells…', shortcut: 'Ctrl+1', run: () => dialogs.formatCellsDialog(s()), aliases: ['Format Cells', 'Font', 'Alignment', 'Background', 'Cell properties'] },
@@ -199,6 +230,15 @@ export function gridMenus({ sheet, actions, toast }) {
         { label: 'Clear Direct Formatting', shortcut: 'Ctrl+M', run: () => s().clearDirectFormatting(), aliases: ['Clear direct formatting', 'Clear formats'] },
         'separator',
         { label: 'Conditional…', run: () => dialogs.conditionalDialog(s()), aliases: ['Conditional formatting…', 'Conditional Formatting', 'Condition', 'Color Scale', 'Data Bar', 'Manage conditional formatting'] },
+        'separator',
+        dc.menus.image({ fitToCell: true, filters: true }),
+        { ...dc.menus.textBoxAndShape({ points: true }), items: [...dc.menus.textBoxAndShape({ points: true }).items, 'separator', ...dc.menus.nameItems()] },
+        d.menus.anchor(),
+        dc.menus.flip('Flip', 'calc'),
+        { label: 'Rotate', run: dc.act.rotateDialog, aliases: ['Rotation', 'Rotate object'] },
+        d.menus.arrange(),
+        dc.menus.alignObjects(),
+        dc.menus.group(),
         'separator',
         { label: 'Print Ranges', items: [
           { label: 'Define', run: actions.setPrintArea, aliases: ['Set print area', 'Print Ranges Define', 'Set the print area to the selection'] },

@@ -235,11 +235,11 @@ describe('Canvas sizes', () => {
 describe('Shapes and lines', () => {
   it('every shape in the palette produces markup of its own', async () => {
     const { SHAPES } = await import('../src/js/model.js');
-    const { shapePath } = await import('../src/js/export.js');
+    const { drawingSvg } = await import('../src/js/core/draw/render.js');
 
     const seen = new Set();
     for (const shape of SHAPES) {
-      const markup = shapePath(shape, '#123456');
+      const markup = drawingSvg({ id: 's', kind: 'shape', shape, x: 0, y: 0, w: 100, h: 100, fillLook: { type: 'solid', color: '#123456' } });
       expect(markup).toContain('#123456');
       seen.add(markup);
     }
@@ -263,6 +263,6 @@ describe('Shapes and lines', () => {
     const { model, slide } = deck();
     const element = model.addElement(slide.id, { kind: 'shape', shape: 'spaceship' });
 
-    expect(model.element(slide.id, element.id).shape).toBe('rect');
+    expect(model.element(slide.id, element.id).shape).toBe('rectangle');
   });
 });

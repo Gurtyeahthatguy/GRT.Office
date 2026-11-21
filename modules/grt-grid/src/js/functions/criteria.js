@@ -2,19 +2,72 @@
 
 import { isError, compare } from '../engine/values.js';
 
-/** A text pattern with `*`, `?` and `~`, as LibreOffice and Excel read them, to a regular expression. */
-export function wildcard(text) {
-  let out = '';
+const ONE = { one: true };
+const ANY = { any: true };
+
+/** A pattern of `*`, `?` and `~`, as LibreOffice and Excel read it, as characters, ONE for `?` and ANY for `*`. */
+function tokens(text) {
+  const out = [];
   for (let i = 0; i < text.length; i += 1) {
     const c = text[i];
     if (c === '~' && i + 1 < text.length) {
       i += 1;
-      out += text[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    } else if (c === '*') out += '[\\s\\S]*';
-    else if (c === '?') out += '[\\s\\S]';
-    else out += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      out.push(text[i]);
+    } else if (c === '*') {
+      if (out.at(-1) !== ANY) out.push(ANY);
+    } else out.push(c === '?' ? ONE : c);
   }
-  return new RegExp(`^${out}$`, 'i');
+  return out;
+}
+
+const same = (a, b) => a === b || a.toLowerCase() === b.toLowerCase();
+const fits = (token, unit) => token === ONE || (token !== ANY && same(token, unit));
+
+/** Whether the units from a place on match the tokens to the end; only the last star is retried, so the work stays within their lengths multiplied. */
+function matches(list, units, from = 0) {
+  let i = from;
+  let j = 0;
+  let star = -1;
+  let mark = 0;
+  while (i < units.length) {
+    if (j < list.length && fits(list[j], units[i])) {
+      i += 1;
+      j += 1;
+    } else if (list[j] === ANY) {
+      star = j;
+      j += 1;
+      mark = i;
+    } else if (star >= 0) {
+      j = star + 1;
+      mark += 1;
+      i = mark;
+    } else return false;
+  }
+  while (list[j] === ANY) j += 1;
+  return j === list.length;
+}
+
+/** A text pattern with `*`, `?` and `~`, matched against a whole text without a regular expression, so no pattern can take long. */
+export function wildcard(text) {
+  const list = tokens(String(text));
+  return { test: (value) => matches(list, String(value).split('')) };
+}
+
+/**
+ * Where a pattern first matches the start of what follows, in a list of characters, or -1.
+ * Past its first star the pattern is tried only once: a rest that fails from one place fails from every later one.
+ */
+export function wildcardFind(text, units) {
+  const list = tokens(String(text));
+  const lead = list.indexOf(ANY) === -1 ? list.length : list.indexOf(ANY);
+  const rest = [...list.slice(lead), ANY];
+  for (let k = 0; k + lead <= units.length; k += 1) {
+    let j = 0;
+    while (j < lead && fits(list[j], units[k + j])) j += 1;
+    if (j < lead) continue;
+    return lead === list.length || matches(rest, units, k + lead) ? k : -1;
+  }
+  return -1;
 }
 
 const hasWildcard = (text) => /[*?~]/.test(text);

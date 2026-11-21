@@ -5,6 +5,7 @@ import { documentFields, referenceText, referenceBlock } from './fields.js';
 import { chartSvg } from '../charts.js';
 import { mathSvg } from '../math.js';
 import { ownChartSpec } from '../formats/chart-object.js';
+import { anchorElements, placeDrawings, drawingHolder } from './drawings.js';
 
 /** What the objects of the document being drawn resolve to; set for the length of one draw. */
 let current = null;
@@ -65,6 +66,7 @@ function charCss(style, model) {
 }
 
 let currentModel = null;
+let currentImages = null;
 
 export class Renderer {
   /**
@@ -80,12 +82,25 @@ export class Renderer {
     // as well made the two disagree by a fraction of a millimetre.
     current = documentFields(model);
     currentModel = model;
+    currentImages = images;
     try {
       // Blocks after a section mark flow in its columns, up to the next mark.
       const out = [];
       let flow = null;
+      // The drawings anchored to each paragraph go just before it, those whose paragraph is gone before the first.
+      const anchored = new Map();
+      const known = new Set(model.blocks.map((b) => b.id));
+      for (const o of model.drawings ?? []) {
+        if (o.anchor?.type === 'page' || o.anchor?.type === 'as-char') continue;
+        const at = known.has(o.anchor?.block) ? o.anchor.block : model.blocks[0]?.id;
+        if (!anchored.has(at)) anchored.set(at, []);
+        anchored.get(at).push(o);
+      }
+      const drawingOptions = { objects: model.drawings ?? [], image: (o) => images.get(o.resource) ?? null };
       for (const block of model.blocks) {
         const element = this.blockElement(block, model, images);
+        const marks = anchorElements([...(anchored.get(block.id) ?? [])].sort((a, b) => (a.z ?? 0) - (b.z ?? 0)), drawingOptions);
+        if (marks.length) (flow ?? { append: (...e) => out.push(...e) }).append(...marks);
         if (block.kind === 'section') {
           out.push(element);
           flow = null;
@@ -102,9 +117,11 @@ export class Renderer {
       }
       const notes = notesElement(footnotesAtEnd ? current : { ...current, footnotes: [] });
       this.surface.replaceChildren(...out, ...(notes ? [notes] : []));
+      if (model.drawings?.length) placeDrawings(this.surface, model);
     } finally {
       current = null;
       currentModel = null;
+      currentImages = null;
     }
   }
 
@@ -374,6 +391,16 @@ function objectElement(run) {
     case 'seq':
       shown.textContent = String(fields?.seqs.get(object.id)?.number ?? '#');
       break;
+    case 'drawing': {
+      // A drawing anchored as a character stands in the line like a large letter.
+      const o = currentModel?.drawings?.find((d) => d.id === object.id);
+      if (o) {
+        const drawn = drawingHolder(o, { objects: currentModel.drawings, image: (x) => currentImages?.get(x.resource) ?? null });
+        drawn.classList.add('as-char');
+        shown.append(drawn);
+      } else shown.textContent = '';
+      break;
+    }
     case 'merge':
       shown.className = 'merge-field';
       shown.textContent = `«${object.name}»`;
@@ -461,11 +488,12 @@ function runElement(run) {
     node = span;
   }
 
-  if (run.color || run.highlight || run.size) {
+  if (run.color || run.highlight || run.size || run.font) {
     const span = document.createElement('span');
     if (run.color) span.style.color = run.color;
     if (run.highlight) span.style.backgroundColor = run.highlight;
     if (run.size) span.style.fontSize = `${run.size * PT}px`;
+    if (run.font) span.style.fontFamily = `${JSON.stringify(run.font)}, ${FONT_STACKS.serif}`;
     span.append(node);
     node = span;
   }

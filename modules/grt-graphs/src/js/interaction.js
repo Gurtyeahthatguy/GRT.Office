@@ -1,5 +1,6 @@
 /** Mouse and keyboard on the canvas. */
 
+import { withMembers } from './containers.js';
 import { portCentre } from './render.js';
 
 const DRAG_THRESHOLD = 3;
@@ -80,6 +81,8 @@ export class Interaction {
   }
 
   down(event) {
+    // Presses the drawing layer takes, on its objects, its handles or with a drawing tool, are not Graphs' own.
+    if (this.ignore?.(event)) return;
     if (event.button === 1 || event.altKey) {
       this.gesture = { kind: 'pan', lastX: event.clientX, lastY: event.clientY };
       return;
@@ -146,7 +149,8 @@ export class Interaction {
       }
       this.onSelectionChange();
 
-      const nodeIds = [...this.selection].filter((s) => this.model.node(s));
+      // A container carries what it holds.
+      const nodeIds = withMembers(this.model, [...this.selection].filter((s) => this.model.node(s)));
       this.gesture = {
         kind: 'move',
         ids: nodeIds,
@@ -288,6 +292,7 @@ export class Interaction {
         const box = normalise(gesture.origin, gesture.current);
         if (box.w > 2 && box.h > 2) {
           for (const node of this.model.nodes) {
+            if (node.hidden) continue;
             if (node.x + node.w >= box.x && node.x <= box.x + box.w
               && node.y + node.h >= box.y && node.y <= box.y + box.h) {
               this.selection.add(node.id);
@@ -305,6 +310,7 @@ export class Interaction {
   }
 
   doubleClick(event) {
+    if (this.ignore?.(event)) return;
     const { id } = hitTarget(event.target);
 
     // Double-clicking a bent connector straightens it.

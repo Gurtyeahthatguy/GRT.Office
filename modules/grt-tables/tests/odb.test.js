@@ -63,6 +63,14 @@ describe('an HSQLDB script', () => {
     expect(data).toContain(`INSERT OR REPLACE INTO sqlite_sequence (name, seq) VALUES ('a"b', 4);`);
   });
 
+  it('is written with two hundred thousand rows, its counter after the largest', () => {
+    const rows = Array.from({ length: 200000 }, (_, i) => [i + 1, `r${i}`]);
+    const tables = [{ name: 'big', columns: [{ name: 'id', declared: 'INTEGER', autoIncrement: true, notNull: true }, { name: 'name', declared: 'TEXT' }], primaryKey: ['id'], foreignKeys: [], indexes: [], rows }];
+    const script = writeOdb({ tables, queries: [] }).find((e) => e.name === 'database/script').data;
+    expect(script).toContain('INSERT INTO "big" VALUES(200000,\'r199999\')');
+    expect(script).toContain('RESTART WITH 200001');
+  });
+
   it('is written back so that it reads the same', () => {
     const tables = [
       { name: 'regions', columns: [{ name: 'id', declared: 'INTEGER', autoIncrement: true, notNull: true }, { name: 'name', declared: 'TEXT' }], primaryKey: ['id'], foreignKeys: [], indexes: [], rows: [[1, 'Nörd']] },

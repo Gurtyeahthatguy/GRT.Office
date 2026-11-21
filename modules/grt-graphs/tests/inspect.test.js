@@ -15,7 +15,7 @@ describe('the inspector of a diagram', () => {
     node.live = { path: '/home/someone/Private/sales.ods', cell: 'B2' };
     model.setLink([node.id], 'https://intranet.example.com/');
     model.addComment({ x: 10, y: 10, text: 'Ask Luigi' });
-    expect(Object.fromEntries(graphFindings(model).map((f) => [f.id, f.count]))).toEqual({ live: 1, comments: 1, links: 1, data: 1 });
+    expect(Object.fromEntries(graphFindings(model).map((f) => [f.id, f.count]))).toEqual({ live: 1, comments: 1, names: 0, links: 1, data: 1 });
     const copy = cleanGraphCopy(model, ['live', 'comments', 'links', 'data']);
     const all = JSON.stringify(copy) + new TextDecoder().decode(encodeBlock(writeOdg(copy).entries));
     for (const secret of ['/home/someone', 'intranet.example.com', 'Luigi', 'Mario']) expect(all.includes(secret), secret).toBe(false);

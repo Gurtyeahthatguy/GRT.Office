@@ -9,10 +9,16 @@ import { GridModel } from './model.js';
 import { SheetController } from './controller.js';
 import { GridView } from './grid.js';
 import { showPanel, showChoice, readFields, escapeHtml, isDialogOpen } from './core/panel.js';
+import { contextItems, barBox } from './core/toolbar.js';
+import { icon } from './core/icons.js';
+import { galleryHtml, galleryChoice } from './core/draw/gallery.js';
+import { noteSignatures, packageSignatures, showSignatures } from './core/signatures/ui.js';
 import { readPackage, writePackage } from './core/package.js';
 import { withPassword, passwordFields, wirePasswordFields, passwordFrom, canProtect, PROTECTION } from './core/protection.js';
 import { readOds, writeOds } from './core/formats/ods.js';
 import { readXlsx, writeXlsx } from './core/formats/xlsx.js';
+import { readXls, writeXls } from './core/formats/xls.js';
+import { readSpreadsheet2003, writeSpreadsheet2003 } from './core/formats/spreadsheet-2003.js';
 import { openPalette, isPaletteOpen } from './core/palette.js';
 import { THEMES, applyTheme, isTheme } from './core/theme.js';
 import { Keeper, MODES, isMode } from './core/keeper.js';
@@ -28,6 +34,7 @@ import { isTemplate, baseFormat, asTemplate } from './core/formats/templates.js'
 import { createMenubar, paletteEntries, showContextMenu } from './core/menubar.js';
 import * as sheets from './sheets.js';
 import { templateManager } from './core/template-manager.js';
+import { startCenter } from './core/start-center.js';
 import { searchEverywhere } from './core/everywhere.js';
 import { applyShortcuts, customizeDialog } from './core/customize.js';
 import { wireToolbars } from './core/toolbar.js';
@@ -45,6 +52,7 @@ import { aboutDialog, licencesDialog } from './core/about.js';
 import { FUNCTIONS } from './functions/index.js';
 import { cellText } from './cell-text.js';
 import { showLink } from './core/honest-links.js';
+import { gridDrawing } from './drawing.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -54,12 +62,14 @@ let view = null;
 let path = null;
 let runtime = { ephemeral: false, version: '0.0.0', initialFile: null };
 let settings = { theme: 'system', autosave: 'recovery' };
+/** The package of a signed file as it was opened, so its signatures can be checked again. */
+let signedPackage = null;
 /** Spelling with GRT's own dictionaries. */
 const spellChecker = createSpellChecker();
 
 /** Formats a spreadsheet can be saved back into. */
-const WRITABLE = new Set(['grt', 'ods', 'fods', 'xlsx', 'ots', 'xltx']);
-const OPENABLE = /\.(grt|ods|fods|xlsx|ots|xltx|xltm)$/i;
+const WRITABLE = new Set(['grt', 'ods', 'fods', 'xlsx', 'ots', 'xltx', 'xls', 'xlt', 'xml']);
+const OPENABLE = /\.(grt|ods|fods|xlsx|ots|xltx|xltm|xls|xlt|xlw|xml)$/i;
 
 function formatOf(file) {
   return (/\.([^.\\/]+)$/.exec(file ?? '')?.[1] ?? '').toLowerCase() || null;
@@ -128,6 +138,12 @@ function normaliseSettings(raw) {
     // Checked against the menus once they exist.
     keyboard: raw?.keyboard && typeof raw.keyboard === 'object' ? raw.keyboard : {},
     spellLanguage: /^(it|en)-[A-Z]{2}$/.test(raw?.spellLanguage ?? '') ? raw.spellLanguage : (/^it\b/i.test(globalThis.navigator?.language ?? '') ? 'it-IT' : 'en-US'),
+    drawGrid: {
+      show: raw?.drawGrid?.show === true, snap: raw?.drawGrid?.snap === true,
+      step: Number.isFinite(raw?.drawGrid?.step) && raw.drawGrid.step >= 1 && raw.drawGrid.step <= 50 ? raw.drawGrid.step : 5,
+    },
+    helplines: raw?.helplines !== false,
+    trustedCertificates: Array.isArray(raw?.trustedCertificates) ? raw.trustedCertificates.filter((c) => typeof c === 'string').slice(0, 200) : [],
   };
 }
 
@@ -166,8 +182,26 @@ async function refusedValue(error, written) {
 
 // Drawing
 
+/** The drawings of the sheets: shapes, pictures, text boxes and formulas over the cells. */
+const drawing = gridDrawing({
+  view: () => view, sheet: () => sheet, model: () => model, toast, refresh: () => redraw(),
+  gridOptions: () => settings.drawGrid ?? { show: false, snap: false, step: 5 },
+  helplines: () => settings.helplines !== false,
+  pickImage: async () => {
+    const path = await io.pickToOpen(io.FILTERS.image, 'Choose an image');
+    if (!path) return null;
+    const extension = (/\.(\w+)$/.exec(path)?.[1] ?? 'png').toLowerCase();
+    return { bytes: await io.readBytes(path), type: { jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }[extension] ?? 'image/png', name: io.baseName(path) };
+  },
+  saveBytes: async (bytes, name) => {
+    const path = await io.pickToSave(name, io.FILTERS.image, 'Save Image');
+    if (path) { await io.writeBytes(path, bytes); toast(`Saved ${io.baseName(path)}`); }
+  },
+});
+
 function redraw() {
   view.draw();
+  drawing.layout();
   drawFormulaBar();
   drawSheetTabs();
   drawSummary();
@@ -216,6 +250,9 @@ function drawStylePicker() {
     picker.dataset.styles = signature;
   }
   picker.value = sheet.namedStyleAt(sheet.active.row, sheet.active.col);
+  const look = sheet.styleAt(sheet.active.row, sheet.active.col);
+  if (document.activeElement !== el('font-picker') && el('font-picker').value !== (look.font ?? '')) el('font-picker').value = look.font ?? '';
+  if (document.activeElement !== el('size-picker') && el('size-picker').value !== String(look.size ?? '')) el('size-picker').value = look.size ?? '';
   cellStylePreview?.refresh();
 }
 
@@ -266,11 +303,18 @@ async function open(target) {
   const format = baseFormat(formatOf(target));
   const template = isTemplate(formatOf(target));
   let opened;
+  let signed = null;
   try {
     opened = await withPassword(io.baseName(target), async (password) => {
-      if (format === 'ods') return readOds(await readPackage(target, { password }));
-      if (format === 'xlsx') return readXlsx(await readPackage(target, { password }));
+      if (format === 'ods' || format === 'xlsx') {
+        const pkg = await readPackage(target, { password });
+        const result = format === 'ods' ? readOds(pkg) : readXlsx(pkg);
+        signed = await noteSignatures(pkg, result.losses, settings);
+        return result;
+      }
       if (format === 'fods') return readOds(await io.readText(target));
+      if (['xls', 'xlt', 'xlw', 'ett'].includes(format)) return readXls(await io.readBytes(target));
+      if (format === 'xml') return readSpreadsheet2003(await io.readText(target));
       return { document: await io.readDocument(target, password), losses: null };
     });
   } catch (error) {
@@ -280,6 +324,7 @@ async function open(target) {
   if (!opened) return;
   const result = opened.value;
   attach(new GridModel(result.document));
+  signedPackage = template ? null : signed;
   // A template starts a new document: nothing is saved back into it unless asked.
   path = template ? null : target;
   file = template ? { format: 'grt', losses: [], confirmed: false, password: null }
@@ -300,6 +345,7 @@ async function newConfirmed() {
   if (!await keeper.confirmLeave()) return;
   attach(new GridModel());
   path = null;
+  signedPackage = null;
   file = { format: 'grt', losses: [], confirmed: false, password: null };
   document.title = 'GRT Grid';
   redraw();
@@ -315,6 +361,7 @@ async function openRecovered(copy, meta) {
   // Without its password the copy stays where it is, offered again next time.
   if (!opened) throw new Error('the copy is kept for next time');
   attach(new GridModel(opened.value));
+  signedPackage = null;
   path = meta.path ?? null;
   const format = formatOf(path) ?? 'grt';
   file = {
@@ -336,6 +383,9 @@ const FORMAT_NAMES = {
   fods: 'Flat OpenDocument spreadsheet (.fods)',
   ots: 'OpenDocument template (.ots)',
   xltx: 'Excel template (.xltx)',
+  xls: 'Excel 97-2003 workbook (.xls)',
+  xlt: 'Excel 97-2003 template (.xlt)',
+  xml: 'Excel 2003 XML workbook (.xml)',
 };
 
 /** Asks which format to save in, with or without a password, then where. */
@@ -380,6 +430,17 @@ async function writeAs(destination, format, password = null) {
     await io.writeText(destination, text);
     return losses?.lines() ?? [];
   }
+  if (format === 'xml') {
+    const { text, losses } = writeSpreadsheet2003(json);
+    await io.writeText(destination, text);
+    return losses.lines();
+  }
+  if (format === 'xls' || format === 'xlt') {
+    // Excel 97's own format has a password scheme too weak to offer, so none is written.
+    const { bytes, losses } = writeXls(json);
+    await io.writeBytes(destination, bytes);
+    return losses.lines();
+  }
   const base = baseFormat(format);
   const { entries, losses } = base === 'ods' ? writeOds(json) : writeXlsx(json);
   await writePackage(destination, isTemplate(format) ? asTemplate(entries, format) : entries, { protection: PROTECTION[format], password });
@@ -422,6 +483,8 @@ async function save({ as = false, silent = false } = {}) {
     await io.notify(`Cannot save.\n\n${error.message ?? error}`, 'Save failed');
     return false;
   }
+  // The file written, which the workbook now is, carries no signature.
+  signedPackage = null;
   if (destination !== path || format !== file.format) file = { format, losses: [], confirmed: false, password };
   else file.password = password;
   path = destination;
@@ -615,15 +678,31 @@ function printFromFields(s, before) {
 
 function printJobs(s) {
   const active = sheet.sheet;
+  const printedObjects = printedCharts();
   const own = { ...active.print, ...printFromFields(s, active.print) };
   const paper = { size: own.size, width: own.width, height: own.height, orientation: own.orientation, margin: own.margin };
   if (s.what === 'selection') return [{ sheet: active, setup: own, area: sheet.selection }];
   if (s.what === 'all') {
     return model.sheets.map((each) => (each === active
-      ? { sheet: active, setup: own, area: own.area ?? active.usedBounds() }
-      : { sheet: each, setup: { ...each.print, ...paper }, area: printedArea(each) }));
+      ? { sheet: active, setup: own, area: own.area ?? printedArea(active, printedObjects) }
+      : { sheet: each, setup: { ...each.print, ...paper }, area: printedArea(each, printedObjects) }));
   }
-  return [{ sheet: active, setup: own, area: own.area ?? active.usedBounds() }];
+  return [{ sheet: active, setup: own, area: own.area ?? printedArea(active, printedObjects) }];
+}
+
+/** Insert, Headers and Footers: the lines printed above and below each page of this sheet. */
+async function headersFooters() {
+  const print = sheet.sheet.print ?? {};
+  const codes = '&amp;A the sheet, &amp;P the page, &amp;N the pages, &amp;F the file, &amp;D the date';
+  if (!await showPanel('Headers and Footers', `
+    <label class="inline"><input type="checkbox" data-field="labels"${print.labels ? ' checked' : ''}> Print a header and a footer</label>
+    <label>Header<input type="text" data-field="header" maxlength="200" value="${escapeHtml(print.header ?? '&A')}"></label>
+    <label>Footer<input type="text" data-field="footer" maxlength="200" value="${escapeHtml(print.footer ?? 'Page &P of &N')}"></label>
+    <p class="hint">${codes}.</p>`, 'OK')) return;
+  const f = readFields();
+  sheet.sheet.print = { ...print, labels: Boolean(f.labels), header: String(f.header ?? '').slice(0, 200), footer: String(f.footer ?? '').slice(0, 200) };
+  model.dirty = true;
+  redraw();
 }
 
 async function printSheets() {
@@ -732,10 +811,11 @@ async function exportPdf() {
   const destination = await io.pickToSave(io.withExtension(path ?? 'spreadsheet.grt', 'pdf'), io.FILTERS.pdf, 'Export PDF');
   if (!destination) return;
   // Every sheet, each on its own paper as its print settings say.
-  const planned = planPages(model.sheets.map((each) => ({ sheet: each, setup: each.print, area: printedArea(each) })));
+  const objects = printedCharts();
+  const planned = planPages(model.sheets.map((each) => ({ sheet: each, setup: each.print, area: printedArea(each, objects) })));
   const report = { replaced: 0 };
   const rendered = [];
-  for (const page of pdfPages(planned, model.styles, printedCharts())) rendered.push(await renderToPdf(page, { audit: false, report }));
+  for (const page of pdfPages(planned, model.styles, objects)) rendered.push(await renderToPdf(page, { audit: false, report }));
   await io.writeBytes(io.withExtension(destination, 'pdf'), await mergePdfPages(rendered));
   toast(report.replaced > 0
     ? `Exported ${planned.length} page(s), ${report.replaced} character(s) the PDF font cannot draw, replaced; printing to PDF keeps them`
@@ -815,6 +895,13 @@ function wire() {
   el('style-picker').onchange = (event) => {
     sheet.applyStyle(event.target.value);
   };
+  // The Formatting bar's font name, size and colours, over the cells chosen, as Calc's bar sets them.
+  const backToGrid = () => { redraw(); el('grid').focus(); };
+  barBox(el('font-picker'), (value) => sheet.formatCells({ font: value.trim() || null }), backToGrid);
+  barBox(el('size-picker'), (value) => { const size = Number(value); sheet.formatCells({ size: size >= 4 && size <= 96 ? size : null }); }, backToGrid);
+  el('color-picker').onchange = (event) => { sheet.formatCells({ color: event.target.value }); backToGrid(); };
+  el('bg-picker').onchange = (event) => { sheet.formatCells({ bg: event.target.value }); backToGrid(); };
+  for (const holder of document.querySelectorAll('[data-icon-static]')) holder.innerHTML = icon(holder.dataset.iconStatic) ?? '';
 
   el('btn-insert-row').onclick = () => sheet.insertRows(sheet.selection.top, rowsSelected());
   el('btn-insert-col').onclick = () => sheet.insertColumns(sheet.selection.left, colsSelected());
@@ -829,6 +916,32 @@ function wire() {
   el('sheet-tabs').addEventListener('dblclick', (event) => {
     const tab = event.target.closest('[data-sheet]');
     if (tab) sheets.renameSheetDialog(sheet, tab.dataset.sheet, toast);
+  });
+  // The right click over cells, row and column headers, with Calc's own items for each.
+  el('grid').addEventListener('contextmenu', (event) => {
+    const colHead = event.target.closest('.grid-column-header [data-col]');
+    const rowHead = event.target.closest('.grid-row-header [data-row]');
+    const cellNode = event.target.closest('.cell[data-row][data-col]');
+    if (!colHead && !rowHead && !cellNode) return;
+    const within = (r, c) => r >= sheet.selection.top && r <= sheet.selection.bottom && c >= sheet.selection.left && c <= sheet.selection.right;
+    let paths;
+    if (colHead) {
+      const col = Number(colHead.dataset.col);
+      if (!(col >= sheet.selection.left && col <= sheet.selection.right && sheet.selection.top === 0)) sheet.selectColumn(col);
+      paths = ['Edit/Cut', 'Edit/Copy', 'Edit/Paste', 'separator', 'Sheet/Insert Columns/Columns Before', 'Sheet/Insert Columns/Columns After', 'Sheet/Delete Columns', 'Sheet/Delete Contents', 'separator', 'Format/Columns/Width…', 'Format/Columns/Optimal Width', 'separator', 'Format/Columns/Hide', 'Format/Columns/Show', 'separator', 'Format/Cells…'];
+    } else if (rowHead) {
+      const row = Number(rowHead.dataset.row);
+      if (!(row >= sheet.selection.top && row <= sheet.selection.bottom && sheet.selection.left === 0)) sheet.selectRow(row);
+      paths = ['Edit/Cut', 'Edit/Copy', 'Edit/Paste', 'separator', 'Sheet/Insert Rows/Rows Above', 'Sheet/Insert Rows/Rows Below', 'Sheet/Delete Rows', 'Sheet/Delete Contents', 'separator', 'Format/Rows/Height…', 'Format/Rows/Optimal Height', 'separator', 'Format/Rows/Hide', 'Format/Rows/Show', 'separator', 'Format/Cells…'];
+    } else {
+      const row = Number(cellNode.dataset.row);
+      const col = Number(cellNode.dataset.col);
+      if (!within(row, col)) sheet.select(row, col);
+      paths = ['Edit/Cut', 'Edit/Copy', 'Edit/Paste', 'Edit/Paste Special/Paste Special…', 'separator', 'Sheet/Insert Rows/Rows Above', 'Sheet/Insert Columns/Columns Before', 'Sheet/Delete Rows', 'Sheet/Delete Columns', 'Sheet/Delete Contents', 'separator', 'Insert/Comment', 'Sheet/Cell Comment/Edit Comment', 'separator', 'Format/Merge and Unmerge Cells/Merge Cells', 'Format/Cells…'];
+    }
+    redraw();
+    const items = contextItems(menus, paths);
+    if (items.length) showContextMenu(event, items);
   });
   el('sheet-tabs').addEventListener('contextmenu', (event) => {
     const tab = event.target.closest('[data-sheet]');
@@ -850,8 +963,20 @@ function wire() {
       exportPdf: () => exportPdf(),
       autoRedact: () => autoRedactDialog(),
       inspect: () => inspectWorkbook(),
+      signatures: () => showSignatures({
+        title: 'Digital signatures',
+        check: (trusted) => (signedPackage ? packageSignatures(signedPackage, trusted) : []),
+        settings: () => settings,
+        saveSettings: () => io.writeSettings(settings),
+        pickCertificate: async () => {
+          const chosen = await io.pickToOpen(io.FILTERS.certificate, 'Trust a certificate');
+          return chosen ? io.readBytes(chosen) : null;
+        },
+        toast,
+      }).catch((error) => io.notify(String(error.message ?? error), 'Digital signatures')),
       redactedExport: () => redactedExport(),
       print: () => printSheets(),
+      headersFooters: () => headersFooters(),
       settings: () => openSettings(),
       setPrintArea: () => {
         const { top, left, bottom, right } = sheet.selection;
@@ -865,7 +990,8 @@ function wire() {
       removeBreaks: () => sheet.setPrint(sheet.sheetId, { rowBreaks: [], colBreaks: [] }),
       saveCopy: () => saveCopy(),
       saveTemplate: () => saveCopy('ots'),
-      templates: () => templateManager({ extensions: ['ots', 'xltx', 'xltm'], open: openConfirmed, toast }),
+      templates: () => templateManager({ extensions: ['ots', 'xltx', 'xltm', 'xlt'], open: openConfirmed, toast }),
+      startCenter: () => startCenter({ kind: 'spreadsheet', extensions: ['ots', 'xltx', 'xltm'], newDocument: () => el('btn-new').click(), openFile: () => el('btn-open').click(), open: openConfirmed, templates: () => templateManager({ extensions: ['ots', 'xltx', 'xltm', 'xlt'], open: openConfirmed, toast }) }),
       everywhere: () => searchEverywhere({ kind: 'grid', open: openConfirmed, toast }),
       // The text of this sheet's cells, row by row; numbers and formulas are not checked.
       spelling: () => spellingOverItems({
@@ -895,6 +1021,13 @@ function wire() {
       },
       reload: () => { if (path) openConfirmed(path); else toast('This spreadsheet has not been saved yet'); },
       toggleSidebar: () => el('properties').classList.toggle('hidden'),
+      drawGrid: (key) => {
+        if (key === 'helplines') settings.helplines = settings.helplines === false;
+        else settings.drawGrid[key] = !settings.drawGrid[key];
+        io.writeSettings(settings);
+        redraw();
+      },
+      drawGridOn: (key) => (key === 'helplines' ? settings.helplines !== false : Boolean(settings.drawGrid?.[key])),
       functionList: () => functionList(),
       insertDate: () => insertNow('date'),
       insertTime: () => insertNow('time'),
@@ -903,6 +1036,7 @@ function wire() {
       pasteUnformatted: () => pasteUnformatted(),
       pasteSpecial: () => pasteSpecialDialog(),
       exportChart: () => exportChart(),
+      drawing,
       askSize: (axis) => askSize(axis),
       bestSize: (axis) => bestSize(axis),
       about: () => aboutDialog({ name: 'GRT Grid', version: runtime.version }),
@@ -953,6 +1087,8 @@ const rowsSelected = () => sheet.selection.bottom - sheet.selection.top + 1;
 const colsSelected = () => sheet.selection.right - sheet.selection.left + 1;
 
 function onGridMouseDown(event) {
+  // Presses on drawings, their handles, or with a drawing tool in hand are the drawing layer's.
+  if (event.target.closest('.sheet-drawing, .sheet-draw-overlay [data-handle], .sheet-draw-overlay.drawing-tool, .drawing-editor')) return;
   const frame = event.target.closest('.chart-frame');
   if (frame) {
     event.preventDefault();
@@ -1160,7 +1296,23 @@ function describeCells() {
 }
 
 function wireFormatBar() {
-  properties = createProperties(el('properties'), describeCells);
+  const esc = (t) => escapeHtml(String(t ?? ''));
+  // The sidebar's decks beside Properties: cell Styles, the Navigator's sheets and names, the Functions, the Gallery's shapes.
+  properties = createProperties(el('properties'), describeCells, { decks: [
+    { id: 'styles', label: 'Styles', html: () => `<ul class="deck-list">${sheet.namedStyles.map(({ id, name }) => `<li><button type="button" data-deck-style="${esc(id)}">${esc(name)}</button></li>`).join('')}</ul>`,
+      click: (event) => { const b = event.target.closest('[data-deck-style]'); if (b) { sheet.applyStyle(b.dataset.deckStyle); el('grid').focus(); } } },
+    { id: 'navigator', label: 'Navigator', html: () => `<div class="deck-group">Sheets</div><ul class="deck-list">${model.sheets.map((x) => `<li><button type="button" data-deck-sheet="${esc(x.id)}">${esc(x.name)}${x.hidden ? ' (hidden)' : ''}</button></li>`).join('')}</ul>`
+      + `<div class="deck-group">Names</div><ul class="deck-list">${Object.keys(model.names ?? {}).sort().map((n) => `<li><button type="button" data-deck-name="${esc(n)}">${esc(n)}</button></li>`).join('') || '<li class="empty">None</li>'}</ul>`,
+      click: (event) => {
+        const tab = event.target.closest('[data-deck-sheet]');
+        if (tab) { sheet.switchSheet(tab.dataset.deckSheet); redraw(); return; }
+        const name = event.target.closest('[data-deck-name]');
+        if (name) goToPlace(String(model.names?.[name.dataset.deckName] ?? '').replace(/^=/, '').replace(/\$/g, ''));
+      } },
+    { id: 'functions', label: 'Functions', html: () => `<ul class="deck-list">${Object.keys(FUNCTIONS).sort().map((n) => `<li><button type="button" data-deck-function="${esc(n)}">${esc(n)}</button></li>`).join('')}</ul>`,
+      click: (event) => { const b = event.target.closest('[data-deck-function]'); if (!b) return; const input = el('formula-input'); input.focus(); input.value = `=${b.dataset.deckFunction}(`; sheet.updateEdit(input.value); } },
+    { id: 'gallery', label: 'Gallery', html: () => galleryHtml(), click: (event) => { const type = galleryChoice(event); if (type) { drawing.commands.act.shape(type); toast('Drag on the sheet to draw it'); } } },
+  ] });
   const on = (id, run) => { el(id).onclick = () => { run(); el('grid').focus(); }; };
   on('btn-bold', () => sheet.toggleLook('bold'));
   on('btn-italic', () => sheet.toggleLook('italic'));
@@ -1190,6 +1342,7 @@ function sortAscending(order) {
 function onKey(event) {
   if (isDialogOpen() || isPaletteOpen() || isPrintPreviewOpen()) return;
   if (document.activeElement === el('formula-input')) return;
+  if (drawing.handleKey(event)) return;
 
   const control = event.ctrlKey || event.metaKey;
 
@@ -1389,9 +1542,20 @@ async function pasteSpecialDialog() {
   sheet.pasteSpecial(held, { ...fields, operation: fields.operation || null });
 }
 
-/** Every chart of the document as print draws it: in its sheet's pixels, on white paper. */
+/** Every chart and drawing of the document as print draws it: in its sheet's pixels, on white paper. */
 function printedCharts() {
-  return model.charts.map((chart) => {
+  const drawings = model.drawings.map((o) => {
+    const owner = model.sheetById(o.sheet) ?? model.sheets[0];
+    const at = { x: 0, y: 0 };
+    if (o.anchor.type === 'cell') {
+      for (let c = 0; c < o.anchor.col; c += 1) at.x += owner.columnWidth(c);
+      for (let r = 0; r < o.anchor.row; r += 1) at.y += owner.rowHeight(r);
+    }
+    const shift = (x) => ({ ...x, x: x.x + at.x, y: x.y + at.y, ...(x.children ? { children: x.children.map(shift) } : {}) });
+    const object = shift(o);
+    return { sheetId: owner.id, x: object.x, y: object.y, width: o.w, height: o.h, object };
+  });
+  return [...drawings, ...model.charts.map((chart) => {
     const owner = model.sheetById(chart.sheet) ?? model.sheets[0];
     const at = { x: 0, y: 0 };
     for (let c = 0; c < (chart.anchor?.col ?? 0); c += 1) at.x += owner.columnWidth(c);
@@ -1402,7 +1566,7 @@ function printedCharts() {
       sheetId: owner.id, x: at.x + (chart.anchor?.dx ?? 0), y: at.y + (chart.anchor?.dy ?? 0), width, height,
       svg: chartSvg(chartSpec(chart, sheet.engine, model), { width, height, background: '#ffffff' }),
     };
-  });
+  })];
 }
 
 /** Drops down the choices of the active cell's list rule, and writes the one picked. */

@@ -72,19 +72,18 @@ describe('The page handed to the engine', () => {
     model.addNode({ x: -400, y: -300, w: 100, h: 40 });
 
     const page = toPrintPage(model);
-    const rect = page.primitives.find((p) => p.type === 'rect');
+    const outline = page.primitives.find((p) => p.type === 'path');
+    const numbers = outline.d.match(/-?[\d.]+/g).map(Number);
 
-    expect(rect.x).toBeGreaterThanOrEqual(0);
-    expect(rect.y).toBeGreaterThanOrEqual(0);
+    expect(Math.min(...numbers)).toBeGreaterThanOrEqual(0);
   });
 
   it('describes every node and every connector', () => {
     const page = toPrintPage(sample());
 
     expect(page.primitives.filter((p) => p.type === 'polyline')).toHaveLength(2);
-    expect(page.primitives.filter((p) => p.type === 'ellipse')).toHaveLength(1);
-    expect(page.primitives.filter((p) => p.type === 'rect')).toHaveLength(1);
-    expect(page.primitives.filter((p) => p.type === 'polygon')).toHaveLength(1);
+    // Each node is one outline, whatever its shape.
+    expect(page.primitives.filter((p) => p.type === 'path')).toHaveLength(3);
   });
 
   it('skips a connector whose endpoint is gone', () => {
@@ -111,8 +110,8 @@ describe('Filled shapes', () => {
     expect(page).toBeDefined();
     // The polygon primitive must carry a fill for the engine to have anything
     // to fill with.
-    const polygon = toPrintPage(model).primitives.find((p) => p.type === 'polygon');
-    expect(polygon.fill).toBeTruthy();
+    const outline = toPrintPage(model).primitives.find((p) => p.type === 'path');
+    expect(outline.fill).toBeTruthy();
   });
 
   it('still writes a clean PDF once shapes are filled', async () => {

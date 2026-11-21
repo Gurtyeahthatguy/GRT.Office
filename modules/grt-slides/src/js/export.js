@@ -6,8 +6,32 @@ import { ownChartSpec } from './core/formats/chart-object.js';
 import { mathSvg } from './core/math.js';
 import { SlidesModel, fontStack } from './model.js';
 import { fontFaceRules } from './fonts.js';
-import { parsePath, mapPath, formatPath, presetOutline } from './core/paths.js';
 import { splitParagraphs, parasFor, numbersFor, labelFor, indentOf, runCss } from './paragraphs.js';
+import { drawingSvg, pagePaths } from './core/draw/render.js';
+
+/** A slide's background as CSS: its colour, and its picture over the colour when it has one. */
+export function backgroundCss(model, slideId, images = new Map()) {
+  const colour = model.slideBackground(slideId);
+  const picture = model.slide(slideId)?.backgroundImage;
+  const source = picture && images.get(picture);
+  return source ? `${colour} url("${source}") center / 100% 100% no-repeat` : colour;
+}
+
+/** The kinds the drawing core draws in full. */
+const DRAWN = new Set(['shape', 'path', 'connector', 'group']);
+
+/** What a drawing object looks like when it has no line or area of its own: Slides' fill and outline, or the theme's. */
+export function drawDefaults(element, model) {
+  const fill = element.fill ?? model.theme.accent ?? '#1f6feb';
+  const lined = element.kind === 'path' || element.kind === 'connector';
+  return {
+    fill: fill === 'none' ? { type: 'none' } : { type: 'solid', color: fill },
+    line: element.stroke ? { color: element.stroke, width: element.strokeWidth ?? 2 } : lined ? { color: model.theme.text ?? '#333333', width: 4 } : { style: 'none' },
+  };
+}
+
+/** Whether an image needs the drawing core: cropped, recoloured, flipped or outlined. */
+const drawnImage = (e) => e.kind === 'image' && (e.crop || e.adjust || e.flipH || e.flipV || e.line);
 
 const escape = (value) => String(value ?? '')
   .replace(/[<>&"']/g, (c) => ({
@@ -100,7 +124,12 @@ export function runMarkup(run) {
  * @param {SlidesModel} model
  * @param {Map<string, string>} images resource path to data URL
  */
-export function elementMarkup(element, model, images = new Map()) {
+export function elementMarkup(element, model, images = new Map(), objects = null) {
+  if (DRAWN.has(element.kind) || drawnImage(element)) {
+    const svg = drawingSvg(element, { objects: objects ?? model.slides.find((s) => s.elements.includes(element))?.elements ?? [], image: (o) => images.get(o.resource), defaults: drawDefaults(element, model), idPrefix: 'el' });
+    const label = element.description || element.name ? ` role="img" aria-label="${escape([element.name, element.description].filter(Boolean).join(': '))}"` : '';
+    return `<div class="el drawn"${label} style="${boxStyle(element)}">${svg}</div>`;
+  }
   if (element.kind === 'chart') {
     const svg = chartSvg(ownChartSpec(element), { width: element.w, height: element.h, text: model.theme.text ?? '#222222' });
     return `<div class="el chart" style="${boxStyle(element)}">${svg.replace('<svg ', '<svg preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block" ')}</div>`;
@@ -132,20 +161,11 @@ export function elementMarkup(element, model, images = new Map()) {
       // dropped.
       return `<div class="el missing" style="${boxStyle(element)}"></div>`;
     }
-    const fit = element.fit === 'cover' ? 'cover' : 'contain';
+    const fit = element.fit === 'cover' ? 'cover' : element.fit === 'fill' ? 'fill' : 'contain';
     return `<div class="el" style="${boxStyle(element)}">`
       + `<img src="${source}" style="width:100%;height:100%;object-fit:${fit}" alt=""></div>`;
   }
 
-  if (element.kind === 'shape') {
-    const fill = escape(shapeFill(element, model));
-    // Drawn as inline SVG rather than a styled div.
-    return `<div class="el" style="${boxStyle(element)}">`
-      + `<svg viewBox="0 0 100 100" preserveAspectRatio="none" `
-      + `style="width:100%;height:100%;display:block;overflow:visible">`
-      + shapePath(element.shape, fill, element.stroke ? escape(element.stroke) : null, element.strokeWidth ?? 2, element.path)
-      + '</svg></div>';
-  }
 
   if (element.kind === 'table') {
     const line = escape(model.theme.text ?? '#666666');
@@ -198,38 +218,6 @@ export function lineEnds(element) {
   ];
 }
 
-/** A shape's fill, which may be none at all. */
-export function shapeFill(element, model) {
-  return element.fill ?? model.theme.accent ?? '#1f6feb';
-}
-
-/**
- * One shape, in a 0-100 box that stretches to whatever the element's size is.
- */
-export function shapePath(shape, fill, stroke = null, strokeWidth = 2, path = null) {
-  const paint = `fill="${fill}"${stroke ? ` stroke="${stroke}" stroke-width="${strokeWidth}" vector-effect="non-scaling-stroke"` : ''}`;
-  const polygon = (points) => `<polygon points="${points}" ${paint}/>`;
-
-  switch (shape) {
-    case 'path':
-      return `<path d="${escape(path ?? 'M0 0 L100 0 L100 100 L0 100 Z')}" ${paint}/>`;
-    case 'ellipse':
-      return `<ellipse cx="50" cy="50" rx="50" ry="50" ${paint}/>`;
-    case 'rounded':
-      return `<rect x="0" y="0" width="100" height="100" rx="10" ry="10" ${paint}/>`;
-    case 'diamond':
-      return polygon('50,0 100,50 50,100 0,50');
-    case 'parallelogram':
-      return polygon('20,0 100,0 80,100 0,100');
-    case 'hexagon':
-      return polygon('18,0 82,0 100,50 82,100 18,100 0,50');
-    case 'triangle':
-      return polygon('50,0 100,100 0,100');
-    default:
-      return `<rect x="0" y="0" width="100" height="100" ${paint}/>`;
-  }
-}
-
 /**
  * The whole deck as a single HTML file.
  * @param {SlidesModel} model
@@ -249,7 +237,7 @@ export function toHtml(model, images = new Map(), options = {}) {
     const elements = model.renderList(slide.id)
       .map((element) => elementMarkup(element, model, images))
       .join('');
-    const background = escape(model.slideBackground(slide.id));
+    const background = escape(backgroundCss(model, slide.id, images));
     const transition = TRANSITIONS.has(slide.transition) ? slide.transition : 'none';
     return `<section class="slide t-${transition}" data-index="${index}" `
       + `style="background:${background}">${elements}</section>`;
@@ -359,8 +347,17 @@ export function slideToSvg(model, slideId, images = new Map()) {
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
     `<rect width="${w}" height="${h}" fill="${escape(model.slideBackground(slideId))}"/>`,
   ];
+  const picture = model.slide(slideId)?.backgroundImage;
+  if (picture && images.get(picture)) parts.push(`<image width="${w}" height="${h}" href="${images.get(picture)}" preserveAspectRatio="none"/>`);
 
-  for (const element of model.renderList(slideId)) {
+  const elements = model.renderList(slideId);
+  for (const element of elements) {
+    if (DRAWN.has(element.kind) || drawnImage(element)) {
+      const inner = drawingSvg(element, { objects: elements, image: (o) => images.get(o.resource), defaults: drawDefaults(element, model), idPrefix: `s${parts.length}` });
+      const turn = element.rotation ? ` rotate(${round(element.rotation)} ${round(element.w / 2)} ${round(element.h / 2)})` : '';
+      parts.push(`<g transform="translate(${round(element.x)} ${round(element.y)})${turn}">${inner}</g>`);
+      continue;
+    }
     if (element.kind === 'image') {
       const source = images.get(element.resource);
       if (source) {
@@ -370,14 +367,6 @@ export function slideToSvg(model, slideId, images = new Map()) {
       continue;
     }
 
-    if (element.kind === 'shape') {
-      const fill = escape(shapeFill(element, model));
-      parts.push(`<svg x="${round(element.x)}" y="${round(element.y)}" `
-        + `width="${round(element.w)}" height="${round(element.h)}" `
-        + `viewBox="0 0 100 100" preserveAspectRatio="none" overflow="visible">`
-        + shapePath(element.shape, fill, element.stroke ? escape(element.stroke) : null, element.strokeWidth ?? 2, element.path) + '</svg>');
-      continue;
-    }
 
     if (element.kind === 'table') {
       const look = textLook(element, model);
@@ -465,14 +454,15 @@ export function slideToPrintPage(model, slideId, imageBytes = new Map()) {
   const primitives = [{
     type: 'rect', x: 0, y: 0, w, h, fill: model.slideBackground(slideId),
   }];
+  const picture = model.slide(slideId)?.backgroundImage;
+  if (picture && imageBytes.get(picture)) primitives.push({ type: 'image', bytes: imageBytes.get(picture), x: 0, y: 0, w, h, stretch: true });
 
-  for (const element of model.renderList(slideId)) {
-    if (element.kind === 'shape') {
-      const fill = shapeFill(element, model);
-      primitives.push({
-        type: 'path', d: shapeOutlineOnPage(element), fill: fill === 'none' ? null : fill,
-        ...(element.stroke ? { stroke: element.stroke, strokeWidth: element.strokeWidth ?? 2 } : {}),
-      });
+  const elements = model.renderList(slideId);
+  for (const element of elements) {
+    if (DRAWN.has(element.kind)) {
+      for (const p of pagePaths(element, elements, drawDefaults(element, model))) {
+        primitives.push({ type: 'path', d: p.d, fill: p.fill, ...(p.stroke ? { stroke: p.stroke, strokeWidth: p.strokeWidth } : {}) });
+      }
       continue;
     }
 
@@ -515,6 +505,7 @@ export function slideToPrintPage(model, slideId, imageBytes = new Map()) {
         ? {
           type: 'image', bytes,
           x: element.x, y: element.y, w: element.w, h: element.h,
+          ...(element.crop ? { crop: element.crop } : {}), ...(drawnImage(element) ? { stretch: true } : {}),
         }
         : {
           // Only when the picture itself is missing.
@@ -549,15 +540,3 @@ export function slideToPrintPage(model, slideId, imageBytes = new Map()) {
   return { width: w, height: h, primitives };
 }
 
-/** A shape's outline where it sits on the slide, turned as it is turned. */
-export function shapeOutlineOnPage(element) {
-  const { x, y, w, h } = element;
-  const angle = ((element.rotation ?? 0) * Math.PI) / 180;
-  const cx = x + w / 2;
-  const cy = y + h / 2;
-  return formatPath(mapPath(parsePath(presetOutline(element.shape, element.path)), (px, py) => {
-    const ax = x + (px / 100) * w - cx;
-    const ay = y + (py / 100) * h - cy;
-    return [cx + ax * Math.cos(angle) - ay * Math.sin(angle), cy + ax * Math.sin(angle) + ay * Math.cos(angle)];
-  }), 2);
-}

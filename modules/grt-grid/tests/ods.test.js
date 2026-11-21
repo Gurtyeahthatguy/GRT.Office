@@ -102,3 +102,12 @@ describe('times between two seconds', () => {
     }
   });
 });
+
+describe('a date format on a number no calendar has', () => {
+  it('is saved as the number, and the file still saves', () => {
+    for (const v of [1e10, -1e9, 2958466]) {
+      const doc = { version: 1, type: 'grid', styles: { d: { format: 'dd/mm/yyyy' } }, charts: [], sheets: [{ name: 'S', cells: { '0,0': { v, s: 'd' } } }] };
+      expect(readOds(decodeBlock(encodeBlock(writeOds(doc).entries))).document.sheets[0].cells['0,0'].v).toBe(v);
+    }
+  });
+});

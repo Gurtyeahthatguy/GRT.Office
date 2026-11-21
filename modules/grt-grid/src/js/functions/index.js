@@ -9,12 +9,15 @@ import { DATETIME } from './datetime.js';
 import { LOOKUP } from './lookup.js';
 import { ARRAYS } from './arrays.js';
 import { STATISTICS } from './statistics.js';
+import { DISTRIBUTIONS } from './distributions.js';
+import { ETS } from './ets.js';
 import { MATHS } from './maths.js';
 import { FINANCIAL } from './financial.js';
 import { PRICING } from './pricing.js';
 import { TEXT as TEXTS } from './text.js';
 import { INFORMATION } from './information.js';
 import { DATABASE } from './database.js';
+import { least, greatest } from '../core/extent.js';
 
 /** Functions that must be recomputed on every pass, whatever changed. */
 export const VOLATILE = new Set(['RAND', 'RANDBETWEEN', 'TODAY', 'NOW']);
@@ -38,7 +41,7 @@ function numbersOf(args) {
     if (arg.matrix || arg.reference) {
       const found = collectNumbers(arg.values ?? []);
       if (isError(found)) return found;
-      out.push(...found);
+      for (const n of found) out.push(n);
     } else {
       const n = typedNumber(arg.value);
       if (isError(n)) return n;
@@ -110,8 +113,8 @@ export const FUNCTIONS = {
   }, 0),
   COUNTA: (args) => (firstError(args) ?? spread(args).filter((v) => !isBlank(v)).length),
   COUNTBLANK: (args) => (firstError(args) ?? spread(args).filter(isBlank).length),
-  MIN: (args) => withNumbers(args, (numbers) => (numbers.length === 0 ? 0 : Math.min(...numbers))),
-  MAX: (args) => withNumbers(args, (numbers) => (numbers.length === 0 ? 0 : Math.max(...numbers))),
+  MIN: (args) => withNumbers(args, (numbers) => (numbers.length === 0 ? 0 : least(numbers))),
+  MAX: (args) => withNumbers(args, (numbers) => (numbers.length === 0 ? 0 : greatest(numbers))),
   MEDIAN: (args) => {
     const error = firstError(args);
     if (error) return error;
@@ -441,7 +444,7 @@ function datePart(args, apply) {
 export { dateSerial, fromSerial };
 
 // The families kept in their own files join the library; a name defined here is not replaced.
-for (const family of [DATETIME, LOOKUP, ARRAYS, STATISTICS, MATHS, FINANCIAL, PRICING, TEXTS, INFORMATION, DATABASE]) {
+for (const family of [DATETIME, LOOKUP, ARRAYS, STATISTICS, DISTRIBUTIONS, ETS, MATHS, FINANCIAL, PRICING, TEXTS, INFORMATION, DATABASE]) {
   for (const [name, implementation] of Object.entries(family)) {
     if (!(name in FUNCTIONS)) FUNCTIONS[name] = implementation;
   }

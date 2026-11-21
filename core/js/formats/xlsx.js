@@ -14,6 +14,8 @@ import { declareExternal } from './external.js';
 import { clearSpilled } from './spills.js';
 import { readXlsxPivots, writeXlsxPivots, REL_PIVOT_CACHE } from './xlsx-pivots.js';
 import { readXlsxCharts, writeXlsxCharts, REL_DRAWING } from './xlsx-charts.js';
+import { readXlsxDrawings, xlsxDrawingAnchors, packagePicture, pictureFile } from './sheet-drawings.js';
+import { readDrawingTheme } from './drawingml.js';
 import { readXlsxComments, notesOf, commentsXml, vmlXml, REL_COMMENTS, REL_VML, COMMENTS_TYPE, VML_TYPE } from './xlsx-comments.js';
 import { cleanLook, sameLook, borderFromXlsx, borderToXlsx, SIDES } from './cell-look.js';
 
@@ -94,6 +96,8 @@ export function readXlsx(pkg) {
 
   const sheets = [];
   const charts = [];
+  const drawings = [];
+  let shapeTheme;
   // A part named by two sheets is read once, so a small file cannot make the reader parse one sheet many times.
   const readParts = new Set();
   for (const [sheetIndex, sheet] of kids(kid(workbook.documentElement, S, 'sheets'), S, 'sheet').entries()) {
@@ -119,12 +123,34 @@ export function readXlsx(pkg) {
     readHyperlinks(pkg, rel.target, doc.documentElement, read.cells);
     charts.push(...readXlsxCharts(pkg, rel.target, doc.documentElement, read, sheets.length, losses)
       .map((chart, i) => ({ id: `chart-${charts.length + i + 1}`, ...chart })));
+    // Shapes, pictures and groups of the sheet's drawing, pictures kept inside the document.
+    const drawingRef = kid(doc.documentElement, S, 'drawing');
+    const drawingRel = drawingRef ? relationships(pkg, rel.target).get(drawingRef.getAttributeNS(NS.r, 'id')) : null;
+    const drawingDoc = drawingRel && !drawingRel.external ? readPart(pkg, drawingRel.target, 'a drawing') : null;
+    if (drawingDoc) {
+      const pictureRels = relationships(pkg, drawingRel.target);
+      if (shapeTheme === undefined) {
+        const part = partOf('theme');
+        const themeDoc = part ? readPart(pkg, part, 'the theme') : null;
+        shapeTheme = themeDoc ? readDrawingTheme(themeDoc) : null;
+      }
+      drawings.push(...readXlsxDrawings(drawingDoc, read, sheets.length, {
+        losses, theme: shapeTheme,
+        id: () => `d${drawings.length + 1}-${Math.random().toString(36).slice(2, 8)}`,
+        picture: (relId) => {
+          const found = pictureRels.get(relId);
+          const data = found && !found.external ? packagePicture(pkg, found.target) : null;
+          if (!data) losses.add('Pictures in sheets that could not be read, left out');
+          return data;
+        },
+      }));
+    }
     sheets.push(read);
   }
   if (sheets.length === 0) throw new Error('This workbook has no sheets GRT can read');
 
   return {
-    document: { version: 1, type: 'grid', sheets, styles: Object.fromEntries(reader.gridStyles), charts, ...(Object.keys(names).length ? { names } : {}) },
+    document: { version: 1, type: 'grid', sheets, styles: Object.fromEntries(reader.gridStyles), charts, ...(drawings.length ? { drawings } : {}), ...(Object.keys(names).length ? { names } : {}) },
     losses,
   };
 }
@@ -163,7 +189,7 @@ function colorOf(element, theme) {
   if (rgb) hex = rgb.slice(-6);
   else if (element.hasAttribute('theme')) hex = theme[Number(element.getAttribute('theme'))];
   else if (element.hasAttribute('indexed')) hex = INDEXED[Number(element.getAttribute('indexed'))] ?? null;
-  if (!hex) return null;
+  if (!/^[0-9a-f]{6}$/i.test(hex ?? '')) return null;
   const tint = Number(element.getAttribute('tint') ?? 0);
   return `#${(tint ? tinted(hex, tint) : hex).toLowerCase()}`;
 }
@@ -728,13 +754,33 @@ export function writeXlsx(document) {
   let chartCount = 0;
   let commented = 0;
   const noteParts = [];
+  const media = [];
   const sheetXml = sheets.map((sheet, i) => {
     const own = (document.charts ?? []).filter((chart) => (typeof chart.sheet === 'number' ? chart.sheet : Math.max(0, sheets.findIndex((s) => s.id === chart.sheet))) === i);
     const rels = (pivots.sheetRels.get(i) ?? []).map((rel, k) => ({ ...rel, id: `rId${k + 2}` }));
     let drawing = null;
-    if (own.length) {
+    const ownDrawings = (document.drawings ?? []).filter((o) => (typeof o.sheet === 'number' ? o.sheet : Math.max(0, sheets.findIndex((s) => s.id === o.sheet))) === i);
+    if (own.length || ownDrawings.length) {
       drawings += 1;
-      const { parts, drawingTarget } = writeXlsxCharts(document, sheet, own, drawings, chartCount + 1);
+      // Pictures of the sheet's drawings go in xl/media, one file a picture however often it is shown.
+      const pictureRels = [];
+      const byResource = new Map();
+      let shapeId = 1000;
+      const anchors = xlsxDrawingAnchors(sheet, ownDrawings, {
+        losses,
+        nextId: () => { shapeId += 1; return shapeId; },
+        picture: (o) => {
+          if (byResource.has(o.resource)) return byResource.get(o.resource);
+          const file = pictureFile(o.resource, media.length + 1);
+          if (!file) { losses.add('Pictures whose file was missing'); return null; }
+          media.push({ name: `xl/media/${file.name}`, data: file.bytes, extension: file.name.split('.').pop(), type: file.type });
+          const id = `rIdPic${pictureRels.length + 1}`;
+          pictureRels.push({ id, type: REL.image, target: `../media/${file.name}` });
+          byResource.set(o.resource, id);
+          return id;
+        },
+      });
+      const { parts, drawingTarget } = writeXlsxCharts(document, sheet, own, drawings, chartCount + 1, { anchors, rels: pictureRels });
       chartCount += own.length;
       chartParts.push(...parts);
       rels.unshift({ id: 'rId1', type: REL_DRAWING, target: drawingTarget });
@@ -780,7 +826,7 @@ export function writeXlsx(document) {
     ...noteParts.filter((part) => part.type).map((part) => [part.name, part.type]),
   ];
   const entries = [
-    { name: '[Content_Types].xml', data: contentTypesXml({ rels: 'application/vnd.openxmlformats-package.relationships+xml', xml: 'application/xml', ...(noteParts.length ? { vml: VML_TYPE } : {}) }, overrides) },
+    { name: '[Content_Types].xml', data: contentTypesXml({ rels: 'application/vnd.openxmlformats-package.relationships+xml', xml: 'application/xml', ...(noteParts.length ? { vml: VML_TYPE } : {}), ...Object.fromEntries(media.map((m) => [m.extension, m.type])) }, overrides) },
     { name: '_rels/.rels', data: relsXml([{ id: 'rId1', type: REL.officeDocument, target: 'xl/workbook.xml' }]) },
     { name: 'xl/workbook.xml', data: workbook },
     { name: 'xl/_rels/workbook.xml.rels', data: relsXml(workbookRels) },
@@ -791,6 +837,7 @@ export function writeXlsx(document) {
     ...chartParts.map((part) => ({ name: part.name, data: part.rels ? relsXml(part.data) : part.data })),
     ...pivots.parts.map((part) => ({ name: part.name, data: part.data })),
     ...noteParts.map((part) => ({ name: part.name, data: part.data })),
+    ...media.map((m) => ({ name: m.name, data: m.data })),
     ...pivots.parts.filter((part) => part.rels).map((part) => ({ name: part.name.replace(/([^/]+)$/, '_rels/$1.rels'), data: relsXml(part.rels) })),
   ];
   if (styles.overlined) losses.add('Overlined text, which Excel cannot show, kept plain');
@@ -1205,3 +1252,4 @@ function cellXml(row, col, cell, styles, stringIndex) {
   }
   return tag('c', attrs, children);
 }
+

@@ -51,8 +51,9 @@ describe('The exported SVG is a drawing', () => {
   it('contains one shape per node and one path per edge', () => {
     const svg = toSvg(sampleGraph());
 
-    expect(svg).toContain('<ellipse');
-    expect(svg).toContain('<polygon');
+    // Every node is drawn from its shape's outline: an ellipse with curves, a diamond with straight sides.
+    expect(svg).toMatch(/<path d="M[^"]*C[^"]*" fill="#/);
+    expect(svg).toMatch(/<path d="M[^"C]*L[^"C]*Z" fill="#/);
     // Counted by the arrow marker rather than by <path>, because the marker
     // definition in <defs> is itself a path.
     expect((svg.match(/marker-end="url\(#a\)"/g) ?? []).length).toBe(1);

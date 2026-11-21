@@ -5,6 +5,7 @@ import { parseLength } from '../units.js';
 import { ROOT_NAMESPACES, ODF_VERSION } from './odf.js';
 import { fromOpenFormula, toOpenFormula } from './formulas.js';
 import { pointOf, anchorOf, KINDS, MAX_CHARTS, MAX_SERIES } from './chart-place.js';
+import { cleanColours } from './colour.js';
 
 export const CHART_NS = 'urn:oasis:names:tc:opendocument:xmlns:chart:1.0';
 export const CHART_MIMETYPE = 'application/vnd.oasis.opendocument.chart';
@@ -54,7 +55,7 @@ function chartProperties(root, name) {
   const props = kid(style, NS.style, 'chart-properties');
   const out = {};
   for (const a of props?.attributes ?? []) out[a.localName] = a.value;
-  return out;
+  return cleanColours(out);
 }
 
 /** One chart object as one of Grid's charts, or null when it is not a chart Grid can draw. */

@@ -39,6 +39,16 @@ describe('case changes', () => {
     expect(model.blocks[0].runs).toEqual([{ text: 'BIG ', bold: true }, { text: 'STRASSE' }]);
     expect(after.focus.offset).toBe(11);
   });
+
+  it('change the word at the caret when nothing is chosen, the caret staying put', () => {
+    const model = new DocumentModel({ blocks: [{ kind: 'paragraph', runs: [{ text: "ciao l'amico mio" }] }] });
+    const id = model.blocks[0].id;
+    const after = transformCase(model, { anchor: point(id, 8), focus: point(id, 8) }, 'upper');
+    expect(model.blocks[0].runs[0].text).toBe("ciao L'AMICO mio");
+    expect(after.focus.offset).toBe(8);
+    expect(transformCase(model, { anchor: point(id, 4), focus: point(id, 4) }, 'upper').focus.offset).toBe(4);
+    expect(model.blocks[0].runs[0].text).toBe("CIAO L'AMICO mio");
+  });
 });
 
 describe('size steps', () => {

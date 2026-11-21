@@ -350,6 +350,7 @@ pub fn run() {
             grt_app::everywhere::everywhere_search,
             grt_app::everywhere::everywhere_search_locked,
             grt_app::everywhere::everywhere_forget,
+            grt_app::clipboard::clipboard_read,
             grt_app::commands::set_close_guard,
             grt_app::commands::close_ack,
             grt_app::commands::close_window,

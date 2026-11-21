@@ -1,7 +1,7 @@
 /** The note of the day, templates, unique names and notes shown inside notes. */
 
 import { describe, it, expect, vi } from 'vitest';
-import { formatDate, fillTemplate, sectionBlocks, uniqueName, embedLoader } from '../src/js/extras.js';
+import { formatDate, fillTemplate, sectionBlocks, uniqueName, embedLoader, vaultSettings, insideVault } from '../src/js/extras.js';
 
 const at = new Date(2026, 10, 2, 9, 5, 7);
 const heading = (level, text) => ({ kind: 'heading', level, runs: [{ text }] });
@@ -36,5 +36,31 @@ describe('the helpers Obsidian has', () => {
     expect(loader.content('Other').length).toBe(2);
     expect(loader.content('Other#Top').length).toBe(2);
     expect(read).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the settings of a vault', () => {
+  it('take only an object, and only words for formats, whatever the files hold', async () => {
+    const files = { 'daily-notes.json': 'null', 'templates.json': '{"folder": 7, "dateFormat": ["x"]}', 'zk-prefixer.json': '[1, 2]' };
+    const settings = await vaultSettings('/v', async (path) => files[path.split('/').pop()]);
+    expect(settings).toEqual({
+      daily: { folder: '', format: 'YYYY-MM-DD', template: '' },
+      templates: { folder: 'Templates', dateFormat: 'YYYY-MM-DD', timeFormat: 'HH:mm' },
+      unique: { folder: '', format: 'YYYYMMDDHHmm' },
+    });
+  });
+
+  it('name no folder or template outside the vault', async () => {
+    const files = {
+      'daily-notes.json': '{"folder": "../../.config/autostart", "template": "/Templates/Day.md"}',
+      'templates.json': '{"folder": "Notes/../../.."}',
+      'zk-prefixer.json': '{"folder": "C:\\\\Windows"}',
+    };
+    const settings = await vaultSettings('/v', async (path) => files[path.split('/').pop()]);
+    expect(settings.daily).toMatchObject({ folder: '', template: 'Templates/Day' });
+    expect(settings.templates.folder).toBe('Templates');
+    expect(settings.unique.folder).toBe('');
+    expect(insideVault(`Daily/${formatDate(new Date(2026, 0, 2), '[..]/YYYY')}`)).toBe('');
+    expect(insideVault('Daily/2026/01')).toBe('Daily/2026/01');
   });
 });

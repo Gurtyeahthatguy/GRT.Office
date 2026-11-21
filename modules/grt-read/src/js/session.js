@@ -17,6 +17,7 @@ export function encodeSession(model, exportOptions) {
     version: VERSION,
     sources: model.sources.map((source) => source.bytes.length),
     pages: model.snapshot().pages,
+    forms: model.forms ?? {},
     exportOptions,
   }));
 
@@ -74,8 +75,19 @@ export function decodeSession(bytes) {
 
   const options = header.exportOptions ?? {};
   const objectOrNull = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : null);
+  // Form answers: text or ticks by field name, for each source that has them.
+  const forms = {};
+  for (const [source, answers] of Object.entries(objectOrNull(header.forms) ?? {})) {
+    if (!/^\d+$/.test(source) || Number(source) >= sources.length || !objectOrNull(answers)) throw damaged();
+    forms[source] = {};
+    for (const [name, value] of Object.entries(answers)) {
+      if (typeof value !== 'string' && typeof value !== 'boolean') throw damaged();
+      forms[source][name.slice(0, 1000)] = typeof value === 'string' ? value.slice(0, 100000) : value;
+    }
+  }
   return {
     sources,
+    forms,
     pages: header.pages,
     exportOptions: {
       watermark: objectOrNull(options.watermark),

@@ -345,3 +345,73 @@ button.status-field:hover { color: var(--text); background: var(--bg-sunken, rgb
 .live-preview-list { max-height: 60vh; overflow-y: auto; z-index: 60; }
 .live-preview-list [role="option"] { padding: 4px 12px; cursor: default; white-space: nowrap; }
 .live-preview-list [role="option"].active { background: var(--accent); color: #fff; }
+
+/* Drawing objects: the handles and marks the drawing layer puts over a page, in every program. */
+.draw-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 1000000; }
+.draw-overlay .sel-frame { position: absolute; outline: 2px solid var(--accent); pointer-events: none; transform-origin: center; }
+.draw-overlay .handle {
+  position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; background: var(--bg-raised, #fff);
+  border: 2px solid var(--accent); border-radius: 2px; pointer-events: auto; cursor: nwse-resize; box-sizing: border-box;
+}
+.handle-ne, .handle-sw { cursor: nesw-resize; }
+.handle-n, .handle-s { cursor: ns-resize; }
+.handle-e, .handle-w { cursor: ew-resize; }
+.handle-rotate { border-radius: 50%; cursor: grab; }
+.handle-adjust { background: #f6c900 !important; border-color: #8a6d00 !important; transform: rotate(45deg); cursor: pointer !important; }
+.handle-node { background: #fff !important; cursor: move !important; }
+.handle-control { width: 9px !important; height: 9px !important; margin: -4.5px 0 0 -4.5px !important; border-radius: 50% !important; cursor: move !important; }
+.handle-glue { width: 9px !important; height: 9px !important; margin: -4.5px 0 0 -4.5px !important; border-color: #1f6feb !important; background: transparent !important; pointer-events: none !important; }
+.handle-glue.own { pointer-events: auto !important; background: #1f6feb !important; cursor: move !important; }
+.handle-end { border-radius: 50% !important; background: #e66 !important; cursor: crosshair !important; }
+.draw-overlay .rubber-band { position: absolute; background: rgba(31, 111, 235, 0.12); outline: 1px dashed var(--accent); pointer-events: none; }
+.draw-overlay .guide { position: absolute; background: var(--danger, #d33); pointer-events: none; }
+.draw-overlay .guide.vertical { width: 1px; }
+.draw-overlay .guide.horizontal { height: 1px; }
+.draw-overlay .snap-guide { position: absolute; border: 0 dashed #1f6feb; pointer-events: none; }
+.draw-overlay .snap-guide.vertical { border-left-width: 1px; top: 0; bottom: 0; }
+.draw-overlay .snap-guide.horizontal { border-top-width: 1px; left: 0; right: 0; }
+.draw-preview { position: absolute; inset: 0; pointer-events: none; }
+.drawing-tool, .drawing-tool * { cursor: crosshair !important; }
+.draw-object { position: absolute; transform-origin: center; }
+.draw-object:focus-visible { outline: 2px dashed var(--accent); }
+
+/* Tabs in dialogs, as LibreOffice's dialogs have them. */
+.grt-tab-list { display: flex; gap: 2px; border-bottom: 1px solid var(--border, #ccc); margin-bottom: 10px; flex-wrap: wrap; }
+.grt-tab { background: none; border: 1px solid transparent; border-bottom: none; padding: 5px 10px; border-radius: 4px 4px 0 0; color: inherit; cursor: pointer; }
+.grt-tab.active { border-color: var(--border, #ccc); background: var(--bg-raised, #fff); margin-bottom: -1px; font-weight: 600; }
+.grt-tab:focus-visible { outline: 2px solid var(--accent); }
+.grt-tab-panel[hidden] { display: none; }
+
+/* The graph of notes and their links. */
+.graph-view { max-width: 100%; overflow: auto; }
+.link-graph { display: block; max-width: 100%; height: auto; background: var(--bg, #fff); border: 1px solid var(--border, #ccc); border-radius: 6px; }
+.link-graph .graph-links line { stroke: var(--text-dim, #888); stroke-opacity: 0.5; stroke-width: 1; }
+.link-graph .graph-note { cursor: pointer; }
+.link-graph .graph-note circle { fill: var(--accent, #3a7bd5); }
+.link-graph .graph-note.current circle { fill: var(--danger, #d0543c); }
+.link-graph .graph-note text { font: 11px system-ui, sans-serif; fill: var(--text, #222); }
+.link-graph .graph-note:focus circle, .link-graph .graph-note:hover circle { stroke: var(--text, #222); stroke-width: 2; }
+
+/* Dialogs with tabs, as LibreOffice's are. */
+.grt-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border, #ccc); margin-bottom: 12px; flex-wrap: wrap; }
+.grt-tabs [role="tab"] { border: 1px solid transparent; border-bottom: none; border-radius: 5px 5px 0 0; padding: 5px 12px; background: none; color: var(--text-dim, #555); cursor: pointer; margin-bottom: -1px; }
+.grt-tabs [role="tab"][aria-selected="true"] { background: var(--bg-raised, #fff); border-color: var(--border, #ccc); color: var(--text, #111); font-weight: 600; }
+.grt-tabbed [role="tabpanel"][hidden] { display: none; }
+
+/* The Start Center's templates. */
+.start-templates { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 10px 0; }
+.start-template { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px 12px; min-height: 70px; text-align: left; border: 1px solid var(--border, #ccc); border-radius: 6px; background: var(--bg-raised, #fff); cursor: pointer; }
+.start-template:hover, .start-template:focus { border-color: var(--accent, #3a7bd5); }
+.start-template-name { font-weight: 600; color: var(--text, #111); }
+
+/* The sidebar's decks: Properties, Styles, Gallery, Navigator and Functions. */
+.sidebar-decks { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border, #ccc); position: sticky; top: 0; background: var(--bg-raised, #fff); z-index: 1; }
+.sidebar-decks [role="tab"] { border: none; background: none; padding: 5px 8px; font-size: 12px; color: var(--text-dim, #666); border-bottom: 2px solid transparent; cursor: pointer; }
+.sidebar-decks [role="tab"][aria-selected="true"] { color: var(--text, #111); border-bottom-color: var(--accent, #3a7bd5); }
+.deck-list { list-style: none; margin: 8px 0; padding: 0; }
+.deck-list button { display: block; width: 100%; text-align: left; padding: 5px 10px; border: none; background: none; color: var(--text, #111); cursor: pointer; border-radius: 4px; }
+.deck-list button:hover, .deck-list button:focus { background: var(--bg-hover, rgba(0, 0, 0, 0.06)); }
+.deck-list .deck-group { padding: 8px 10px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim, #666); }
+.deck-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; padding: 8px; }
+.deck-gallery button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px; border: 1px solid var(--border, #ccc); border-radius: 4px; background: var(--bg, #fff); cursor: pointer; font-size: 10px; color: var(--text-dim, #555); }
+.deck-gallery svg { width: 40px; height: 30px; }

@@ -5,8 +5,10 @@ import { Losses } from '../losses.js';
 import { REL, relsXml, contentTypesXml } from './ooxml.js';
 import { naturalSize } from '../images.js';
 import { EMU_PER_PX } from './drawingml.js';
-import { parsePath } from '../paths.js';
 import { footerBoxes } from './slide-footer.js';
+import { writePptxDrawing } from './draw-ooxml.js';
+import { connectorPoints } from '../draw/render.js';
+import { slidesLook, isDrawing } from './slide-look.js';
 import { ooxmlChartPart, OOXML_CHART_TYPE, REL_CHART, C as CHART_NS } from './chart-object.js';
 
 const PML = 'application/vnd.openxmlformats-officedocument.presentationml';
@@ -26,10 +28,6 @@ const COMMENT_UNITS = 576 / 96;
 const TABLE_URI = 'http://schemas.openxmlformats.org/drawingml/2006/table';
 
 const PICTURES = { png: 'image/png', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp' };
-const GEOMETRY = {
-  rect: 'rect', rounded: 'roundRect', ellipse: 'ellipse', diamond: 'diamond',
-  parallelogram: 'parallelogram', hexagon: 'hexagon', triangle: 'triangle',
-};
 // The faces whose metrics match what Slides draws, and that every Office has.
 const TYPEFACES = { sans: 'Arial', serif: 'Times New Roman', mono: 'Courier New' };
 
@@ -247,6 +245,8 @@ class PptxWriter {
 
   tree(elements, rels, mediaPath) {
     this.currentRels = rels;
+    this.currentElements = elements;
+    this.drawIds = new Map();
     let id = 1;
     const nextId = () => {
       id += 1;
@@ -262,6 +262,24 @@ class PptxWriter {
   }
 
   element(element, nextId, rels, mediaPath) {
+    if (isDrawing(element)) {
+      const o = slidesLook(element, this.theme);
+      return writePptxDrawing(o, {
+        emu: (px) => Number(px ?? 0) * EMU_PER_PX,
+        nextId: () => Number(nextId()),
+        ids: this.drawIds,
+        connectorPoints: (c) => connectorPoints(c, this.currentElements ?? []),
+        picture: (x) => {
+          const bytes = this.images.get(x.resource);
+          const kind = pictureKind(bytes);
+          if (!bytes || !kind) { this.losses.add(bytes ? 'Pictures in formats PowerPoint does not show (SVG, WebP), left out' : 'Pictures whose file is missing, left out'); return null; }
+          const item = this.mediaFor(x.resource, bytes, kind);
+          const relId = `rId${rels.length + 1}`;
+          rels.push({ id: relId, type: REL.image, target: `${mediaPath}${item.name}` });
+          return relId;
+        },
+      });
+    }
     if (element.kind === 'footer') return this.footerShape(element, nextId());
     if (element.kind === 'text') return this.textShape(element, nextId());
     if (element.kind === 'shape') return this.shape(element, nextId());
@@ -341,17 +359,6 @@ class PptxWriter {
     };
   }
 
-  shape(element, id) {
-    const fill = element.fill ?? this.theme.accent;
-    return tag('p:sp', {},
-      tag('p:nvSpPr', {}, tag('p:cNvPr', { id, name: `Shape ${id}` }), tag('p:cNvSpPr'), tag('p:nvPr')),
-      tag('p:spPr', {}, xfrm(element), element.shape === 'path' && element.path ? customGeometry(element.path) : geometry(GEOMETRY[element.shape] ?? 'rect'),
-        fill === 'none' ? tag('a:noFill') : solid(fill),
-        element.stroke
-          ? tag('a:ln', { w: emu(element.strokeWidth ?? 2) }, solid(element.stroke))
-          : tag('a:ln', {}, tag('a:noFill'))));
-  }
-
   line(element, id) {
     return tag('p:cxnSp', {},
       tag('p:nvCxnSpPr', {}, tag('p:cNvPr', { id, name: `Line ${id}` }), tag('p:cNvCxnSpPr'), tag('p:nvPr')),
@@ -374,7 +381,7 @@ class PptxWriter {
     let box = element;
     let crop = null;
     const size = naturalSize(bytes);
-    if (size && size.w > 0 && size.h > 0 && element.w > 0 && element.h > 0) {
+    if (size && size.w > 0 && size.h > 0 && element.w > 0 && element.h > 0 && element.fit !== 'fill') {
       const scale = element.fit === 'cover'
         ? Math.max(element.w / size.w, element.h / size.h)
         : Math.min(element.w / size.w, element.h / size.h);
@@ -530,22 +537,6 @@ function geometry(prst) {
   return tag('a:prstGeom', { prst }, tag('a:avLst'));
 }
 
-/** A freeform outline, from a 0 to 100 box to a path of its own 100000 units. */
-function customGeometry(d) {
-  const unit = (v) => String(Math.round(v * 1000));
-  const pt = (x, y) => tag('a:pt', { x: unit(x), y: unit(y) });
-  const steps = parsePath(d).map((segment) => {
-    const [command, ...v] = segment;
-    if (command === 'M') return tag('a:moveTo', {}, pt(v[0], v[1]));
-    if (command === 'L') return tag('a:lnTo', {}, pt(v[0], v[1]));
-    if (command === 'C') return tag('a:cubicBezTo', {}, pt(v[0], v[1]), pt(v[2], v[3]), pt(v[4], v[5]));
-    if (command === 'Q') return tag('a:quadBezTo', {}, pt(v[0], v[1]), pt(v[2], v[3]));
-    return tag('a:close');
-  });
-  return tag('a:custGeom', {}, tag('a:avLst'), tag('a:gdLst'), tag('a:ahLst'), tag('a:cxnLst'),
-    tag('a:rect', { l: '0', t: '0', r: 'r', b: 'b' }),
-    tag('a:pathLst', {}, tag('a:path', { w: '100000', h: '100000' }, steps)));
-}
 
 function background(color) {
   return tag('p:bg', {}, tag('p:bgPr', {}, solid(color), tag('a:effectLst')));

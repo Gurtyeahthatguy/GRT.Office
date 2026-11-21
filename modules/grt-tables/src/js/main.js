@@ -975,6 +975,33 @@ async function printReport() {
   });
 }
 
+/** The tasks Base lists over the objects of each kind, each running the command it names. */
+const TASKS = {
+  tables: [['Create Table in Design View…', () => el('btn-new-table').click()], ['Create View…', () => saveView()]],
+  queries: [['Create Query in SQL View…', () => setView('query')]],
+  forms: [['Create Form…', () => formWizard()]],
+  reports: [['Create Report…', () => reportWizard()]],
+};
+let category = 'tables';
+
+/** The kind of object the Database column has chosen: its tasks and its objects in the middle column. */
+function showCategory(next, { focus = false } = {}) {
+  if (!TASKS[next]) return;
+  category = next;
+  for (const tab of document.querySelectorAll('.database-pane [role=tab]')) {
+    const on = tab.dataset.category === next;
+    tab.setAttribute('aria-selected', String(on));
+    tab.tabIndex = on ? 0 : -1;
+    if (on && focus) tab.focus();
+  }
+  for (const section of document.querySelectorAll('[data-objects]')) section.hidden = section.dataset.objects !== next;
+  el('task-list').replaceChildren(...TASKS[next].map(([label, run]) => {
+    const button = Object.assign(document.createElement('button'), { type: 'button', textContent: label });
+    button.onclick = run;
+    return button;
+  }));
+}
+
 function setView(next) {
   view = next;
   for (const tab of document.querySelectorAll('.tab')) {
@@ -990,6 +1017,17 @@ function wire() {
   for (const tab of document.querySelectorAll('.tab')) {
     tab.onclick = () => setView(tab.dataset.view);
   }
+  const kinds = [...document.querySelectorAll('.database-pane [role=tab]')];
+  for (const tab of kinds) tab.onclick = () => showCategory(tab.dataset.category);
+  // The arrows move between the kinds, as in a list of tabs.
+  document.querySelector('.database-pane').addEventListener('keydown', (event) => {
+    const step = { ArrowDown: 1, ArrowUp: -1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    const at = kinds.findIndex((t) => t.dataset.category === category);
+    showCategory(kinds[(at + step + kinds.length) % kinds.length].dataset.category, { focus: true });
+  });
+  showCategory('tables');
 
   const goTo = (offset) => {
     form.offset = offset;
@@ -1177,7 +1215,7 @@ function wireMenus() {
       undo: () => el('btn-undo').click(),
       cutTable: () => copyTable(true), copyTable: () => copyTable(false), pasteTable, selectAll, copyRows,
       rename: renameSelected, remove: removeSelected, saveView, saveQuery,
-      setView, newTable: () => el('btn-new-table').click(), formWizard, reportWizard, addRow,
+      setView, showCategory, newTable: () => el('btn-new-table').click(), formWizard, reportWizard, addRow,
       settings: () => openSettings(),
       // A Tables archive found is imported, which asks where its database goes.
       everywhere: () => searchEverywhere({ kind: 'tables', open: (path) => importArchive(path), toast }),
@@ -1209,6 +1247,7 @@ async function openObject(kind, name) {
   const entry = saved[kind].find((o) => o.name === name);
   if (!entry) return;
   selected = { kind, name };
+  showCategory(`${kind === 'query' ? 'querie' : kind}s`);
   if (kind === 'query') {
     setView('query');
     el('query-input').value = entry.sql ?? '';

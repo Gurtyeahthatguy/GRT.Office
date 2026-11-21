@@ -292,6 +292,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             grt_app::commands::set_close_guard,
+            grt_app::backup::backup_create,
+            grt_app::backup::backup_restore,
             grt_app::commands::close_ack,
             grt_app::commands::close_window,
             grt_app::commands::print_page,

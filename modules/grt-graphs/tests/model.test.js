@@ -143,7 +143,7 @@ describe('Loading a document', () => {
       edges: [{ id: 'e1', from: 'n1', to: 'n1' }],
     });
 
-    expect(model.nodes[0].shape).toBe('rect');
+    expect(model.nodes[0].shape).toBe('rectangle');
     expect(model.nodes[0].data).toEqual({});
     expect(model.edges[0].routing).toBe('orthogonal');
   });
@@ -375,5 +375,20 @@ describe('Aligning and distributing', () => {
     model.distributeNodes([a.id, b.id], 'horizontal');
 
     expect(model.node(b.id).x).toBe(before);
+  });
+});
+
+describe('a file whose numbers are not', () => {
+  it('opens with numbers for every place, size and bend', () => {
+    const bad = '1"><b>x';
+    const model = new GraphModel();
+    model.load({
+      nodes: [{ id: 'a', x: bad, y: '30', w: undefined, h: bad, rotation: bad, text: 'A', line: { color: bad, width: 2 } }, { id: 'b', x: 0, y: 0, text: 'B' }],
+      edges: [{ id: 'e', from: 'a', to: 'b', waypoints: [{ x: bad, y: 1 }, { x: '5', y: 6, extra: bad }, null] }],
+    });
+    const [a] = model.nodes;
+    expect([a.x, a.y, a.w, a.h, a.rotation]).toEqual([0, 30, 160, 60, 0]);
+    expect(a.line.color).not.toBe(bad);
+    expect(model.edges[0].waypoints).toEqual([{ x: 5, y: 6 }]);
   });
 });

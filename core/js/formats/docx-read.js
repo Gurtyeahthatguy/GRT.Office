@@ -47,6 +47,9 @@ import { Losses } from '../losses.js';
 import { relationships, mainPart, readPart, relIs, EMU_PER_PX } from './ooxml.js';
 import { fontKind, extensionOf, DRAWABLE } from './odf.js';
 import { declareExternal } from './external.js';
+import { drawingKind, wrapsText, readDocxDrawing, stackDrawings } from './docx-drawings.js';
+import { readDrawingTheme } from './drawingml.js';
+import { hexColour } from './colour.js';
 
 const W = NS.w;
 const MARKS = ['bold', 'italic', 'underline', 'strike', 'sup', 'sub', 'double', 'overline', 'shadow', 'outline', 'smallcaps'];
@@ -89,6 +92,9 @@ class WordReader {
     this.blocks = [];
     this.images = new Map();
     this.notes = [];
+    // Drawings over the text, and those met in a paragraph before it has a block to anchor to.
+    this.textDrawings = [];
+    this.pendingDrawings = [];
     this.usage = new Map();
     this.theme = this.readTheme();
     this.readStyles();
@@ -317,11 +323,11 @@ class WordReader {
         look.sub = value === 'subscript';
       }
       const color = wAttr(kid(rPr, W, 'color'), 'val');
-      if (color) look.color = color === 'auto' ? null : `#${color.toLowerCase()}`;
+      if (color) look.color = color === 'auto' ? null : hexColour(`#${color}`);
       const highlight = wAttr(kid(rPr, W, 'highlight'), 'val');
       if (highlight) look.highlight = HIGHLIGHTS[highlight] ?? null;
       const shade = wAttr(kid(rPr, W, 'shd'), 'fill');
-      if (shade && shade !== 'auto') look.highlight = `#${shade.toLowerCase()}`;
+      if (shade && shade !== 'auto') look.highlight = hexColour(`#${shade}`);
       const size = wAttr(kid(rPr, W, 'sz'), 'val');
       if (size) look.size = Number(size) / 2;
       // Word marks text not to be checked with noProof, and its language with lang.
@@ -378,6 +384,7 @@ class WordReader {
   read() {
     // A document with several bodies is malformed, but Word shows them all.
     const bodies = kids(this.document.documentElement, W, 'body');
+    this.geometry = pageGeometry(bodies[bodies.length - 1] ?? null);
     for (const body of bodies) this.walk(body);
     const body = bodies[bodies.length - 1] ?? null;
     if (kid(body, W, 'sectPr')) this.endSection(kid(body, W, 'sectPr'));
@@ -396,9 +403,12 @@ class WordReader {
     }
     const blocks = mergeCode(this.blocks);
     if (blocks.length === 0) blocks.push(paragraph('body', 'left', []));
+    this.anchorPending(blocks[blocks.length - 1]);
+    const drawings = stackDrawings(this.textDrawings);
     return {
       document: {
         version: 1, type: 'paper', page: this.page(body), styles: this.paperStyles(), charStyles: this.charStyles(), fonts: [], blocks,
+        ...(drawings.length ? { drawings } : {}),
         headingNumbers: this.headingNumbers ?? null, noteSettings: this.noteSettings(kid(body, W, 'sectPr')),
       },
       images: this.images,
@@ -510,6 +520,7 @@ class WordReader {
     const marks = [];
     const segments = this.inline(p, styleId, baseline, align, marks);
     if (kid(pPr, W, 'sectPr') && kids(p).length > 1) this.sectionBreak = true;
+    const firstBlock = this.blocks.length;
 
     segments.forEach((segment, index) => {
       if (segment.image || segment.block) {
@@ -585,6 +596,8 @@ class WordReader {
       this.pendingBreak = false;
       this.blocks.push(block);
     });
+    // Drawings anchored to this paragraph hang on the first block it made, or on the list it joined.
+    if (this.pendingDrawings.length) this.anchorPending(this.blocks[firstBlock] ?? this.blocks[this.blocks.length - 1]);
 
     // A paragraph ending a section starts the next one on a new page.
     if (kid(pPr, W, 'sectPr')) {
@@ -630,9 +643,7 @@ class WordReader {
       if (look.highlight && look.highlight !== baseline.highlight) run.highlight = look.highlight;
       if (look.size && baseline.size && Math.abs(look.size - baseline.size) > 0.1) run.size = look.size;
       if (look.lang && look.lang !== baseline.lang) run.lang = look.lang;
-      if (look.font && baseline.font && look.font !== baseline.font && fontKind(look.font) !== fontKind(baseline.font)) {
-        this.losses.add('Fonts that differ from the paragraph’s, shown in its font');
-      }
+      if (look.font && look.font !== baseline.font) run.font = look.font;
       current().runs.push(run);
     };
 
@@ -855,6 +866,24 @@ class WordReader {
       if (added && caption) added.image.caption = [{ text: caption }];
       return;
     }
+    // Shapes, text boxes and groups are drawings over the text; so is a picture the text runs round.
+    const kind = element.localName === 'drawing' ? drawingKind(element) : null;
+    if (kind === 'shape' || (kind === 'picture' && wrapsText(element))) {
+      this.theme.colors ??= this.part('theme') ? readDrawingTheme(readPart(this.pkg, this.part('theme'))) : null;
+      const o = readDocxDrawing(element, {
+        id: () => makeId('d'), losses: this.losses, theme: this.theme.colors, page: this.geometry,
+        pageNumber: 1 + this.blocks.filter((b) => b.breakBefore).length,
+        picture: (relId) => this.drawingPicture(relId),
+      });
+      if (!o) { this.losses.add('Drawings and shapes'); return; }
+      if (this.textDrawings.length >= 2000) { this.losses.add('Drawings past the two thousandth, left out'); return; }
+      this.textDrawings.push(o);
+      if (o.anchor.type === 'as-char') {
+        if (!segments[segments.length - 1]?.runs) segments.push({ runs: [] });
+        segments[segments.length - 1].runs.push({ text: OBJECT, object: { type: 'drawing', id: o.id } });
+      } else if (o.anchor.type !== 'page') this.pendingDrawings.push(o);
+      return;
+    }
     const blip = textBox ? null : element.getElementsByTagNameNS(NS.a, 'blip')[0];
     const imageData = textBox ? null : [...element.getElementsByTagName('*')].find((node) => node.localName === 'imagedata');
     const id = blip?.getAttributeNS(NS.r, 'embed') ?? imageData?.getAttributeNS(NS.r, 'id') ?? null;
@@ -909,6 +938,27 @@ class WordReader {
         align: align === 'justify' ? 'left' : align, caption: [],
       },
     }, { runs: [] });
+  }
+
+  /** A picture a drawing shows, added to the document's resources. */
+  drawingPicture(relId) {
+    const rel = this.rels.get(relId);
+    if (!rel || rel.external) { this.losses.add('Pictures linked from outside the file'); return null; }
+    if (!DRAWABLE.has(extensionOf(rel.target))) { this.losses.add('Pictures in a format the program cannot show, such as WMF or EMF'); return null; }
+    const bytes = this.pkg.bytes(rel.target);
+    if (!bytes) { this.losses.add('Pictures whose file was missing'); return null; }
+    let resource = this.resourceFor(rel.target);
+    if (!this.images.has(resource)) this.images.set(resource, bytes);
+    else if (this.images.get(resource) !== bytes) resource = this.uniqueResource(rel.target, bytes);
+    return resource;
+  }
+
+  /** Drawings waiting for a paragraph anchored to a block, which then gets an id of its own. */
+  anchorPending(block) {
+    if (!block || !this.pendingDrawings.length) return;
+    block.id ??= makeId('b');
+    for (const o of this.pendingDrawings) o.anchor.block = block.id;
+    this.pendingDrawings = [];
   }
 
   resourceFor(target) {
@@ -1318,4 +1368,19 @@ function headingNumbersFrom(levels) {
     after: first.includes('%1') ? first.slice(first.indexOf('%1') + 2) : '',
     depth,
   };
+}
+
+/** The text column and the margins of the last section, in CSS pixels, for placing drawings. */
+function pageGeometry(body) {
+  const section = kid(body, W, 'sectPr');
+  const twips = (element, name, fallback) => {
+    const value = Number(element?.getAttributeNS(W, name));
+    return Number.isFinite(value) && element?.hasAttributeNS(W, name) ? value / 15 : fallback;
+  };
+  const size = kid(section, W, 'pgSz');
+  const margins = kid(section, W, 'pgMar');
+  const width = twips(size, 'w', 793.7);
+  const left = twips(margins, 'left', 94.5);
+  const right = twips(margins, 'right', 94.5);
+  return { column: Math.max(50, width - left - right), left, right, top: Math.abs(twips(margins, 'top', 94.5)) };
 }

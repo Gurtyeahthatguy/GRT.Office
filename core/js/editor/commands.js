@@ -9,6 +9,9 @@ import {
 } from './selection.js';
 import { changeCase, stepSize } from '../text-case.js';
 
+/** A letter or digit of a word, apostrophes inside it included. */
+const WORD = /[\p{L}\p{N}'’]/u;
+
 /**
  * Inserts text at a collapsed selection, or over a range.
  * @param {DocumentModel} model
@@ -430,7 +433,19 @@ export function insertRuns(model, selection, runs) {
  * @returns {Object} the selection afterwards, covering the changed text
  */
 export function transformCase(model, selection, mode) {
-  if (isCollapsed(selection)) return selection;
+  // With nothing chosen the word at the caret changes, as in Writer, and the caret stays where it was.
+  if (isCollapsed(selection)) {
+    const at = selection.focus;
+    const runs = model.runsOf(at.blockId, at.itemIndex);
+    const text = (runs ?? []).map((run) => (run.object ? OBJECT : run.text)).join('');
+    let from = at.offset;
+    let to = at.offset;
+    while (from > 0 && WORD.test(text[from - 1])) from -= 1;
+    while (to < text.length && WORD.test(text[to])) to += 1;
+    if (from === to) return selection;
+    transformCase(model, { anchor: { ...at, offset: from }, focus: { ...at, offset: to } }, mode);
+    return selection;
+  }
   const { start, end } = normalise(selection, model);
   let endOffset = end.offset;
   for (const container of containersInRange(selection, model)) {

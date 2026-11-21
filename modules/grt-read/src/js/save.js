@@ -3,9 +3,10 @@
 import { PDFDocument, degrees } from '../vendor/pdf-lib.esm.js';
 import { stripMetadata, auditBytes } from './core/metadata.js';
 import {
-  applyCrops, applyWatermark, applyPageNumbers, applyMetadata, applyMarks,
+  applyCrops, applyWatermark, applyPageNumbers, applyMetadata, applyMarks, applyAdditions,
 } from './operations.js';
 import { recompressImages } from './compress.js';
+import { fillAndFlatten } from './forms.js';
 
 /**
  * Builds the final PDF bytes from an explicit page plan.
@@ -50,6 +51,12 @@ export async function buildBytesFromPlan(model, plan, options = {}) {
       updateMetadata: false,
       ignoreEncryption: true,
     });
+    // A filled form's answers become part of its pages before they are copied.
+    const answers = (options.forms ?? model.forms)?.[sourceId];
+    if (answers && Object.keys(answers).length) {
+      const result = fillAndFlatten(sourceDoc, answers);
+      if (result.refused.length) options.onRefused?.(result.refused);
+    }
 
     // copyPages copies only the objects actually referenced by the requested
     // pages.
@@ -81,6 +88,9 @@ export async function buildBytesFromPlan(model, plan, options = {}) {
       + 'rewrite, so the file was not written. Please report the document.',
     );
   }
+
+  const additions = await applyAdditions(output, copiedByPosition, plan);
+  if (additions.dropped) options.onDropped?.(additions.dropped);
 
   applyCrops(copiedByPosition, plan);
 

@@ -2,6 +2,7 @@
 
 import { normaliseTable, TABLE_LIMITS, normaliseRuns } from './model.js';
 import { point, collapsed, normalise } from './selection.js';
+import { greatest } from '../extent.js';
 
 const empty = () => ({ runs: [{ text: '' }] });
 
@@ -275,7 +276,7 @@ export function mergeTables(model, selection) {
 export function textToTable(model, blocks, separator = '\t') {
   const lines = blocks.filter((b) => b.kind === 'paragraph' || b.kind === 'heading').map((b) => cellText(b).split(separator));
   if (!lines.length) return null;
-  const cols = Math.min(TABLE_LIMITS.cols, Math.max(...lines.map((l) => l.length)));
+  const cols = Math.min(TABLE_LIMITS.cols, greatest(lines.map((l) => l.length)));
   const shape = {
     kind: 'table', style: 'body', align: 'left', borders: 'all',
     rows: lines.slice(0, TABLE_LIMITS.rows).map((line) => ({ cells: Array.from({ length: cols }, (_, c) => ({ runs: [{ text: line[c] ?? '' }] })) })),

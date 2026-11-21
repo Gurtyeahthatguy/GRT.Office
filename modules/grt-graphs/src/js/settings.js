@@ -17,6 +17,8 @@ export const DEFAULTS = {
   keyboard: {},
   // The dictionary the Spelling dialog starts with.
   spellLanguage: /^it\b/i.test(globalThis.navigator?.language ?? '') ? 'it-IT' : 'en-US',
+  // The certificates of the authorities whose signatures the person trusts, in base64.
+  trustedCertificates: [],
 };
 
 let current = { ...DEFAULTS };

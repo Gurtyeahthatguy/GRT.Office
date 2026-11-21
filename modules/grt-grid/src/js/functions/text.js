@@ -2,7 +2,7 @@
 
 import { riskyPattern } from '../core/find.js';
 import { ERROR, isError, isBlank, toNumber, toText, toBoolean, Matrix } from '../engine/values.js';
-import { wildcard } from './criteria.js';
+import { wildcardFind } from './criteria.js';
 import { parseXml } from '../core/xml.js';
 
 /** The longest text a function builds, so a formula cannot fill the memory with one cell. */
@@ -423,9 +423,7 @@ export const TEXT = {
     const [needle, haystack, start] = values;
     const from = Math.trunc(start);
     if (needle === '' || from < 1 || from > haystack.length) return ERROR.value;
-    const pattern = new RegExp(wildcard(needle).source.slice(1, -1), 'i');
-    const rest = haystack.slice(from - 1);
-    const at = rest.search(pattern);
+    const at = wildcardFind(needle, haystack.slice(from - 1).split(''));
     return at === -1 ? ERROR.value : from + at;
   },
   NUMBERVALUE: (args) => {
@@ -503,9 +501,11 @@ export const TEXT = {
     if (isError(values)) return values;
     const [needle, haystack, start] = values;
     const chars = [...haystack];
+    const offsets = [];
+    for (let i = 0, at = 0; i < chars.length; at += chars[i].length, i += 1) offsets.push(at);
     let bytes = 0;
     for (let i = 0; i < chars.length; i += 1) {
-      if (bytes + 1 >= start && chars.slice(i).join('').startsWith(needle)) return bytes + 1;
+      if (bytes + 1 >= start && haystack.startsWith(needle, offsets[i])) return bytes + 1;
       bytes += wide(chars[i]) ? 2 : 1;
     }
     return ERROR.value;
@@ -514,13 +514,14 @@ export const TEXT = {
     const values = read(args, ['t', 't', 'n'], [null, null, 1]);
     if (isError(values)) return values;
     const [needle, haystack, start] = values;
-    const pattern = new RegExp(`^${wildcard(needle).source.slice(1, -1)}`, 'i');
     const chars = [...haystack];
     let bytes = 0;
-    for (let i = 0; i < chars.length; i += 1) {
-      if (bytes + 1 >= start && pattern.test(chars.slice(i).join(''))) return bytes + 1;
-      bytes += wide(chars[i]) ? 2 : 1;
-    }
-    return ERROR.value;
+    let begin = 0;
+    while (begin < chars.length && bytes + 1 < start) bytes += wide(chars[begin++]) ? 2 : 1;
+    if (begin === chars.length) return ERROR.value;
+    const at = wildcardFind(needle, chars.slice(begin));
+    if (at === -1) return ERROR.value;
+    for (let i = begin; i < begin + at; i += 1) bytes += wide(chars[i]) ? 2 : 1;
+    return bytes + 1;
   },
 };

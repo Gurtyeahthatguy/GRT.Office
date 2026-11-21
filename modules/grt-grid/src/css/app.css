@@ -187,6 +187,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .grid-body {
   grid-area: 2 / 2;
   position: relative;
+  /* Drawings in the background go under the cells but over the sheet. */
+  background: var(--bg-raised);
+  isolation: isolate;
 }
 
 .cell {
@@ -202,7 +205,7 @@ main { flex: 1; min-height: 0; display: flex; }
   text-overflow: clip;
   border-right: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
-  background: var(--bg-raised);
+  background: transparent;
   font-variant-numeric: tabular-nums;
 }
 
@@ -212,7 +215,7 @@ main { flex: 1; min-height: 0; display: flex; }
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   z-index: 1;
-  background: var(--bg-raised);
+  background: transparent;
 }
 
 .column-head, .row-head {
@@ -351,7 +354,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .cell.break-above { border-top: 2px dashed var(--accent); }
 .cell.break-left { border-left: 2px dashed var(--accent); }
 
-.cell.frozen { z-index: 2; }
+.cell.frozen { z-index: 2; background: var(--bg-raised); }
 .cell.frozen-corner { z-index: 3; }
 .cell.frozen.active { z-index: 4; }
 .cell.frozen-edge-bottom { border-bottom: 2px solid var(--border); }
@@ -425,3 +428,31 @@ body.cloning .grid { cursor: copy; }
 .cell.has-link { color: var(--accent); text-decoration-line: underline; }
 .cell.redacted { background-color: #111 !important; color: #111 !important; }
 .cell.redacted:hover { color: #ddd !important; }
+
+/* Drawings on the sheet: over the cells, or under them in the background; the handles over all. */
+/* View, Grid and Helplines, Display Grid: dots for drawing, over the cells and under the drawings. */
+.sheet-draw-grid { position: absolute; inset: 0; z-index: 4; pointer-events: none;
+  background-image: radial-gradient(circle, rgba(90, 90, 90, 0.5) 0.8px, transparent 1.2px); background-size: 5mm 5mm; background-position: -2.5mm -2.5mm; }
+.sheet-draw-grid[hidden] { display: none; }
+.sheet-drawings { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; }
+.sheet-drawing { position: absolute; display: block; z-index: 5; transform-origin: center; cursor: move; user-select: none; -webkit-user-select: none; }
+.sheet-drawing.background { z-index: -1; }
+.sheet-drawing svg { position: absolute; left: 0; top: 0; }
+.sheet-drawing.editing-text .drawing-text { visibility: hidden; }
+.sheet-drawing .drawing-text {
+  position: absolute; inset: 0; display: flex; flex-direction: column; padding: 4px 6px; box-sizing: border-box;
+  overflow: hidden; font-size: 13px; line-height: 1.3; color: #000; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.sheet-draw-overlay { inset: 0; }
+.sheet-draw-overlay.drawing-tool { pointer-events: auto; cursor: crosshair; }
+.sheet-handles { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; }
+.sheet-draw-overlay .drawing-editor {
+  position: absolute; pointer-events: auto; box-sizing: border-box; resize: none; font: 13px/1.3 sans-serif;
+  border: 1px dashed var(--accent); background: rgba(255, 255, 255, 0.92); color: #000; padding: 4px 6px;
+}
+
+/* The Formatting bar's font boxes and colour buttons. */
+.font-picker { width: 10em; }
+.size-picker { width: 4em; }
+.color-button { position: relative; display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+.color-button input[type="color"] { width: 18px; height: 18px; padding: 0; border: 0; background: none; cursor: pointer; }

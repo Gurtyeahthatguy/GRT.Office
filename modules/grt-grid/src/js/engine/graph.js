@@ -189,7 +189,7 @@ export class DependencyGraph {
 
       const held = this.precedents.get(current);
       if (!held) continue;
-      queue.push(...held.cells);
+      for (const cell of held.cells) queue.push(cell);
       for (const range of held.ranges) {
         for (const candidate of this.precedents.keys()) {
           const { sheetId, row, col } = parseNodeId(candidate);

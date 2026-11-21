@@ -2,6 +2,7 @@ import { readPackage } from './package.js';
 import { readOds } from './formats/ods.js';
 import { readXlsx } from './formats/xlsx.js';
 import { parseCsv, sniff } from './csv.js';
+import { least, greatest } from './extent.js';
 
 /** Where a live node takes its value: a cell of a spreadsheet, or a column of a Tables database read without running anything in it. */
 
@@ -218,8 +219,8 @@ export function pickValue(table, { column, aggregate = 'value', where = '', equa
     case 'sum': return numbers.reduce((a, b) => a + b, 0);
     case 'count': return values.length;
     case 'avg': return numbers.length ? numbers.reduce((a, b) => a + b, 0) / numbers.length : null;
-    case 'min': return numbers.length ? Math.min(...numbers) : null;
-    case 'max': return numbers.length ? Math.max(...numbers) : null;
+    case 'min': return numbers.length ? least(numbers) : null;
+    case 'max': return numbers.length ? greatest(numbers) : null;
     default: return values[0] ?? null;
   }
 }

@@ -43,15 +43,20 @@
     </div>
 
     <main>
+      <nav class="database-pane" role="tablist" aria-label="Database" aria-orientation="vertical">
+        <button role="tab" data-category="tables" aria-selected="true">Tables</button>
+        <button role="tab" data-category="queries" aria-selected="false" tabindex="-1">Queries</button>
+        <button role="tab" data-category="forms" aria-selected="false" tabindex="-1">Forms</button>
+        <button role="tab" data-category="reports" aria-selected="false" tabindex="-1">Reports</button>
+      </nav>
+
       <aside class="sidebar">
-        <h2>Tables</h2>
-        <div id="table-list"></div>
-        <h2>Queries</h2>
-        <div id="query-list" class="object-list"></div>
-        <h2>Forms</h2>
-        <div id="form-list" class="object-list"></div>
-        <h2>Reports</h2>
-        <div id="report-list" class="object-list"></div>
+        <h2>Tasks</h2>
+        <div id="task-list" class="task-list"></div>
+        <section data-objects="tables"><h2>Tables</h2><div id="table-list"></div></section>
+        <section data-objects="queries" hidden><h2>Queries</h2><div id="query-list" class="object-list"></div></section>
+        <section data-objects="forms" hidden><h2>Forms</h2><div id="form-list" class="object-list"></div></section>
+        <section data-objects="reports" hidden><h2>Reports</h2><div id="report-list" class="object-list"></div></section>
       </aside>
 
       <section class="workspace">

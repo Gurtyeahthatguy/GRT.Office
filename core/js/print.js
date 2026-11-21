@@ -25,7 +25,8 @@ const CSS = `
   html, body { background: #fff !important; margin: 0 !important; padding: 0 !important;
     height: auto !important; min-height: 0 !important; overflow: visible !important; display: block !important; }
   body > *:not(#print-view) { display: none !important; }
-  #print-view { position: static !important; display: block !important; background: none !important; }
+  /* A view wider than the paper would be shrunk to fit it: the pages print at their own size. */
+  #print-view { position: static !important; display: block !important; background: none !important; width: auto !important; left: auto !important; }
   #print-view .print-toolbar { display: none !important; }
   #print-view .print-pages { display: block !important; padding: 0 !important; overflow: visible !important; }
   #print-view .print-frame { width: auto !important; height: auto !important; }
@@ -33,6 +34,11 @@ const CSS = `
     break-after: page; page-break-after: always; }
   .print-frame:last-child .print-page { break-after: auto; page-break-after: auto; }
 }`;
+
+/** The printed page's look in the document, for pages shown outside the print preview. */
+export function usePrintStyles() {
+  ensureStyle();
+}
 
 function ensureStyle() {
   if (document.getElementById(STYLE_ID)) return;
@@ -392,6 +398,38 @@ export function flowPage(column, { start, end, repeat = null }) {
     heading.querySelector(':scope > tbody')?.remove();
     Object.assign(heading.style, { position: 'absolute', top: '0px', left: `${rect.left - box.left}px`, width: `${rect.width}px`, margin: '0', boxSizing: 'border-box' });
     body.append(heading);
+  }
+  // Text running round drawings needs the floats that make it do so: the stretch of the column is copied whole, in its own flow.
+  if (column.querySelector(':scope > .draw-wrap, :scope > .draw-anchor')) {
+    body.style.isolation = 'isolate';
+    const children = [...column.children];
+    const shown = (element) => {
+      const rect = element.getBoundingClientRect();
+      const top = rect.top - box.top;
+      const bottom = rect.bottom - box.top;
+      return !((bottom <= start && bottom > top) || (top >= end && top > start));
+    };
+    let first = children.findIndex(shown);
+    let last = children.length - 1 - [...children].reverse().findIndex(shown);
+    if (first !== -1) {
+      // A drawing anchored on an earlier page that reaches into this one comes too, with what lies between.
+      for (let i = first - 1; i >= 0; i -= 1) {
+        const element = children[i];
+        if (!element.matches('.draw-anchor, .draw-wrap')) continue;
+        const reach = Math.max(element.getBoundingClientRect().bottom, ...[...element.querySelectorAll('.text-drawing')].map((d) => d.getBoundingClientRect().bottom)) - box.top;
+        if (reach > start) first = i;
+      }
+      last = Math.max(last, first);
+      const lead = children[first];
+      const flow = document.createElement('div');
+      Object.assign(flow.style, {
+        position: 'absolute', left: '0px', width: `${box.width}px`,
+        top: `${lead.getBoundingClientRect().top - box.top - (parseFloat(getComputedStyle(lead).marginTop) || 0) - start + shift}px`,
+      });
+      flow.append(...children.slice(first, last + 1).map((element) => element.cloneNode(true)));
+      body.append(flow);
+    }
+    return body;
   }
   for (const element of column.children) {
     const rect = element.getBoundingClientRect();

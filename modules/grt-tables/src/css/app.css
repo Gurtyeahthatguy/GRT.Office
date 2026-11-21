@@ -96,7 +96,17 @@ textarea, select, input:not([type]) {
 
 /* Layout */
 
-main { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minmax(0, 1fr); }
+/* Base's window in three parts: the kinds of object, the tasks and objects of the kind chosen, and the work. */
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: 96px 210px minmax(0, 1fr); }
+
+.database-pane { display: flex; flex-direction: column; gap: 4px; padding: 10px 6px; background: var(--bg-sunken); border-right: 1px solid var(--border); }
+.database-pane button { border: 1px solid transparent; background: none; color: var(--text); font-size: 12px; padding: 10px 4px; border-radius: 6px; text-align: center; }
+.database-pane button:hover { background: var(--bg-raised); }
+.database-pane button[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); font-weight: 600; }
+.task-list { display: flex; flex-direction: column; margin-bottom: 16px; }
+.task-list button { border: none; background: none; color: var(--accent); text-align: left; font-size: 13px; padding: 4px 6px; border-radius: 5px; }
+.task-list button:hover { background: var(--bg-sunken); }
+.sidebar section h2 { margin-top: 0; }
 
 .spacer { flex: 1; }
 

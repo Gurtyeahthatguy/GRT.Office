@@ -8,12 +8,15 @@ import { odfFormulaXml, readMathElement, MATHML, FORMULA_MIMETYPE } from './math
 import { parseLength, formatLength } from '../units.js';
 import { Losses } from '../losses.js';
 import { naturalSize } from '../images.js';
-import { parsePath, formatPath, mapPath, normalisePath } from '../paths.js';
 import {
   odfDocuments, OdfStyles, MIMETYPES, ODF_VERSION, ROOT_NAMESPACES, odfPackage, odfText, internalHref,
   MEDIA_TYPES, extensionOf, fontKind, unquote, textLook,
 } from './odf.js';
 import { declareExternal } from './external.js';
+import { readOdfDrawing, writeOdfDrawing, graphicProperties, lookFromProperties, namedFills, linkConnectors } from './draw-odf.js';
+import { connectorPoints } from '../draw/render.js';
+import { slidesLook, isDrawing } from './slide-look.js';
+import { cleanColours } from './colour.js';
 
 /** LibreOffice's namespace for comments on a slide. */
 const OFFICEOOO = 'http://openoffice.org/2009/office';
@@ -27,25 +30,6 @@ const px = (text) => {
 };
 const cm = (pixels) => formatLength(pixels / PX_PER_MM, 'cm');
 
-const CUSTOM_SHAPES = {
-  rectangle: 'rect', 'ooxml-rect': 'rect', 'round-rectangle': 'rounded', 'ooxml-roundRect': 'rounded',
-  ellipse: 'ellipse', 'ooxml-ellipse': 'ellipse', circle: 'ellipse', diamond: 'diamond', 'ooxml-diamond': 'diamond',
-  parallelogram: 'parallelogram', 'ooxml-parallelogram': 'parallelogram', hexagon: 'hexagon', 'ooxml-hexagon': 'hexagon',
-  octagon: 'hexagon', 'isosceles-triangle': 'triangle', 'ooxml-triangle': 'triangle', 'flowchart-process': 'rect',
-  'flowchart-decision': 'diamond', 'flowchart-terminator': 'rounded', 'flowchart-alternate-process': 'rounded',
-  'flowchart-connector': 'ellipse', 'flowchart-data': 'parallelogram', 'flowchart-preparation': 'hexagon',
-  'ooxml-flowChartProcess': 'rect', 'ooxml-flowChartDecision': 'diamond', 'ooxml-flowChartTerminator': 'rounded',
-};
-// Slides' shapes as LibreOffice's presets, adjusted to the proportions Slides draws them with.
-const CUSTOM_TYPES = {
-  rect: ['rectangle', null],
-  rounded: ['round-rectangle', '2160'],
-  ellipse: ['ellipse', null],
-  diamond: ['diamond', null],
-  parallelogram: ['parallelogram', '4320'],
-  hexagon: ['hexagon', '3888'],
-  triangle: ['isosceles-triangle', '10800'],
-};
 // Faces with the metrics of what Slides draws, present wherever LibreOffice is.
 const FAMILIES = { sans: 'Liberation Sans', serif: 'Liberation Serif', mono: 'Liberation Mono' };
 
@@ -79,6 +63,7 @@ class OdpReader {
     this.images = new Map();
     this.imageNames = new Map();
     this.ids = 0;
+    this.fills = namedFills(docs.styles?.documentElement ?? docs.content.documentElement);
   }
 
   id(prefix) {
@@ -107,6 +92,7 @@ class OdpReader {
     const layout = firstMaster ? this.masterScope.layouts.get(attr(firstMaster, NS.style, 'page-layout-name')) : null;
     const props = {};
     for (const attribute of kid(layout, NS.style, 'page-layout-properties')?.attributes ?? []) props[attribute.localName] = attribute.value;
+    cleanColours(props);
     const canvas = {
       w: Math.round(px(props['page-width']) ?? 1067),
       h: Math.round(px(props['page-height']) ?? 600),
@@ -137,6 +123,7 @@ class OdpReader {
       const styleName = attr(page, NS.draw, 'style-name');
       const pageProps = this.content.resolve('drawing-page', styleName, 'page');
       const own = this.pageFill(this.content, styleName);
+      const backgroundImage = pageProps.fill === 'bitmap' ? this.fillImage(pageProps['fill-image-name']) : null;
       const background = own ?? (info.background && info.background !== themeBackground ? info.background : null);
       const elements = this.elements(page, this.content, false);
       elements.forEach((element, i) => { element.z = i + 1; });
@@ -153,6 +140,7 @@ class OdpReader {
         ...(showsMaster ? {} : { hideMaster: true }),
         footer,
         background,
+        ...(backgroundImage ? { backgroundImage } : {}),
         section: null,
         notes: this.notes(page),
         ...this.comments(page),
@@ -169,10 +157,18 @@ class OdpReader {
     };
   }
 
+  /** The picture a draw:fill-image of office:styles names, as a resource. */
+  fillImage(name) {
+    const root = this.stylesDoc?.documentElement ?? null;
+    const image = [...(root?.getElementsByTagNameNS(NS.draw, 'fill-image') ?? [])].find((n) => attr(n, NS.draw, 'name') === name);
+    return image ? this.image(attr(image, NS.xlink, 'href')) : null;
+  }
+
   pageFill(styles, name) {
     const props = styles.resolve('drawing-page', name, 'page');
     if (props.fill === 'solid' && props['fill-color']) return props['fill-color'].toLowerCase();
-    if (['gradient', 'bitmap', 'hatch'].includes(props.fill)) {
+    if (props.fill === 'bitmap') return props['fill-color']?.toLowerCase() ?? null;
+    if (['gradient', 'hatch'].includes(props.fill)) {
       this.losses.add('Picture and gradient backgrounds, shown as one colour');
       return props['fill-color']?.toLowerCase() ?? null;
     }
@@ -205,7 +201,29 @@ class OdpReader {
   elements(container, styles, onMaster) {
     const out = [];
     for (const node of kids(container)) this.shape(node, styles, onMaster, out);
-    return out;
+    return linkConnectors(out);
+  }
+
+  /** What the drawing reader needs to know of this file: boxes, looks with their named fills, pictures. */
+  drawingContext(styles) {
+    return {
+      box: (n) => boxOf(n),
+      toPx: px,
+      id: () => this.id('e'),
+      losses: this.losses,
+      picture: (href) => this.image(href),
+      look: (n) => {
+        const props = { ...this.graphic(n, styles).raw };
+        if (props['fill-gradient-name']) props.gradient = this.fills.gradients[props['fill-gradient-name']];
+        if (props['fill-hatch-name']) props.hatch = this.fills.hatches[props['fill-hatch-name']];
+        return lookFromProperties(props, px);
+      },
+      child: (c) => {
+        const inner = [];
+        this.shape(c, styles, false, inner);
+        return inner.length === 1 ? inner[0] : null;
+      },
+    };
   }
 
   shape(node, styles, onMaster, out) {
@@ -216,10 +234,20 @@ class OdpReader {
     if (placeholder) return;
     if (onMaster && presentationClass) return;
     if (kind === 'g') {
+      // A group of drawings stays a group; one holding text boxes, tables or objects is opened up, as before.
+      const plain = kids(node).every((c) => c.namespaceURI === NS.draw && c.localName !== 'frame' && !kid(c, NS.text, 'p'));
+      const group = plain ? readOdfDrawing(node, this.drawingContext(styles)) : null;
+      if (group) { out.push({ ...group, data: {} }); return; }
       for (const child of kids(node)) this.shape(child, styles, onMaster, out);
       return;
     }
     const look = this.graphic(node, styles);
+    const glued = kind === 'connector' && (attr(node, NS.draw, 'start-shape') || attr(node, NS.draw, 'end-shape'));
+    if (glued) {
+      const connector = readOdfDrawing(node, this.drawingContext(styles));
+      if (connector) out.push({ ...connector, data: {} });
+      return;
+    }
     if (kind === 'line' || kind === 'connector') {
       this.line(node, look, out);
       return;
@@ -231,39 +259,13 @@ class OdpReader {
       this.frame(node, box, look, styles, out);
       return;
     }
-    let shape = null;
-    let path = null;
-    if (kind === 'rect') shape = parseLength(attr(node, NS.draw, 'corner-radius')) > 0 ? 'rounded' : 'rect';
-    else if (kind === 'ellipse' || kind === 'circle') shape = 'ellipse';
-    else if (kind === 'polygon' || kind === 'polyline' || kind === 'path') {
-      path = outlineOf(node);
-      shape = path ? 'path' : 'rect';
-      if (!path) this.losses.add('Freeform shapes, drawn as rectangles');
-      if (kind === 'polyline') look.fill = 'none';
-    } else if (kind === 'custom-shape') {
-      const geometry = kid(node, NS.draw, 'enhanced-geometry');
-      const type = attr(geometry, NS.draw, 'type') ?? '';
-      shape = CUSTOM_SHAPES[type] ?? null;
-      if (!shape) {
-        path = enhancedOutline(geometry);
-        if (path) shape = 'path';
-        else {
-          this.losses.add(/^non-primitive$|^mso-spt/.test(type) || type === '' ? 'Freeform shapes, drawn as rectangles' : 'Shapes Slides does not have, drawn as rectangles');
-          shape = 'rect';
-        }
-      }
-    } else if (kind === 'caption' || kind === 'measure' || kind === 'control') {
-      this.losses.add('Callouts, dimension lines and form controls');
-      return;
-    } else {
+    if (!['rect', 'ellipse', 'circle', 'polygon', 'polyline', 'path', 'custom-shape'].includes(kind)) {
+      if (kind === 'caption' || kind === 'measure' || kind === 'control') this.losses.add('Callouts, dimension lines and form controls');
       return;
     }
-    if (look.fill !== 'none' || look.stroke) {
-      out.push({
-        id: this.id('e'), kind: 'shape', ...box, shape, ...(path ? { path } : {}), fill: look.fill,
-        ...(look.stroke ? { stroke: look.stroke.color, strokeWidth: look.stroke.width } : {}), data: {},
-      });
-    }
+    const drawn = readOdfDrawing(node, this.drawingContext(styles));
+    if (!drawn) this.losses.add('Freeform shapes that could not be read, left out');
+    else if (drawn.fillLook?.type !== 'none' || drawn.line?.style !== 'none') out.push({ ...drawn, data: {} });
     const text = this.text(node, styles, look);
     if (text) out.push({ id: this.id('e'), kind: 'text', ...box, ...text, data: {} });
   }
@@ -276,13 +278,12 @@ class OdpReader {
     const props = styles.resolve(family, name, 'graphic');
     const fill = props.fill === 'none' || !props.fill ? 'none'
       : props.fill === 'solid' ? (props['fill-color'] ?? '#729fcf').toLowerCase()
-        : (this.losses.add('Gradient and picture fills, shown as one colour'), (props['fill-color'] ?? '#729fcf').toLowerCase());
+        : (props.fill === 'bitmap' && this.losses.add('Picture fills, shown as one colour'), (props['fill-color'] ?? '#729fcf').toLowerCase());
     const stroke = props.stroke && props.stroke !== 'none'
       ? { color: (props['stroke-color'] ?? '#3465a4').toLowerCase(), width: Math.max(1, Math.round(px(props['stroke-width']) ?? 1)) }
       : null;
-    if (props.stroke === 'dash') this.losses.add('Dashed lines, shown solid');
     return {
-      family, name, fill, stroke,
+      family, name, fill, stroke, raw: props,
       valign: { middle: 'middle', bottom: 'bottom' }[props['textarea-vertical-align']] ?? 'top',
       markerStart: !!props['marker-start'], markerEnd: !!props['marker-end'],
       text: styles.resolve(family, name, 'text'),
@@ -529,7 +530,11 @@ function paragraphsOf(holder, level = -1, listStyle = null) {
     if (is(child, NS.text, 'p') || is(child, NS.text, 'h')) out.push({ p: child, bullet: level >= 0, level: Math.max(level, 0), listStyle });
     else if (is(child, NS.text, 'list')) {
       const style = attr(child, NS.text, 'style-name') ?? listStyle;
-      for (const item of kids(child, NS.text, 'list-item')) out.push(...paragraphsOf(item, level + 1, style));
+      for (const item of kids(child, NS.text)) {
+        if (item.localName === 'list-item') out.push(...paragraphsOf(item, level + 1, style));
+        // A list header is an entry without its bullet, as LibreOffice writes PowerPoint's text boxes.
+        else if (item.localName === 'list-header') out.push(...paragraphsOf(item, level + 1, style).map((p) => ({ ...p, bullet: false, level: 0 })));
+      }
     }
   }
   return out;
@@ -601,38 +606,9 @@ function boxOf(node) {
   return rounded({ x: cx - w / 2, y: cy - h / 2, w, h, rotation: degrees });
 }
 
-/** The viewBox a drawing's coordinates are in. */
-function viewBox(node) {
-  const values = String(attr(node, NS.svg, 'viewBox') ?? '').trim().split(/[\s,]+/).map(Number);
-  return values.length === 4 && values.every(Number.isFinite) && values[2] > 0 && values[3] > 0 ? values : null;
-}
 
-/** A polygon's, polyline's or path's outline in a 0 to 100 box, or null when it cannot be read. */
-function outlineOf(node) {
-  if (node.localName === 'path') return pathOutline(attr(node, NS.svg, 'd'), viewBox(node));
-  const box = viewBox(node);
-  const points = String(attr(node, NS.draw, 'points') ?? '').trim().split(/\s+/).map((pair) => pair.split(',').map(Number));
-  if (!box || points.length < 2 || points.some((p) => p.length !== 2 || p.some((v) => !Number.isFinite(v)))) return null;
-  const segments = points.map(([x, y], i) => [i === 0 ? 'M' : 'L', x, y]);
-  if (node.localName === 'polygon') segments.push(['Z']);
-  return normalisePath(mapPath(segments, (x, y) => [x - box[0], y - box[1]]), box[2], box[3]);
-}
 
-function pathOutline(d, box) {
-  if (!d || !box) return null;
-  try {
-    return normalisePath(mapPath(parsePath(d), (x, y) => [x - box[0], y - box[1]]), box[2], box[3]);
-  } catch {
-    return null;
-  }
-}
 
-/** A custom shape's enhanced path, when it is made of plain numbers rather than formulas. */
-function enhancedOutline(geometry) {
-  const d = attr(geometry, NS.draw, 'enhanced-path');
-  if (!d || /[?$]/.test(d) || /[^MLCQZNFS\d\s.,eE+-]/.test(d)) return null;
-  return pathOutline(d.replace(/[NFS]/g, ' '), viewBox(geometry));
-}
 
 const rounded = (box) => ({
   x: Math.round(box.x), y: Math.round(box.y),
@@ -701,6 +677,9 @@ class OdpWriter {
     this.losses = new Losses();
     this.pictures = new Map();
     this.objects = [];
+    // Markers, dashes, gradients, hatches and background pictures the drawings name, for office:styles.
+    this.named = new Map();
+    this.odfIds = new Map();
     this.canvas = document.canvas ?? { w: 1920, h: 1080 };
     this.theme = { background: '#ffffff', accent: '#1f6feb', text: '#222222', ...(document.theme ?? {}) };
     this.styles = document.styles ?? {};
@@ -752,7 +731,9 @@ class OdpWriter {
         'presentation:display-date-time': footer?.date ? 'true' : 'false',
         ...(slide.hidden ? { 'presentation:visibility': 'hidden' } : {}),
         ...(slide.background ? { 'draw:background-size': 'full', 'draw:fill': 'solid', 'draw:fill-color': slide.background } : {}),
+        ...this.backgroundPicture(slide),
       })]);
+      this.currentElements = slide.elements ?? [];
       return tag('draw:page', {
         'draw:name': id, 'draw:style-name': pageStyle, 'draw:master-page-name': masterName.get(slide.master) ?? 'Default',
         'presentation:use-footer-name': footer?.text ? declare('footer', footer.text) : null,
@@ -776,12 +757,13 @@ class OdpWriter {
       ...ROOT_NAMESPACES, 'xmlns:anim': ANIM, 'xmlns:smil': SMIL, 'xmlns:officeooo': OFFICEOOO, 'office:version': ODF_VERSION,
     };
     const markers = tag('office:styles', {},
-      tag('draw:marker', { 'draw:name': 'Arrow', 'svg:viewBox': '0 0 20 30', 'svg:d': 'M10 0l-10 30h20z' }));
+      this.named.has('marker:Arrow') ? null : tag('draw:marker', { 'draw:name': 'Arrow', 'svg:viewBox': '0 0 20 30', 'svg:d': 'M10 0l-10 30h20z' }),
+      [...this.named.values()]);
     const body = tag('office:body', {}, tag('office:presentation', {}, declarations, pages));
     const pictures = [...this.pictures.values()].map((p) => ({ name: p.name, data: p.bytes, mediaType: MEDIA_TYPES[p.extension] ?? 'application/octet-stream' }));
 
     if (flat) {
-      for (const picture of this.pictures.values()) this.losses.add('Pictures, which a flat file does not carry');
+      if (this.pictures.size) this.losses.add('Pictures, which a flat file does not carry');
       if (this.objects.length) this.losses.add('Charts and formulas, which a flat file of Slides does not carry');
       const root = tag('office:document', { ...namespaces, 'office:mimetype': MIMETYPES.presentation },
         markers,
@@ -814,7 +796,7 @@ class OdpWriter {
 
   element(element, sink) {
     if (element.kind === 'text') return this.textFrame(element, sink);
-    if (element.kind === 'shape') return this.shape(element, sink);
+    if (isDrawing(element)) return this.drawing(element, sink);
     if (element.kind === 'line') return this.line(element, sink);
     if (element.kind === 'image') return this.picture(element, sink);
     if (element.kind === 'table') return this.table(element, sink);
@@ -955,22 +937,45 @@ class OdpWriter {
     return out;
   }
 
-  shape(element, sink) {
-    const fill = element.fill ?? this.theme.accent;
-    const graphic = sink.add('graphic', 'gr', [tag('style:graphic-properties', {
-      'draw:fill': fill === 'none' ? 'none' : 'solid', 'draw:fill-color': fill === 'none' ? null : fill,
-      'draw:stroke': element.stroke ? 'solid' : 'none',
-      'svg:stroke-color': element.stroke ?? null,
-      'svg:stroke-width': element.stroke ? cm(element.strokeWidth ?? 2) : null,
-      'draw:shadow': 'hidden',
-    })]);
-    if (element.shape === 'path' && element.path) {
-      const d = formatPath(mapPath(parsePath(element.path), (x, y) => [x * 100, y * 100]), 0);
-      return tag('draw:path', { 'draw:style-name': graphic, ...placement(element), 'svg:viewBox': '0 0 10000 10000', 'svg:d': d });
+  /** A drawing object as LibreOffice keeps it: geometry, graphic style, the named styles that style needs. */
+  drawing(element, sink) {
+    const o = slidesLook(element, this.theme);
+    if (o.kind === 'image') {
+      const bytes = this.images.get(o.resource);
+      if (!bytes) { this.losses.add('Pictures whose file is missing, left out'); return null; }
+      const size = naturalSize(bytes);
+      if (size) o.natural = { w: size.w, h: size.h };
     }
-    const [type, modifiers] = CUSTOM_TYPES[element.shape] ?? CUSTOM_TYPES.rect;
-    return tag('draw:custom-shape', { 'draw:style-name': graphic, ...placement(element) },
-      tag('draw:enhanced-geometry', { 'svg:viewBox': '0 0 21600 21600', 'draw:type': type, 'draw:modifiers': modifiers }));
+    const named = (kind, name, xml) => this.named.set(`${kind}:${name}`, xml);
+    return writeOdfDrawing(o, {
+      style: (x) => sink.add('graphic', 'gr', [tag('style:graphic-properties', graphicProperties(x, { len: cm, named }))]),
+      placement,
+      len: cm,
+      picture: (resource) => this.pictureHref(resource),
+      // Numbered in the order they are written, so the same presentation gives the same bytes.
+      odfId: (id) => { if (!this.odfIds.has(id)) this.odfIds.set(id, `shape${this.odfIds.size + 1}`); return this.odfIds.get(id); },
+      connectorPoints: (c) => connectorPoints(c, this.currentElements ?? []),
+    });
+  }
+
+  /** A slide's background picture, stretched over the slide, as page properties naming a fill image. */
+  backgroundPicture(slide) {
+    const href = slide.backgroundImage ? this.pictureHref(slide.backgroundImage) : null;
+    if (!href) return {};
+    const name = `Background_${this.pictures.get(slide.backgroundImage).name.replace(/\W/g, '_')}`;
+    this.named.set(`fill-image:${name}`, tag('draw:fill-image', { 'draw:name': name, 'xlink:href': href, 'xlink:type': 'simple', 'xlink:show': 'embed', 'xlink:actuate': 'onLoad' }));
+    return { 'draw:background-size': 'full', 'draw:fill': 'bitmap', 'draw:fill-image-name': name, 'style:repeat': 'stretch' };
+  }
+
+  /** A picture's place in the package, put there the first time it is asked for. */
+  pictureHref(resource) {
+    const bytes = this.images.get(resource);
+    if (!bytes) return null;
+    if (!this.pictures.has(resource)) {
+      const extension = pictureExtension(bytes, resource);
+      this.pictures.set(resource, { name: `Pictures/image${this.pictures.size + 1}.${extension}`, bytes, extension });
+    }
+    return this.pictures.get(resource).name;
   }
 
   line(element, sink) {
@@ -1010,7 +1015,7 @@ class OdpWriter {
     }
     let box = element;
     const size = naturalSize(bytes);
-    if (size && size.w > 0 && size.h > 0) {
+    if (size && size.w > 0 && size.h > 0 && element.fit !== 'fill') {
       const ratio = (size.w / size.h) / (element.w / element.h);
       if (Math.abs(ratio - 1) > 0.01) {
         if (element.fit === 'cover') this.losses.add('Cropped pictures, shown whole');

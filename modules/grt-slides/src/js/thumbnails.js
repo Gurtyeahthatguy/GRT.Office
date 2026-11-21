@@ -1,6 +1,6 @@
 /** The slide panel. */
 
-import { elementMarkup } from './export.js';
+import { elementMarkup, backgroundCss } from './export.js';
 
 const WIDTH = 168;
 
@@ -60,7 +60,7 @@ export class Thumbnails {
         width: `${model.canvas.w}px`,
         height: `${model.canvas.h}px`,
         transform: `scale(${scale})`,
-        background: model.slideBackground(slide.id),
+        background: backgroundCss(model, slide.id, images),
       });
       surface.innerHTML = model.renderList(slide.id)
         .map((element) => elementMarkup(element, model, images))

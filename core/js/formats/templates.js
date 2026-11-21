@@ -9,13 +9,16 @@ const OOXML_MAIN = {
   pptx: ['application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml', 'application/vnd.openxmlformats-officedocument.presentationml.template.main+xml'],
 };
 
+/** The templates of Office 97-2003 and of WPS Office: the same bytes as a document, but for a flag in Word's. */
+export const BINARY_TEMPLATE_OF = { dot: 'doc', wpt: 'doc', xlt: 'xls', ett: 'xls', pot: 'ppt', dpt: 'ppt' };
+
 /** Office's templates with macros: opened as templates, their macros declared and never run, and never written. */
 export const MACRO_TEMPLATE_OF = { dotm: 'docx', xltm: 'xlsx', potm: 'pptx' };
 
-export const isTemplate = (format) => Object.hasOwn(TEMPLATE_OF, String(format ?? '').toLowerCase()) || Object.hasOwn(MACRO_TEMPLATE_OF, String(format ?? '').toLowerCase());
+export const isTemplate = (format) => Object.hasOwn(TEMPLATE_OF, String(format ?? '').toLowerCase()) || Object.hasOwn(BINARY_TEMPLATE_OF, String(format ?? '').toLowerCase()) || Object.hasOwn(MACRO_TEMPLATE_OF, String(format ?? '').toLowerCase());
 
 /** The format a file is read and written as: the document format for a template, the format itself otherwise. */
-export const baseFormat = (format) => TEMPLATE_OF[String(format ?? '').toLowerCase()] ?? MACRO_TEMPLATE_OF[String(format ?? '').toLowerCase()] ?? format;
+export const baseFormat = (format) => TEMPLATE_OF[String(format ?? '').toLowerCase()] ?? BINARY_TEMPLATE_OF[String(format ?? '').toLowerCase()] ?? MACRO_TEMPLATE_OF[String(format ?? '').toLowerCase()] ?? format;
 
 const text = (data) => (typeof data === 'string' ? data : new TextDecoder().decode(data));
 

@@ -2,6 +2,7 @@
 
 import { key, parseKey, columnName } from './references.js';
 import { SHEET_PRINT_DEFAULTS } from './core/formats/sheet-print.js';
+import { cleanSheetDrawings } from './core/formats/sheet-drawings.js';
 
 export const FORMAT_VERSION = 1;
 
@@ -343,6 +344,8 @@ export class GridModel {
     this.sheets = [];
     this.styles = structuredClone(DEFAULT_STYLES);
     this.charts = [];
+    /** Shapes, pictures and text boxes on the sheets, each anchored to a cell or to the page. */
+    this.drawings = [];
     /** Defined names: upper-case name to the text of what it stands for, such as `=Sheet1!$A$1:$A$9`. */
     this.names = {};
     this.path = null;
@@ -362,6 +365,7 @@ export class GridModel {
     this.charts = structuredClone(document.charts ?? []).map((chart) => (typeof chart.sheet === 'number'
       ? { ...chart, sheet: this.sheets[chart.sheet]?.id ?? this.sheets[0]?.id } : chart));
     this.names = { ...(document.names ?? {}) };
+    this.drawings = cleanSheetDrawings(document.drawings, this.sheets);
     // One sheet at least stays in view.
     if (this.sheets.length && this.sheets.every((s) => s.hidden)) this.sheets[0].hidden = false;
     this.activeSheetId = this.sheets.find((s) => !s.hidden)?.id ?? this.sheets[0]?.id ?? null;
@@ -403,6 +407,7 @@ export class GridModel {
     const [removed] = this.sheets.splice(index, 1);
     if (this.sheets.every((s) => s.hidden)) this.sheets[0].hidden = false;
     this.charts = this.charts.filter((chart) => chart.sheet !== id);
+    this.drawings = this.drawings.filter((o) => o.sheet !== id);
     if (this.activeSheetId === id) this.activeSheetId = this.nearestShown(index);
     this.dirty = true;
     return removed;
@@ -453,6 +458,9 @@ export class GridModel {
     for (const chart of this.charts.filter((c) => c.sheet === id)) {
       this.charts.push({ ...structuredClone(chart), id: nextId('chart'), sheet: copy.id });
     }
+    for (const o of this.drawings.filter((d) => d.sheet === id)) {
+      this.drawings.push({ ...structuredClone(o), id: nextId('d'), sheet: copy.id });
+    }
     this.dirty = true;
     return copy;
   }
@@ -485,6 +493,7 @@ export class GridModel {
       sheets: this.sheets.map((sheet) => sheet.toJSON()),
       styles: structuredClone(this.styles),
       charts: structuredClone(this.charts),
+      drawings: structuredClone(this.drawings),
       names: { ...this.names },
       activeSheetId: this.activeSheetId,
       dirty: this.dirty,
@@ -495,6 +504,7 @@ export class GridModel {
     this.sheets = state.sheets.map((sheet) => new Sheet(sheet));
     this.styles = structuredClone(state.styles);
     this.charts = structuredClone(state.charts);
+    this.drawings = structuredClone(state.drawings ?? []);
     this.names = { ...(state.names ?? {}) };
     this.activeSheetId = state.activeSheetId;
     this.dirty = state.dirty;
@@ -532,6 +542,7 @@ export class GridModel {
       sheets: this.sheets.map((sheet) => sheet.toJSON()),
       styles: this.styles,
       charts: this.charts,
+      ...(this.drawings.length ? { drawings: this.drawings } : {}),
       ...(Object.keys(this.names).length > 0 ? { names: Object.fromEntries(Object.entries(this.names).sort()) } : {}),
     };
   }

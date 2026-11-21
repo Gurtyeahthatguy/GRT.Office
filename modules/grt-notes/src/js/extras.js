@@ -40,11 +40,20 @@ export function sectionBlocks(blocks, section) {
 /** A name made of the minute it was made, as Obsidian's unique note creator writes it. */
 export const uniqueName = (now = new Date()) => formatDate(now, 'YYYYMMDDHHmm');
 
+/** A folder or note named by a vault's settings, or '' when the name would lead out of the vault. */
+export function insideVault(path) {
+  const text = typeof path === 'string' ? path.replace(/^\/+|\/+$/g, '') : '';
+  const parts = text.split('/');
+  return /[\\:\0]/.test(text) || parts.some((part) => part === '..' || part === '.') ? '' : text;
+}
+
 /** Obsidian's settings for daily notes and templates, read from the vault, with its defaults when missing. */
 export async function vaultSettings(root, readText) {
   const read = async (name) => {
     try {
-      return JSON.parse(await readText(`${root}/.obsidian/${name}`));
+      // A file of the vault may hold anything: only an object of settings is taken.
+      const found = JSON.parse(await readText(`${root}/.obsidian/${name}`));
+      return found && typeof found === 'object' && !Array.isArray(found) ? found : {};
     } catch {
       return {};
     }
@@ -52,11 +61,12 @@ export async function vaultSettings(root, readText) {
   const daily = await read('daily-notes.json');
   const templates = await read('templates.json');
   const unique = await read('zk-prefixer.json');
-  const clean = (path) => String(path ?? '').replace(/^\/+|\/+$/g, '').replace(/\.md$/i, '');
+  const word = (value, fallback) => (typeof value === 'string' && value ? value : fallback);
+  const clean = (path) => insideVault(path).replace(/\.md$/i, '');
   return {
-    daily: { folder: clean(daily.folder), format: daily.format || 'YYYY-MM-DD', template: clean(daily.template) },
-    templates: { folder: clean(templates.folder) || 'Templates', dateFormat: templates.dateFormat || 'YYYY-MM-DD', timeFormat: templates.timeFormat || 'HH:mm' },
-    unique: { folder: clean(unique.folder), format: unique.format || 'YYYYMMDDHHmm' },
+    daily: { folder: clean(daily.folder), format: word(daily.format, 'YYYY-MM-DD'), template: clean(daily.template) },
+    templates: { folder: clean(templates.folder) || 'Templates', dateFormat: word(templates.dateFormat, 'YYYY-MM-DD'), timeFormat: word(templates.timeFormat, 'HH:mm') },
+    unique: { folder: clean(unique.folder), format: word(unique.format, 'YYYYMMDDHHmm') },
   };
 }
 

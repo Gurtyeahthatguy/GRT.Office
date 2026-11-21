@@ -151,13 +151,11 @@ describe('the drag that did nothing', () => {
     el('btn-add').click();
     await settle();
 
-    const before = nodes()[0].querySelector('rect, ellipse, polygon, path');
-    const x = before.getAttribute('x') ?? before.getAttribute('cx');
+    const x = nodes()[0].querySelector('path').getAttribute('d');
 
     await drag(nodes()[0], 120, 90);
 
-    const after = nodes()[0].querySelector('rect, ellipse, polygon, path');
-    const moved = after.getAttribute('x') ?? after.getAttribute('cx');
+    const moved = nodes()[0].querySelector('path').getAttribute('d');
     expect(moved).not.toBe(x);
     expect(el('status').textContent).toMatch(/unsaved changes/);
   });
@@ -252,7 +250,7 @@ describe('adding nodes', () => {
     await settle();
     el('btn-add').click();
     await settle();
-    const [a, b] = [...nodes()].map((n) => n.querySelector('rect, path, ellipse, polygon')?.getAttribute('x') ?? n.getAttribute('transform'));
+    const [a, b] = [...nodes()].map((n) => n.querySelector('path')?.getAttribute('d'));
     expect(nodes().length).toBe(2);
     expect(a).not.toBe(b);
   });

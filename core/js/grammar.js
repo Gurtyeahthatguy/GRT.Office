@@ -18,7 +18,7 @@ export function grammarIssues(text, lang = 'en') {
   const add = (from, to, kind, message, replacement = null) => out.push({ from, to, kind, message, replacement });
 
   for (const match of text.matchAll(/(?<![\p{L}\p{N}'’])(\p{L}+)(\s+)(\p{L}+)(?![\p{L}\p{N}'’])/gu)) {
-    const [, first, gap, second] = match;
+    const [, first, , second] = match;
     if (first.toLowerCase() !== second.toLowerCase() || REPEATS.has(first.toLowerCase()) || first.length < 2) continue;
     add(match.index, match.index + match[0].length, 'repeat', `“${first}” twice`, first);
   }

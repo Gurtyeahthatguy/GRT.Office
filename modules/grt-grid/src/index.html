@@ -23,6 +23,9 @@
           <button id="btn-print" data-icon="print" title="Print (Ctrl+P)">Print</button>
         </div>
         <div class="group">
+          <button data-command="Edit/Cut" data-icon="cut"></button>
+          <button data-command="Edit/Copy" data-icon="copy"></button>
+          <button data-command="Edit/Paste" data-icon="paste"></button>
           <button data-command="Format/Clone Formatting" data-icon="clone"></button>
           <button data-command="Format/Clear Direct Formatting" data-icon="clear"></button>
         </div>
@@ -46,6 +49,7 @@
           <button id="btn-filter" data-icon="filter" title="AutoFilter (Ctrl+Shift+L)">AutoFilter</button>
         </div>
         <div class="group">
+          <button data-command="Insert/Image…" data-icon="image"></button>
           <button id="btn-chart" data-icon="chart" title="Insert Chart">Insert Chart</button>
           <button data-command="Insert/Pivot Table…" data-icon="pivot"></button>
           <button data-command="Insert/Special Character…" data-icon="special"></button>
@@ -53,6 +57,8 @@
           <button data-command="Insert/Comment" data-icon="comment"></button>
         </div>
         <div class="group">
+          <button data-command="Insert/Headers and Footers…" data-icon="header"></button>
+          <button data-command="Format/Print Ranges/Define" data-icon="printArea"></button>
           <button data-command="View/Freeze Cells/Freeze Rows and Columns" data-icon="freeze"></button>
         </div>
         <span class="spacer"></span>
@@ -67,6 +73,13 @@
           <select id="style-picker" title="Cell Style" aria-label="Cell Style">
             <option value="normal">Normal</option>
           </select>
+        </div>
+        <div class="group" role="group" aria-label="Font">
+          <input id="font-picker" type="text" list="font-list" title="Font Name" aria-label="Font Name" class="font-picker" placeholder="Default font" spellcheck="false" />
+          <datalist id="font-list"><option value="Liberation Sans"></option><option value="Liberation Serif"></option><option value="Liberation Mono"></option><option value="DejaVu Sans"></option><option value="DejaVu Serif"></option><option value="DejaVu Sans Mono"></option><option value="Noto Sans"></option><option value="Noto Serif"></option><option value="Carlito"></option><option value="Caladea"></option><option value="Arial"></option><option value="Calibri"></option></datalist>
+          <input id="size-picker" type="number" min="4" max="96" step="0.5" title="Font Size" aria-label="Font Size" class="size-picker" placeholder="10" />
+          <label class="color-button" title="Font Color"><span data-icon-static="fontColor"></span><input id="color-picker" type="color" aria-label="Font Color" value="#c9211e" /></label>
+          <label class="color-button" title="Background Color"><span data-icon-static="highlight"></span><input id="bg-picker" type="color" aria-label="Background Color" value="#ffff00" /></label>
         </div>
         <div class="group" role="group" aria-label="Text">
           <button id="btn-bold" data-icon="bold" title="Bold (Ctrl+B)">Bold</button>
@@ -88,7 +101,13 @@
           <button id="btn-percent" data-icon="percent" title="Format as Percent (Ctrl+Shift+5)">Format as Percent</button>
           <button data-command="Format/Number Format/General" data-icon="number" aria-label="Format as General"></button>
           <button data-command="Format/Number Format/Date" data-icon="date"></button>
+          <button data-command="Format/Number Format/Add Decimal Place" data-icon="decimalMore"></button>
+          <button data-command="Format/Number Format/Delete Decimal Place" data-icon="decimalLess"></button>
           <button id="btn-sum" data-icon="sum" title="Sum (Alt+=)">Sum</button>
+        </div>
+        <div class="group" role="group" aria-label="Indent">
+          <button data-command="Format/Align Text/Increase Indent" data-icon="indentMore"></button>
+          <button data-command="Format/Align Text/Decrease Indent" data-icon="indentLess"></button>
         </div>
         <div class="group">
           <button data-command="Format/Borders/All Borders" data-icon="borders"></button>
@@ -142,7 +161,7 @@
       </div>
     </div>
 
-    <div id="toast" class="toast hidden" role="status"></div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
     <script type="module" src="js/main.js"></script>
   </body>

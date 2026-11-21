@@ -6,9 +6,40 @@ import { makeId } from './ids.js';
 import { cleanRuns, parasFor, normalisePara } from './paragraphs.js';
 import { footerBoxes } from './core/formats/slide-footer.js';
 import { normaliseChartData } from './core/formats/chart-object.js';
+import { presetDefinition } from './core/draw/geometry.js';
+import { cleanDrawing } from './core/draw/objects.js';
+import { subpathsFromSvg } from './core/formats/draw-odf.js';
+import { hexColour } from './core/formats/colour.js';
 
 export const FORMAT_VERSION = 1;
-export const KINDS = ['text', 'image', 'shape', 'line', 'table', 'chart', 'formula'];
+
+/** Every member of a group, groups within it included. */
+const flatChildren = (group) => (group.children ?? []).flatMap((c) => (c.kind === 'group' ? flatChildren(c) : [c]));
+export const KINDS = ['text', 'image', 'shape', 'line', 'table', 'chart', 'formula', 'path', 'connector', 'group'];
+
+/** Slides' first shape names, read from older files as LibreOffice's. */
+export const LEGACY_SHAPES = { rect: 'rectangle', rounded: 'round-rectangle', ellipse: 'ellipse', diamond: 'diamond', parallelogram: 'parallelogram', hexagon: 'hexagon', triangle: 'isosceles-triangle' };
+
+/** A shape name as LibreOffice's, from an old name or a new one; anything else is a rectangle. */
+export const shapeType = (name) => LEGACY_SHAPES[name] ?? (presetDefinition(name) || name === 'custom' ? name : 'rectangle');
+
+/**
+ * Makes an element of an older kind into today's: an outline in a 0 to 100 box becomes a path of its own nodes.
+ * @returns {Object} the element, changed in place
+ */
+export function upgradeElement(element) {
+  if (element.kind === 'shape' && element.shape === 'path' && typeof element.path === 'string') {
+    element.kind = 'path';
+    element.subpaths = subpathsFromSvg(element.path, [0, 0, 100, 100], element.w, element.h);
+    delete element.shape;
+    delete element.path;
+  } else if (element.kind === 'shape') {
+    element.shape = shapeType(element.shape);
+  }
+  if (['shape', 'path', 'connector', 'group', 'image', 'line'].includes(element.kind)) Object.assign(element, cleanDrawing(element));
+  if (element.kind === 'group') element.children = (element.children ?? []).map((c) => upgradeElement({ ...c }));
+  return element;
+}
 
 /** Where a layout puts its placeholders, as parts of the slide: x, y, width, height. */
 export const LAYOUTS = {
@@ -30,7 +61,7 @@ export const PLACEHOLDERS = ['title', 'subtitle', 'body', 'body2', 'body3', 'bod
 
 /** Shapes, the same vocabulary GRT Graphs offers. */
 export const SHAPES = [
-  'rect', 'rounded', 'ellipse', 'diamond', 'parallelogram', 'hexagon', 'triangle',
+  'rectangle', 'round-rectangle', 'ellipse', 'diamond', 'parallelogram', 'hexagon', 'isosceles-triangle',
 ];
 
 /** Canvas sizes. */
@@ -81,6 +112,34 @@ const DEFAULT_THEME = {
   accent: '#1f6feb',
   text: '#222222',
 };
+
+/** An element read from a file, its missing fields filled in and its place, size and colours made what they claim to be. */
+function cleanElement(element) {
+  element.id ??= makeId('e');
+  element.kind ??= 'text';
+  element.style ??= 'body';
+  element.data ??= {};
+  for (const key of ['x', 'y', 'w', 'h', 'rotation', 'z']) {
+    const value = element[key] === null || element[key] === '' ? NaN : Number(element[key]);
+    element[key] = Number.isFinite(value) ? value : { w: 100, h: 100, z: 1 }[key] ?? 0;
+  }
+  for (const key of ['color', 'fill']) if (element[key] != null && !(key === 'fill' && element[key] === 'none')) element[key] = hexColour(element[key]);
+  if (element.kind === 'shape') element.shape ??= 'rectangle';
+  upgradeElement(element);
+  if (element.kind === 'line') {
+    element.thickness ??= 4;
+    element.arrow ??= false;
+  }
+  // A table from a file is held to the limits before anything is built from its size.
+  if (element.kind === 'table') normaliseTable(element);
+  if (element.kind === 'text') {
+    element.content = cleanRuns(element.content ?? [{ text: '' }]);
+    if (element.paras) element.paras = parasFor(element);
+  }
+  if (element.kind === 'chart') element.data = normaliseChartData(element.data);
+  if (element.kind === 'formula') element.tex = typeof element.tex === 'string' ? element.tex.slice(0, 5000) : '';
+  if (!KINDS.includes(element.kind)) element.kind = 'text';
+}
 
 /** A few complete looks, so changing the whole deck is one choice. */
 export const PRESETS = {
@@ -229,6 +288,22 @@ export class SlidesModel {
     return this.slide(slideId)?.background ?? this.theme.background ?? '#ffffff';
   }
 
+  /** Slide, Set Background Image: a picture behind everything on the slide, or none. */
+  setBackgroundImage(id, resource) {
+    const slide = this.slide(id);
+    if (!slide) return;
+    if (resource) slide.backgroundImage = resource; else delete slide.backgroundImage;
+    this.dirty = true;
+  }
+
+  /** Insert, Snap Guide: a line objects snap to, across or up and down. */
+  addSnapGuide(id, guide) {
+    const slide = this.slide(id);
+    if (!slide || !Number.isFinite(guide?.at)) return;
+    slide.guides = [...(slide.guides ?? []), { vertical: Boolean(guide.vertical), at: guide.at }].slice(0, 100);
+    this.dirty = true;
+  }
+
   setSlideBackground(id, colour) {
     const slide = this.slide(id);
     if (!slide) return;
@@ -361,7 +436,7 @@ export class SlidesModel {
       ...(element.kind === 'shape'
         ? (element.shape === 'path' && typeof element.path === 'string'
           ? { shape: 'path', path: element.path }
-          : { shape: SHAPES.includes(element.shape) ? element.shape : 'rect' })
+          : { shape: shapeType(element.shape) })
         : {}),
       ...(element.kind === 'line'
         ? { thickness: element.thickness ?? 4, arrow: element.arrow ?? false }
@@ -380,6 +455,18 @@ export class SlidesModel {
       ...(PLACEHOLDERS.includes(element.placeholder) ? { placeholder: element.placeholder } : {}),
     };
 
+    upgradeElement(created);
+    for (const key of ['line', 'fillLook', 'mods', 'name', 'description', 'title', 'flipH', 'flipV', 'shadow']) if (element[key] !== undefined && created[key] === undefined) created[key] = element[key];
+    slide.elements.push(created);
+    this.dirty = true;
+    return created;
+  }
+
+  /** Adds a drawing object as the drawing layer made it: shapes, paths, connectors, groups. */
+  addDrawing(slideId, object) {
+    const slide = this.slide(slideId);
+    if (!slide) return null;
+    const created = upgradeElement({ ...object, id: object.id ?? makeId('e'), rotation: object.rotation ?? 0, z: object.z ?? this.nextZ(slide), style: object.style ?? 'body', data: object.data ?? {} });
     slide.elements.push(created);
     this.dirty = true;
     return created;
@@ -468,13 +555,15 @@ export class SlidesModel {
       if (fill !== undefined) {
         if (fill) element.fill = fill;
         else delete element.fill;
+        // A drawing with an area of its own takes the colour there too.
+        if (element.fillLook) element.fillLook = fill === 'none' ? { ...element.fillLook, type: 'none' } : fill ? { ...element.fillLook, type: element.fillLook.type === 'none' ? 'solid' : element.fillLook.type, color: fill } : element.fillLook;
       }
     }
     this.dirty = true;
   }
 
-  setElementShape(slideId, ids, shape) {
-    if (!SHAPES.includes(shape)) return;
+  setElementShape(slideId, ids, name) {
+    const shape = shapeType(name);
     const slide = this.slide(slideId);
     if (!slide) return;
     const chosen = new Set(ids);
@@ -730,14 +819,22 @@ export class SlidesModel {
       throw new Error('Not a presentation document');
     }
 
-    this.canvas = { ...DEFAULT_CANVAS, ...(document.canvas ?? {}) };
+    const size = (v, d) => (Number.isFinite(Number(v)) ? Math.min(20000, Math.max(100, Number(v))) : d);
+    this.canvas = { w: size(document.canvas?.w, DEFAULT_CANVAS.w), h: size(document.canvas?.h, DEFAULT_CANVAS.h) };
     this.theme = { ...DEFAULT_THEME, ...(document.theme ?? {}) };
+    for (const key of Object.keys(DEFAULT_THEME)) this.theme[key] = hexColour(this.theme[key]) ?? DEFAULT_THEME[key];
     this.styles = { ...structuredClone(DEFAULT_STYLES), ...(document.styles ?? {}) };
     this.fonts = Array.isArray(document.fonts) ? structuredClone(document.fonts) : [];
     this.masters = Array.isArray(document.masters) ? structuredClone(document.masters) : [];
     this.slides = Array.isArray(document.slides) ? structuredClone(document.slides) : [];
 
     // Missing fields are filled in rather than rejected.
+    for (const master of this.masters) {
+      master.id = typeof master.id === 'string' ? master.id : makeId('m');
+      master.elements = Array.isArray(master.elements) ? master.elements : [];
+      master.background = hexColour(master.background);
+      for (const element of master.elements) cleanElement(element);
+    }
     for (const slide of this.slides) {
       slide.id ??= makeId('s');
       slide.notes ??= '';
@@ -747,31 +844,13 @@ export class SlidesModel {
       slide.master ??= null;
       slide.footer = normaliseFooter(slide.footer);
       if (slide.hideMaster !== true) delete slide.hideMaster;
-      slide.background ??= null;
+      slide.background = hexColour(slide.background);
       slide.section ??= null;
-      slide.elements ??= [];
-      for (const element of slide.elements) {
-        element.id ??= makeId('e');
-        element.kind ??= 'text';
-        element.rotation ??= 0;
-        element.z ??= 1;
-        element.style ??= 'body';
-        element.data ??= {};
-        if (element.kind === 'shape') element.shape ??= 'rect';
-        if (element.kind === 'line') {
-          element.thickness ??= 4;
-          element.arrow ??= false;
-        }
-        // A table from a file is held to the limits before anything is built from its size.
-        if (element.kind === 'table') normaliseTable(element);
-        if (element.kind === 'text') {
-          element.content = cleanRuns(element.content ?? [{ text: '' }]);
-          if (element.paras) element.paras = parasFor(element);
-        }
-        if (element.kind === 'chart') element.data = normaliseChartData(element.data);
-        if (element.kind === 'formula') element.tex = typeof element.tex === 'string' ? element.tex.slice(0, 5000) : '';
-        if (!KINDS.includes(element.kind)) element.kind = 'text';
-      }
+      slide.elements = Array.isArray(slide.elements) ? slide.elements : [];
+      if (typeof slide.backgroundImage !== 'string' || !slide.backgroundImage) delete slide.backgroundImage;
+      slide.guides = (Array.isArray(slide.guides) ? slide.guides : []).filter((g) => Number.isFinite(g?.at)).slice(0, 100).map((g) => ({ vertical: Boolean(g.vertical), at: g.at }));
+      if (!slide.guides.length) delete slide.guides;
+      for (const element of slide.elements) cleanElement(element);
     }
 
     this.dirty = false;
@@ -803,7 +882,9 @@ export class SlidesModel {
     for (const slide of this.slides) {
       for (const element of slide.elements) {
         if (element.kind === 'image' && element.resource) used.add(element.resource);
+        for (const child of element.kind === 'group' ? flatChildren(element) : []) if (child.kind === 'image' && child.resource) used.add(child.resource);
       }
+      if (slide.backgroundImage) used.add(slide.backgroundImage);
     }
     for (const master of this.masters) {
       for (const element of master.elements ?? []) {

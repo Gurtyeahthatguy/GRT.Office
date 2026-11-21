@@ -84,4 +84,5 @@ instructions are in each module's README.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The libraries and data from elsewhere keep
+their own licences: [THIRD-PARTY.md](THIRD-PARTY.md).

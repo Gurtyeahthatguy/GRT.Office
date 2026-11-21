@@ -135,3 +135,40 @@ export function readFields() {
 /** Escapes text for insertion into a form built as a string. */
 export const escapeHtml = (value) => String(value ?? '')
   .replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+
+let tabsWired = false;
+
+/**
+ * A form whose parts begin with an h3 of class form-heading, shown as tabs, as LibreOffice's dialogs are; every field stays in the form, so readFields reads them all.
+ * @param {string} html
+ */
+export function tabbed(html) {
+  const parts = String(html).split(/(?=<h3 class="form-heading">)/);
+  const sections = parts.filter((p) => p.startsWith('<h3 class="form-heading">'));
+  if (sections.length < 2) return html;
+  const lead = parts[0].startsWith('<h3 class="form-heading">') ? '' : parts[0];
+  const title = (part) => /<h3 class="form-heading">([\s\S]*?)<\/h3>/.exec(part)?.[1] ?? '';
+  const body = (part) => part.replace(/<h3 class="form-heading">[\s\S]*?<\/h3>/, '');
+  if (!tabsWired) {
+    tabsWired = true;
+    document.addEventListener('click', (event) => {
+      const tab = event.target.closest?.('.grt-tabs [role="tab"]');
+      if (!tab) return;
+      const box = tab.closest('.grt-tabbed');
+      for (const t of box.querySelectorAll('[role="tab"]')) t.setAttribute('aria-selected', String(t === tab));
+      for (const p of box.querySelectorAll('[role="tabpanel"]')) p.hidden = p.id !== tab.getAttribute('aria-controls');
+    });
+    document.addEventListener('keydown', (event) => {
+      const tab = event.target.closest?.('.grt-tabs [role="tab"]');
+      if (!tab || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      const all = [...tab.parentElement.querySelectorAll('[role="tab"]')];
+      const next = all[(all.indexOf(tab) + (event.key === 'ArrowRight' ? 1 : all.length - 1)) % all.length];
+      next.focus();
+      next.click();
+      event.preventDefault();
+    });
+  }
+  const key = `t${Math.random().toString(36).slice(2, 8)}`;
+  return `${lead}<div class="grt-tabbed"><div class="grt-tabs" role="tablist">${sections.map((part, i) => `<button type="button" role="tab" id="${key}-tab${i}" aria-controls="${key}-${i}" aria-selected="${i === 0}">${title(part)}</button>`).join('')}</div>`
+    + `${sections.map((part, i) => `<div role="tabpanel" id="${key}-${i}" aria-labelledby="${key}-tab${i}"${i ? ' hidden' : ''}>${body(part)}</div>`).join('')}</div>`;
+}

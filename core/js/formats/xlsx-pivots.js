@@ -2,6 +2,7 @@
 
 import { NS, kids, kid, tag, xmlDocument } from '../xml.js';
 import { relationships, readPart } from './ooxml.js';
+import { least, greatest } from '../extent.js';
 
 export const REL_PIVOT_TABLE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable';
 export const REL_PIVOT_CACHE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition';
@@ -121,7 +122,7 @@ export function writeXlsxPivots(document, losses) {
         const numbers = values.filter((v) => typeof v === 'number');
         const attrs = items[i] ? { count: String(items[i].length) } : {
           containsSemiMixedTypes: values.some((v) => typeof v === 'string') ? null : '0', containsString: values.some((v) => typeof v === 'string') ? null : '0',
-          containsNumber: numbers.length ? '1' : null, minValue: numbers.length ? String(Math.min(...numbers)) : null, maxValue: numbers.length ? String(Math.max(...numbers)) : null,
+          containsNumber: numbers.length ? '1' : null, minValue: numbers.length ? String(least(numbers)) : null, maxValue: numbers.length ? String(greatest(numbers)) : null,
         };
         return tag('cacheField', { name, numFmtId: '0' }, tag('sharedItems', attrs, items[i] ? items[i].map(sharedItem) : null));
       });

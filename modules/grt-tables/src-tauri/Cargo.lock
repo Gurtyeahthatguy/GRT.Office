@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "grt-tables"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "grt-app",
  "grt-container",

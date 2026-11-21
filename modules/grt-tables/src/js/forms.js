@@ -3,6 +3,7 @@
 import { quoteIdent } from './schema.js';
 import { escapeHtml } from './core/panel.js';
 import { chartSvg } from './core/charts.js';
+import { least, greatest } from './core/extent.js';
 
 /** The tables Tables keeps for itself in a database, out of the person's way. */
 export const isOwnTable = (name) => /^_grt_/.test(String(name));
@@ -64,8 +65,8 @@ function total(fn, values) {
     case 'count': return values.filter((v) => v !== null && v !== undefined && v !== '').length;
     case 'sum': return numbers.reduce((a, b) => a + b, 0);
     case 'avg': return numbers.length ? numbers.reduce((a, b) => a + b, 0) / numbers.length : null;
-    case 'min': return numbers.length ? Math.min(...numbers) : null;
-    case 'max': return numbers.length ? Math.max(...numbers) : null;
+    case 'min': return numbers.length ? least(numbers) : null;
+    case 'max': return numbers.length ? greatest(numbers) : null;
     default: return null;
   }
 }

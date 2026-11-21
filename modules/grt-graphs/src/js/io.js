@@ -14,6 +14,8 @@ export const FILTERS = {
   fodg: [{ name: 'Flat OpenDocument drawing', extensions: ['fodg'] }],
   otg: [{ name: 'OpenDocument drawing template', extensions: ['otg'] }],
   canvas: [{ name: 'JSON Canvas', extensions: ['canvas'] }],
+  image: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'] }],
+  certificate: [{ name: 'Certificate', extensions: ['pem', 'crt', 'cer', 'der'] }],
   diagrams: [
     { name: 'Diagrams', extensions: ['grt', 'odg', 'fodg', 'otg', 'canvas', 'json'] },
     { name: 'GRT document', extensions: ['grt'] },
@@ -35,6 +37,16 @@ export async function pickToOpen(filters = GRT_FILTER, title = 'Open') {
   return toPath(await invoke('plugin:dialog|open', {
     options: { title, multiple: false, directory: false, filters },
   }));
+}
+
+/** A folder, such as an Obsidian vault. */
+export async function pickFolder(title = 'Choose a folder') {
+  return toPath(await invoke('plugin:dialog|open', { options: { title, multiple: false, directory: true } }));
+}
+
+/** The Markdown notes of a folder and the titles their links name. */
+export async function readMarkdownLinks(root) {
+  return invoke('read_markdown_links', { root });
 }
 
 export async function pickToSave(defaultPath, filters = GRT_FILTER, title = 'Save') {

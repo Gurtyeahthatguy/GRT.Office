@@ -48,7 +48,7 @@ function allNumbers(args) {
     if (arg.matrix || arg.reference) {
       const found = collectNumbers(arg.matrix ? arg.matrix.flat : arg.values);
       if (isError(found)) return found;
-      out.push(...found);
+      for (const n of found) out.push(n);
     } else {
       const n = typedNumber(arg.value);
       if (isError(n)) return n;

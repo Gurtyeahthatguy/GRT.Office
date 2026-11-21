@@ -4,6 +4,7 @@ import { parse, transform, NODE } from './parser/parser.js';
 import { evaluate } from './engine/evaluate.js';
 import { isMatrix, isBlank, isError, ERROR } from './engine/values.js';
 import { formatValue } from './format.js';
+import { least, greatest } from './core/extent.js';
 
 /** The summaries a value field can use, with LibreOffice's names for their captions. */
 export const FUNCTIONS = {
@@ -11,8 +12,8 @@ export const FUNCTIONS = {
   count: { label: 'Count', all: true, run: (l) => l.length },
   countNums: { label: 'Count - numbers only', run: (l) => l.length },
   average: { label: 'Average', run: (l) => (l.length ? l.reduce((a, b) => a + b, 0) / l.length : ERROR.div0) },
-  max: { label: 'Max', run: (l) => (l.length ? Math.max(...l) : 0) },
-  min: { label: 'Min', run: (l) => (l.length ? Math.min(...l) : 0) },
+  max: { label: 'Max', run: (l) => (l.length ? greatest(l) : 0) },
+  min: { label: 'Min', run: (l) => (l.length ? least(l) : 0) },
   product: { label: 'Product', run: (l) => l.reduce((a, b) => a * b, 1) },
   stdev: { label: 'StDev - Sample', run: (l) => spread(l, true, true) },
   stdevp: { label: 'StDev - Population', run: (l) => spread(l, false, true) },
@@ -280,7 +281,7 @@ export function computePivot(pivot, source) {
     line.values.forEach((v, i) => { row[left + i] = v; });
     grid.push(row);
   }
-  const width = Math.max(...grid.map((r) => r.length));
+  const width = greatest(grid.map((r) => r.length));
   return {
     cells: grid.map((r) => Array.from({ length: width }, (_, i) => (r[i] === undefined ? null : r[i]))),
     headerTop, bodyTop, left, kinds: lines.map((l) => l.kind), dataFields, rowFields, colFields,

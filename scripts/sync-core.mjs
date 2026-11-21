@@ -11,6 +11,11 @@ if (!target) {
   console.error('Usage: node scripts/sync-core.mjs <module-directory>');
   process.exit(2);
 }
+// Only a module of this repository takes the copy, wherever the script is run from.
+if (!/^modules\/grt-[a-z]+\/?$/.test(target)) {
+  console.error(`Not a module of the suite: ${target}`);
+  process.exit(2);
+}
 
 const destination = join(repo, target, 'src', 'js', 'core');
 
@@ -42,4 +47,18 @@ if (['modules/grt-paper', 'modules/grt-slides', 'modules/grt-notes'].includes(ta
 if (target.replace(/\/$/, '') === 'modules/grt-paper') {
   cpSync(join(repo, 'core', 'vendor-lang'), vendor, { recursive: true, filter: (source) => !source.endsWith('VERSIONS.txt') });
   console.log(`vendor-lang → ${target}/src/vendor`);
+}
+
+// Graphs' test mode works out its conditions with Grid's formulas, so Grid's engine goes there too, at the same depth.
+if (target.replace(/\/$/, '') === 'modules/grt-graphs') {
+  const grid = join(repo, 'modules', 'grt-grid', 'src', 'js');
+  const js = join(repo, target, 'src', 'js');
+  for (const part of ['parser', 'functions', 'format.js', 'references.js']) {
+    rmSync(join(js, part), { recursive: true, force: true });
+    cpSync(join(grid, part), join(js, part), { recursive: true });
+  }
+  rmSync(join(js, 'engine'), { recursive: true, force: true });
+  mkdirSync(join(js, 'engine'), { recursive: true });
+  for (const file of ['evaluate.js', 'values.js']) cpSync(join(grid, 'engine', file), join(js, 'engine', file));
+  console.log(`grid formulas → ${target}/src/js`);
 }

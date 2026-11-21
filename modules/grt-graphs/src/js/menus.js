@@ -5,11 +5,17 @@
  */
 export function graphsMenus(a) {
   const t = a.tools;
+  const g = a.drawing;
+  const d = g.commands.act;
+  const dm = g.commands.menus;
+  const x = g.text;
+  const mark = (label, name, extra = {}) => ({ label, run: () => x.mark(name), checked: () => x.markOn(name), ...extra });
   return [
     {
       label: 'File',
       items: [
         { label: 'New', shortcut: 'Ctrl+N', run: a.newFile, aliases: ['New diagram', 'New Drawing'] },
+        { label: 'Start Center…', run: a.startCenter, aliases: ['Start Center', 'Start screen', 'Home'] },
         { label: 'Open…', shortcut: 'Ctrl+O', run: a.open },
         { label: 'Templates', items: [
           { label: 'Manage Templates…', shortcut: 'Ctrl+Shift+N', run: a.templates, aliases: ['Templates…', 'Templates', 'New from template'] },
@@ -24,6 +30,7 @@ export function graphsMenus(a) {
         { label: 'Import', items: [
           { label: 'Import JSON…', run: a.importJson },
           { label: 'Import Mermaid…', run: a.importMermaid, aliases: ['Mermaid'] },
+          { label: 'Graph of a Vault…', run: a.notesGraph, aliases: ['Notes graph', 'Obsidian graph', 'Graph view', 'Open vault as graph'] },
         ] },
         { label: 'Export…', run: a.exportDocument, aliases: ['Export as SVG', 'Export as PNG', 'Export as PDF', 'Export'] },
         'separator',
@@ -31,6 +38,7 @@ export function graphsMenus(a) {
         'separator',
         { label: 'Properties…', run: t.properties, aliases: ['Document properties', 'Statistics'] },
         { label: 'Inspect Document…', run: a.inspect, aliases: ['Document inspector', 'Remove personal information', 'Clean copy', 'Prepare for sharing'] },
+        { label: 'Digital Signatures…', run: a.signatures, aliases: ['Digital signatures', 'Signatures', 'Verify signature', 'Signed document'] },
       ],
     },
     {
@@ -38,9 +46,14 @@ export function graphsMenus(a) {
       items: [
         { label: 'Undo', shortcut: 'Ctrl+Z', run: a.undo },
         { label: 'Redo', shortcut: 'Ctrl+Y', run: a.redo },
+        dm.selectFirst(),
         'separator',
         { label: 'Select All', shortcut: 'Ctrl+A', run: a.selectAll, aliases: ['Select all'] },
         { label: 'Delete', shortcut: 'Delete', run: a.deleteSelection, aliases: ['Delete selection'] },
+        { label: 'Duplicate…', shortcut: 'Shift+F3', run: d.duplicate, aliases: ['Duplicate'] },
+        'separator',
+        { label: 'Toggle Point Edit Mode', run: d.pointEdit, checked: () => g.commands.layerMode() === 'points', aliases: ['Points', 'Edit Points'] },
+        { label: 'Gluepoints', run: d.glue, checked: () => g.commands.layerMode() === 'glue', aliases: ['Glue points'] },
         'separator',
         { label: 'Find Toolbar', shortcut: 'Ctrl+F', run: () => t.bar.open(), aliases: ['Find', 'Search', 'vnd.sun.star.findbar:FocusToFindbar'] },
         { label: 'Search Everywhere…', run: a.everywhere, aliases: ['Search everywhere', 'Search in files', 'Find in folder', 'Search all documents'] },
@@ -52,6 +65,7 @@ export function graphsMenus(a) {
     {
       label: 'View',
       items: [
+        { label: 'Page Pane', run: a.togglePages, checked: a.pagesShown, aliases: ['Pages', 'Slide Pane'] },
         { label: 'Comments', run: a.toggleComments, checked: a.commentsShown, aliases: ['Show comments'] },
         { label: 'Diagram as Text', run: a.diagramText, checked: a.diagramTextShown, aliases: ['Mermaid', 'Edit as text', 'Source'] },
         'separator',
@@ -65,7 +79,16 @@ export function graphsMenus(a) {
     {
       label: 'Insert',
       items: [
-        { label: 'Shape', shortcut: 'Insert', run: a.addNode, aliases: ['Add node', 'Node', 'Rectangle'] },
+        { label: 'Shape', shortcut: 'Insert', run: a.addNode, aliases: ['Add node', 'Node'] },
+        { label: 'Container', run: a.makeContainer, aliases: ['Group box', 'Subdiagram', 'Canvas group', 'Container around the selection'] },
+        { label: 'Open or Close Container', run: a.toggleContainer, aliases: ['Collapse container', 'Expand container', 'Fold'] },
+        { label: 'Image…', run: g.insert.image, aliases: ['Picture', 'Insert Image'] },
+        { label: 'Chart…', run: g.insert.chart, aliases: ['Insert Chart'] },
+        { label: 'OLE Object', items: [{ label: 'Formula Object…', run: g.insert.formula, aliases: ['Formula…', 'Equation'] }] },
+        'separator',
+        { label: 'Text Box', run: g.insert.textBox, aliases: ['Insert Text Box', 'Text'] },
+        { label: 'Snap Guide…', run: d.snapGuide, aliases: ['Snap Point/Line'] },
+        { label: 'Signature Line…', run: g.insert.signatureLine, aliases: ['Signature line'] },
         'separator',
         { label: 'Comment', shortcut: 'Ctrl+Alt+C', run: () => t.comment(), aliases: ['Insert Comment', 'Note', 'Annotation'] },
         { label: 'Hyperlink…', run: t.hyperlink, aliases: ['Insert Hyperlink', 'Link', 'URL'] },
@@ -79,27 +102,144 @@ export function graphsMenus(a) {
     {
       label: 'Format',
       items: [
-        { label: 'Shape Type', items: ['rect', 'rounded', 'ellipse', 'diamond', 'parallelogram', 'hexagon', 'triangle']
-          .map((shape) => ({ label: shape[0].toUpperCase() + shape.slice(1), run: () => a.apply('shape', shape), aliases: [`Shape: ${shape}`] })) },
-        { label: 'Connector', items: ['orthogonal', 'straight', 'curved']
-          .map((routing) => ({ label: routing[0].toUpperCase() + routing.slice(1), run: () => a.apply('routing', routing), aliases: [`Routing: ${routing}`] })) },
+        { label: 'Text', items: [
+          mark('Bold', 'bold', { shortcut: 'Ctrl+B' }), mark('Italic', 'italic', { shortcut: 'Ctrl+I' }),
+          mark('Single Underline', 'underline', { shortcut: 'Ctrl+U', aliases: ['Underline'] }), mark('Double Underline', 'double'),
+          mark('Strikethrough', 'strike'), mark('Overline', 'overline'),
+          'separator',
+          mark('Superscript', 'sup', { shortcut: 'Ctrl+Shift+P' }), mark('Subscript', 'sub', { shortcut: 'Ctrl+Shift+B' }),
+          'separator',
+          mark('Shadow', 'shadow'), mark('Outline Font Effect', 'outline', { aliases: ['Outline'] }),
+          'separator',
+          { label: 'Increase Size', shortcut: 'Ctrl+]', run: () => x.resize(1) },
+          { label: 'Decrease Size', shortcut: 'Ctrl+[', run: () => x.resize(-1) },
+          'separator',
+          { label: 'UPPERCASE', run: () => x.textCase('upper') },
+          { label: 'lowercase', run: () => x.textCase('lower') },
+          { label: 'Cycle Case', run: () => x.textCase('cycle') },
+          { label: 'Sentence case', run: () => x.textCase('sentence') },
+          { label: 'Capitalize Every Word', run: () => x.textCase('title') },
+          { label: 'tOGGLE cASE', run: () => x.textCase('toggle') },
+          mark('Small capitals', 'smallcaps', { shortcut: 'Ctrl+Shift+K' }),
+          'separator',
+          { label: 'Half-width', run: () => x.textCase('halfwidth') },
+          { label: 'Full-width', run: () => x.textCase('fullwidth') },
+          { label: 'Hiragana', run: () => x.textCase('hiragana') },
+          { label: 'Katakana', run: () => x.textCase('katakana') },
+        ] },
+        { label: 'Spacing', items: [
+          { label: 'Line Spacing: 1', run: () => x.lineSpacing(1) },
+          { label: 'Line Spacing: 1.5', run: () => x.lineSpacing(1.5) },
+          { label: 'Line Spacing: 2', run: () => x.lineSpacing(2) },
+          'separator',
+          { label: 'Increase Paragraph Spacing', run: () => x.paragraphSpacing(1) },
+          { label: 'Decrease Paragraph Spacing', run: () => x.paragraphSpacing(-1) },
+          'separator',
+          { label: 'Increase Indent', run: () => x.indent(1) },
+          { label: 'Decrease Indent', run: () => x.indent(-1) },
+        ] },
+        { label: 'Align Text', items: [
+          { label: 'Left', run: () => x.align('left') },
+          { label: 'Center', run: () => x.align('center'), aliases: ['Centered'] },
+          { label: 'Right', run: () => x.align('right') },
+          { label: 'Justified', run: () => x.align('justify') },
+          'separator',
+          { label: 'Top', run: () => x.valign('top') },
+          { label: 'Center', run: () => x.valign('middle'), aliases: ['Center Vertically'] },
+          { label: 'Bottom', run: () => x.valign('bottom') },
+        ] },
+        { label: 'Lists', items: [
+          { label: 'Unordered List', run: () => x.list('bullet'), checked: () => x.listOn('bullet'), aliases: ['Bullets'] },
+          { label: 'Ordered List', run: () => x.list('number'), checked: () => x.listOn('number'), aliases: ['Numbering'] },
+          'separator',
+          { label: 'Demote', shortcut: 'Alt+Shift+Right', run: () => x.indent(1) },
+          { label: 'Promote', shortcut: 'Alt+Shift+Left', run: () => x.indent(-1) },
+          { label: 'Move Down', shortcut: 'Alt+Shift+Down', run: () => x.moveLine(1) },
+          { label: 'Move Up', shortcut: 'Alt+Shift+Up', run: () => x.moveLine(-1) },
+        ] },
+        { label: 'Clear Direct Formatting', shortcut: 'Ctrl+M', run: x.clear, aliases: ['Clear formatting'] },
+        { label: 'Styles', items: [
+          { label: 'Edit Style…', run: () => g.styles.edit() },
+          { label: 'Update Selected Style', run: g.styles.update },
+          { label: 'New Style from Selection', run: g.styles.fromSelection },
+          { label: 'Manage Styles', shortcut: 'F11', run: g.styles.manage, aliases: ['Styles'] },
+        ] },
+        'separator',
+        { label: 'Character…', run: x.character, aliases: ['Font'] },
+        { label: 'Paragraph…', run: x.paragraph },
+        { label: 'Bullets and Numbering…', run: x.bullets },
+        { label: 'Theme…', run: g.styles.theme, aliases: ['Themes', 'Colour theme'] },
+        'separator',
+        dm.image({ filters: true }),
+        { label: 'Position and Size…', shortcut: 'F4', run: d.positionSize },
+        { label: 'Text…', run: d.textAttributes, aliases: ['Text Attributes'] },
+        { label: 'Line…', run: d.line },
+        { label: 'Connector…', run: g.connectorDialog },
+        { label: 'Area…', run: d.area },
+        { label: 'Text along Path', run: d.textPath, aliases: ['Fontwork'] },
+        { label: '3D Effects…', run: d.effects3d, aliases: ['3D settings', '3D rotation'] },
+        ...dm.nameItems(),
+        'separator',
+        { label: 'Shape Type', items: ['rectangle', 'round-rectangle', 'ellipse', 'diamond', 'parallelogram', 'hexagon', 'isosceles-triangle']
+          .map((shape) => ({ label: shape[0].toUpperCase() + shape.slice(1).replace(/-/g, ' '), run: () => a.apply('shape', shape), aliases: [`Shape: ${shape}`] })) },
+        { label: 'Routing', items: ['orthogonal', 'straight', 'curved']
+          .map((routing) => ({ label: routing[0].toUpperCase() + routing.slice(1), run: () => a.apply('routing', routing), aliases: [`Routing: ${routing}`, `Connector: ${routing}`] })) },
+      ],
+    },
+    {
+      label: 'Page',
+      items: [
+        { label: 'New Page', run: g.pages.add, aliases: ['Insert Page', 'New Slide'] },
+        { label: 'Duplicate Page', run: g.pages.duplicate },
+        { label: 'Rename Page…', run: g.pages.rename },
+        { label: 'Delete Page', run: g.pages.remove },
+        'separator',
+        { label: 'Move', items: [
+          { label: 'Page to Start', run: () => g.pages.move('first') },
+          { label: 'Page Up', run: () => g.pages.move(-1) },
+          { label: 'Page Down', run: () => g.pages.move(1) },
+          { label: 'Page to End', run: () => g.pages.move('last') },
+        ] },
+        { label: 'Navigate', items: [
+          { label: 'To First Page', run: () => g.pages.go(0) },
+          { label: 'To Previous Page', shortcut: 'PageUp', run: () => g.pages.step(-1) },
+          { label: 'To Next Page', shortcut: 'PageDown', run: () => g.pages.step(1) },
+          { label: 'To Last Page', run: () => g.pages.go(Number.MAX_SAFE_INTEGER) },
+        ] },
       ],
     },
     {
       label: 'Shape',
       items: [
-        { label: 'Align Objects', items: [
-          { label: 'Left', run: () => a.align('left'), aliases: ['Align left'] },
-          { label: 'Centered', run: () => a.align('centre-x'), aliases: ['Align centres horizontally'] },
-          { label: 'Right', run: () => a.align('right'), aliases: ['Align right'] },
-          { label: 'Top', run: () => a.align('top'), aliases: ['Align top'] },
-          { label: 'Center', run: () => a.align('centre-y'), aliases: ['Align centres vertically'] },
-          { label: 'Bottom', run: () => a.align('bottom'), aliases: ['Align bottom'] },
+        { label: 'Select', run: () => d.tool(null), aliases: ['Selection tool'] },
+        { label: 'Insert', items: [
+          { label: 'Curves and Polygons', items: dm.lineItems() },
+          { label: 'Connectors', items: dm.shape().items[1].items },
+          ...['basic', 'symbol', 'arrows', 'flowchart', 'callout', 'stars'].map((group) => dm.shapeGroup(group)),
+          dm.threeD(),
         ] },
-        { label: 'Distribute Selection', items: [
-          { label: 'Horizontally Center', run: () => a.distribute('horizontal'), aliases: ['Distribute horizontally'] },
-          { label: 'Vertically Center', run: () => a.distribute('vertical'), aliases: ['Distribute vertically'] },
+        'separator',
+        dm.alignObjects(),
+        { label: 'Distribute Selection', run: d.distribute, aliases: ['Distribute…', 'Distribute horizontally', 'Distribute vertically'] },
+        { label: 'Rotate', run: d.rotateDialog, aliases: ['Rotation'] },
+        dm.flip('Flip', 'draw'),
+        { ...dm.convert(), items: [...dm.convert().items.slice(0, 3), ...dm.convert3dItems(), ...dm.convert().items.slice(3)] },
+        { label: 'Arrange', items: [
+          { label: 'Bring to Front', shortcut: 'Ctrl+Shift++', run: () => g.arrange('front') },
+          { label: 'Forward One', shortcut: 'Ctrl++', run: () => g.arrange('forward') },
+          { label: 'Backward One', shortcut: 'Ctrl+-', run: () => g.arrange('backward') },
+          { label: 'Send to Back', shortcut: 'Ctrl+Shift+-', run: () => g.arrange('back') },
+          'separator',
+          { label: 'In Front of Object', run: () => d.arrangeBeside('in-front-of') },
+          { label: 'Behind Object', run: () => d.arrangeBeside('behind') },
+          'separator',
+          { label: 'Reverse', run: () => d.arrange('reverse') },
         ] },
+        dm.group('Group'),
+        'separator',
+        { label: 'Duplicate…', run: d.duplicate },
+        { label: 'Equalize Width', run: () => d.equalize('width') },
+        { label: 'Equalize Height', run: () => d.equalize('height') },
       ],
     },
     {
@@ -108,6 +248,16 @@ export function graphsMenus(a) {
         { label: 'Spelling…', shortcut: 'F7', run: a.spelling, aliases: ['Spellcheck', 'Check spelling'] },
         'separator',
         { label: 'Tree Layout', run: a.layout, aliases: ['Tree layout', 'Auto layout', 'Arrange as a tree'] },
+        { label: 'Mind Map', items: [
+          { label: 'Add Child', shortcut: 'Tab', run: a.mindChild, aliases: ['Mind map child', 'New child'] },
+          { label: 'Add Sibling', shortcut: 'Enter', run: a.mindSibling, aliases: ['Mind map sibling', 'New sibling'] },
+          { label: 'Mind Map Layout', run: a.mindLayout, aliases: ['Arrange as a mind map'] },
+          'separator',
+          { label: 'Mind Map from a List…', run: a.mapFromList, aliases: ['List to mind map', 'Outline to map'] },
+          { label: 'Map as a List…', run: a.listFromMap, aliases: ['Mind map to list', 'Map to outline'] },
+        ] },
+        { label: 'Test Mode…', run: a.testMode, aliases: ['Try it out', 'Walk the dialogue', 'Play', 'Simulate'] },
+        { label: 'Check Every Way Through…', run: a.checkWays, aliases: ['Test every path', 'Check paths', 'Dead ends'] },
         { label: 'Check for Problems', run: a.validate, aliases: ['Check for problems', 'Validate'] },
         { label: 'Compare Diagram…', run: a.compare, aliases: ['Compare', 'Diff', 'Compare versions'] },
         { label: 'Clear Comparison', run: a.clearComparison, enabled: a.comparing },

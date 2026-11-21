@@ -14,6 +14,8 @@ export const DEFAULTS = {
   openZoom: 'fit',          // 'fit' | 'actual'.
   fingerprintBeforeSave: true,
   autosave: 'recovery',
+  // The certificates of the authorities whose signatures the person trusts, in base64.
+  trustedCertificates: [],
 };
 
 let current = { ...DEFAULTS };

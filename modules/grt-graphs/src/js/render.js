@@ -1,7 +1,21 @@
 /** Model to SVG, on screen. */
 
+import { shownEnds } from './containers.js';
 import { routeEdge, pathData, edgePorts, labelPoint } from './routing.js';
-import { shapeMarkup, textLines } from './export.js';
+import { shapeMarkup, textAttributes, listedLines, customKind } from './export.js';
+import { drawingSvg } from './core/draw/render.js';
+
+/** One drawing object of the page as an SVG group where it sits, turned as it is turned. */
+export function objectElement(o, objects) {
+  const group = document.createElementNS(SVG_NS, 'g');
+  group.setAttribute('class', 'draw-object');
+  group.dataset.id = o.id;
+  group.dataset.object = o.id;
+  group.setAttribute('transform', `translate(${o.x} ${o.y})${o.rotation ? ` rotate(${o.rotation} ${o.w / 2} ${o.h / 2})` : ''}`);
+  group.innerHTML = drawingSvg(o, { objects, image: (x) => x.resource, custom: customKind, idPrefix: 'go', defaults: { line: { color: '#333333', width: 2 }, fill: { type: 'solid', color: '#729fcf' } } });
+  if (o.name || o.description) group.setAttribute('aria-label', [o.name, o.description].filter(Boolean).join(': '));
+  return group;
+}
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -15,6 +29,7 @@ export class Renderer {
 
     this.layers = {
       grid: document.createElementNS(SVG_NS, 'g'),
+      objects: document.createElementNS(SVG_NS, 'g'),
       edges: document.createElementNS(SVG_NS, 'g'),
       nodes: document.createElementNS(SVG_NS, 'g'),
       overlay: document.createElementNS(SVG_NS, 'g'),
@@ -92,20 +107,20 @@ export class Renderer {
   draw(model, selection = new Set(), extras = {}) {
     this.drawGrid(model);
 
-    const nodesById = new Map(model.nodes.map((n) => [n.id, n]));
-
+    // A connector to a node inside a closed container arrives at the container.
     this.layers.edges.replaceChildren(
       ...model.edges.flatMap((edge) => {
-        const from = nodesById.get(edge.from);
-        const to = nodesById.get(edge.to);
-        if (!from || !to) return [];
-        return edgeElements(edge, routeEdge(edge, from, to), selection.has(edge.id), edgePorts(edge, from, to));
+        const ends = shownEnds(model, edge);
+        if (!ends) return [];
+        return edgeElements(edge, routeEdge(edge, ends.from, ends.to), selection.has(edge.id), edgePorts(edge, ends.from, ends.to));
       }),
     );
 
     this.layers.nodes.replaceChildren(
-      ...model.nodes.map((node) => nodeElement(node, model, selection.has(node.id))),
+      ...model.nodes.filter((node) => !node.hidden).map((node) => nodeElement(node, model, selection.has(node.id))),
     );
+
+    this.layers.objects.replaceChildren(...[...(model.objects ?? [])].sort((a, b) => (a.z ?? 0) - (b.z ?? 0)).map((o) => objectElement(o, model.objects)));
 
     this.layers.overlay.replaceChildren(...diffElements(model, extras.diff), ...overlayElements(model, selection, extras), ...commentElements(model, extras));
   }
@@ -180,7 +195,7 @@ function diffElements(model, diff) {
 /** Comment marks on the page, each with its text as the tip shown under the pointer; hidden when View, Comments is off. */
 function commentElements(model, extras) {
   if (extras.hideComments) return [];
-  return (model.meta.comments ?? []).map((comment) => {
+  return model.comments.map((comment) => {
     const group = document.createElementNS(SVG_NS, 'g');
     group.setAttribute('class', 'comment-mark');
     group.dataset.comment = comment.id;
@@ -202,18 +217,28 @@ function nodeElement(node, model, selected) {
   const style = model.styles[node.style] ?? model.styles.default ?? {};
   group.innerHTML = shapeMarkup(node, style);
 
-  const lines = textLines(node.text, node.w);
-  const startY = node.y + node.h / 2 - ((lines.length - 1) * 15) / 2 + 5;
-
-  lines.forEach((line, i) => {
-    const text = document.createElementNS(SVG_NS, 'text');
-    text.setAttribute('x', String(node.x + node.w / 2));
-    text.setAttribute('y', String(startY + i * 15));
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('class', node.link ? 'node-text node-link' : 'node-text');
-    text.textContent = line;
-    group.append(text);
-  });
+  // The text with its look over the whole of it: weight, slant, lines, size, colour, alignment, list and spacing.
+  const look = node.textLook ?? {};
+  const { anchor, size, attrs } = textAttributes(look);
+  const lines = listedLines(node);
+  const step = size * 1.15 * (look.lineSpacing ?? 1);
+  const startY = look.valign === 'top' ? node.y + size + 4 : look.valign === 'bottom' ? node.y + node.h - (lines.length - 1) * step - 6 : node.y + node.h / 2 - ((lines.length - 1) * step) / 2 + size * 0.38;
+  const x = anchor === 'start' ? node.x + 6 + (look.indent ?? 0) : anchor === 'end' ? node.x + node.w - 6 : node.x + node.w / 2;
+  const holder = document.createElementNS(SVG_NS, 'g');
+  if (node.rotation) holder.setAttribute('transform', `rotate(${node.rotation} ${node.x + node.w / 2} ${node.y + node.h / 2})`);
+  holder.innerHTML = lines.map((line, i) => `<text x="${x}" y="${startY + i * step}" class="${node.link ? 'node-text node-link' : 'node-text'}" ${attrs}${look.sup ? ' baseline-shift="super"' : look.sub ? ' baseline-shift="sub"' : ''}>${line.replace(/[<&>]/g, (c) => ({ '<': '&lt;', '&': '&amp;', '>': '&gt;' }[c]))}</text>`).join('');
+  group.append(holder);
+  if (node.container) {
+    // A container's mark: pressed, it opens or closes; closed, it says how much it holds.
+    const mark = document.createElementNS(SVG_NS, 'text');
+    mark.setAttribute('x', String(node.x + node.w - 8));
+    mark.setAttribute('y', String(node.y + 18));
+    mark.setAttribute('text-anchor', 'end');
+    mark.setAttribute('class', 'container-mark');
+    mark.dataset.toggle = node.id;
+    mark.textContent = node.collapsed ? `▸ ${(node.members ?? []).length}` : '▾';
+    group.append(mark);
+  }
 
   return group;
 }

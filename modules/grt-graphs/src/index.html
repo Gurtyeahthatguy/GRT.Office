@@ -42,7 +42,31 @@
           <button id="btn-settings" data-icon="settings" title="Options (Ctrl+,)">Options</button>
         </div>
       </div>
-      <div class="toolbar" id="toolbar-drawing" role="toolbar" aria-label="Drawing and Line and Filling">
+      <div class="toolbar" id="toolbar-draw" role="toolbar" aria-label="Drawing">
+        <div class="group">
+          <button data-command="Shape/Select" data-icon="pointer"></button>
+          <button data-command="Insert/Text Box" data-icon="textBox"></button>
+          <button data-command="Shape/Insert/Curves and Polygons/Line" data-icon="line"></button>
+          <button data-command="Shape/Insert/Basic Shapes/Rectangle" data-icon="rect"></button>
+          <button data-command="Shape/Insert/Basic Shapes/Ellipse" data-icon="ellipse"></button>
+          <button data-command="Shape/Insert/Curves and Polygons/Curve" data-icon="curve"></button>
+          <button data-command="Shape/Insert/Curves and Polygons/Polygon" data-icon="polygon"></button>
+          <button data-command="Shape/Insert/Curves and Polygons/Freeform Line" data-icon="freeform"></button>
+          <button data-command="Shape/Insert/Connectors/Connector" data-icon="connector"></button>
+        </div>
+        <div class="group">
+          <button data-command="Edit/Toggle Point Edit Mode" data-icon="points"></button>
+          <button data-command="Edit/Gluepoints" data-icon="glue"></button>
+          <button data-command="Insert/Image…" data-icon="image"></button>
+          <button data-command="Insert/Chart…" data-icon="chart"></button>
+        </div>
+        <div class="group">
+          <button data-command="Shape/Arrange/Bring to Front" data-icon="front"></button>
+          <button data-command="Shape/Arrange/Send to Back" data-icon="back"></button>
+          <button data-command="Shape/Group/Group" data-icon="group"></button>
+        </div>
+      </div>
+      <div class="toolbar" id="toolbar-drawing" role="toolbar" aria-label="Line and Filling">
         <div class="group">
           <button id="btn-add" data-icon="addNode" title="Insert Shape (Insert)">Insert Shape</button>
           <button id="btn-delete" data-icon="delete" title="Delete (Del)">Delete</button>
@@ -50,13 +74,13 @@
         <div class="group">
           <select id="shape-picker" title="Shape of the selected shapes" aria-label="Shape">
             <option value="">Shape…</option>
-            <option value="rect">Rectangle</option>
-            <option value="rounded">Rounded</option>
+            <option value="rectangle">Rectangle</option>
+            <option value="round-rectangle">Rectangle, Rounded</option>
             <option value="ellipse">Ellipse</option>
             <option value="diamond">Diamond</option>
             <option value="parallelogram">Parallelogram</option>
             <option value="hexagon">Hexagon</option>
-            <option value="triangle">Triangle</option>
+            <option value="isosceles-triangle">Isosceles Triangle</option>
           </select>
           <select id="style-picker" title="Style of the selected shapes" aria-label="Style">
             <option value="">Style…</option>
@@ -85,8 +109,10 @@
     </header>
 
     <div class="body-row">
+    <aside id="pages-pane" class="pages-pane" aria-label="Pages"></aside>
     <main class="workspace">
       <svg id="canvas" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="draw-host" class="draw-host"><div id="draw-overlay" class="draw-overlay"></div></div>
       <div id="empty-state" class="empty-state">
         <h1>GRT Graphs</h1>
         <p>Double-click anywhere to add a node.</p>
@@ -107,7 +133,7 @@
     </div>
     <footer id="statusbar" class="statusbar" aria-label="Status">
       <span id="status" class="status-field grow"></span>
-      <span class="status-field" title="Page">Page 1 of 1</span>
+      <span id="page-count" class="status-field" title="Page">Page 1 of 1</span>
       <span id="status-language" class="status-field" title="Language"></span>
       <button id="btn-zoom-out" class="status-field" type="button" title="Zoom Out">−</button>
       <span id="zoom-label" class="status-field" title="Zoom">100%</span>
@@ -126,7 +152,7 @@
       </div>
     </div>
 
-    <div id="toast" class="toast hidden"></div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
     <script type="module" src="js/main.js"></script>
   </body>

@@ -1,5 +1,7 @@
 /** Charts drawn as SVG, the same on screen, in print and in PDF, for every program of the suite. */
 
+import { least, greatest } from './extent.js';
+
 export const CHART_TYPES = ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'combo'];
 
 /** Colours told apart in light and dark themes and by most kinds of colour blindness. */
@@ -188,8 +190,8 @@ function drawAxes(spec, series, categories, plot, { type, ink, rule }) {
   } else {
     const all = series.flatMap((s) => s.values).filter((v) => v !== null);
     if (all.length) {
-      highest = Math.max(...all);
-      lowest = Math.min(...all);
+      highest = greatest(all);
+      lowest = least(all);
       // Lines and points need not start at zero; columns, bars and areas do.
       if (series.some((s) => s.kind !== 'line' && s.kind !== 'scatter')) { highest = Math.max(highest, 0); lowest = Math.min(lowest, 0); }
     }

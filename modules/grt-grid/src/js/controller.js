@@ -15,6 +15,31 @@ import {
 import { computePivot, readSource } from './pivot.js';
 import { seekGoal, solveModel } from './whatif.js';
 
+/** One step of indent: a cell's indent counts levels, as Calc's and Excel's do. */
+const INDENT_STEP = 1;
+
+/**
+ * A number format with one digit more or fewer after the point, in each of its parts; General becomes 0.0, quoted text is left alone.
+ * @param {?string} format
+ */
+export function decimalsChanged(format, by) {
+  if (!format || /^general$/i.test(format)) return by > 0 ? '0.0' : format;
+  return format.split(';').map((part) => {
+    // The last run of digit places outside quotes and brackets is the number's.
+    let plain = part.replace(/"[^"]*"|\[[^\]]*\]|\\./g, (m) => ' '.repeat(m.length));
+    // In scientific notation the digits after E are the exponent's.
+    const exponent = plain.search(/[Ee][+-]/);
+    if (exponent >= 0) plain = plain.slice(0, exponent);
+    const match = /[0#?](?:[0#?,]*)(\.([0#?]*))?(?![\s\S]*[0#?])/.exec(plain);
+    if (!match) return part;
+    const decimals = match[2]?.length ?? 0;
+    const wanted = Math.max(0, Math.min(15, decimals + by));
+    const end = match.index + match[0].length;
+    const start = match[1] ? match.index + match[0].length - match[1].length : end;
+    return `${part.slice(0, start)}${wanted ? `.${'0'.repeat(wanted)}` : ''}${part.slice(end)}`;
+  }).join(';');
+}
+
 export class SheetController {
   /**
    * @param {import('./model.js').GridModel} model
@@ -394,6 +419,21 @@ export class SheetController {
   /** A number format over the selection, such as currency or percent. */
   setNumberFormat(format) {
     this.formatCells((look) => ({ ...look, format }));
+  }
+
+  /** Add or Delete Decimal Place: one more or one fewer digit after the point, in every part of each cell's format. */
+  changeDecimals(by) {
+    this.formatCells((look) => ({ ...look, format: decimalsChanged(look.format ?? null, by) }));
+  }
+
+  /** Increase or Decrease Indent, a step at a time, as Calc's buttons do. */
+  changeIndent(by) {
+    this.formatCells((look) => {
+      const indent = Math.max(0, Math.min(15 * INDENT_STEP, (look.indent ?? 0) + by * INDENT_STEP));
+      const out = { ...look, indent };
+      if (!indent) delete out.indent;
+      return out;
+    });
   }
 
   /** Turns bold, italic, underline or strike on over the selection, or off when every cell has it. */

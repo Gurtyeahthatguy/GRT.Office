@@ -438,5 +438,10 @@ function markElement(mark) {
   element.style.top = `${mark.rect.y * 100}%`;
   element.style.width = `${mark.rect.width * 100}%`;
   element.style.height = `${mark.rect.height * 100}%`;
+  // A note shows its icon with its words as a tip; text and pictures show as they will be written.
+  if (mark.type === 'note') { element.textContent = '🗨'; element.title = mark.text ?? ''; element.setAttribute('aria-label', `Note: ${mark.text ?? ''}`); }
+  if (mark.type === 'text') { element.textContent = mark.text ?? ''; element.style.color = mark.color ?? '#000000'; element.style.fontSize = `calc(${mark.size ?? 12}px * var(--page-scale, 1))`; }
+  if (mark.type === 'ocr') { element.title = `${(mark.words ?? []).length} words recognised`; element.setAttribute('aria-hidden', 'true'); }
+  if (mark.type === 'image' && mark.image) { const img = document.createElement('img'); img.src = mark.image; img.alt = 'Signature'; element.append(img); }
   return element;
 }

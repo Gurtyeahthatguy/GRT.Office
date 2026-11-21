@@ -148,7 +148,7 @@ describe('reading PowerPoint', () => {
     expect(slide.background).toBe('#102030');
     expect(slide.transition).toBe('fade');
     const [shape, label, line, picture, table] = slide.elements;
-    expect(shape).toMatchObject({ kind: 'shape', shape: 'ellipse', fill: '#ff0000', stroke: '#00ff00', strokeWidth: 3, rotation: 90 });
+    expect(shape).toMatchObject({ kind: 'shape', shape: 'ellipse', fillLook: { color: '#ff0000' }, line: { color: '#00ff00', width: 3 }, rotation: 90 });
     expect(label).toMatchObject({ kind: 'text', x: 10, y: 20, w: 300, h: 100, valign: 'middle', align: 'center', size: 32 });
     expect(line).toMatchObject({ kind: 'line', w: 100, h: 50, flipH: true, arrow: true, thickness: 2, fill: '#0000ff' });
     expect(picture).toMatchObject({ kind: 'image', x: 500, y: 500, w: 100, h: 50, resource: 'resources/picture.png' });
@@ -165,7 +165,7 @@ describe('reading PowerPoint', () => {
     const { document } = readPptx(pkg);
     expect(document.masters).toHaveLength(1);
     expect(document.masters[0].name).toBe('Title and Content');
-    expect(document.masters[0].elements[0]).toMatchObject({ kind: 'shape', fill: '#ed7d31', y: 700 });
+    expect(document.masters[0].elements[0]).toMatchObject({ kind: 'shape', fillLook: { color: '#ed7d31' }, y: 700 });
     expect(document.slides[0].master).toBe(document.masters[0].id);
     expect(document.masters[0].elements[0].z).toBeLessThan(0);
   });
@@ -213,7 +213,7 @@ describe('writing PowerPoint', () => {
     expect(title.content).toEqual([{ text: 'Hello ', bold: true }, { text: 'there', bold: true, italic: true, color: '#cc0000' }]);
     expect(title.size).toBe(72);
     expect(body).toMatchObject({ size: 40, align: 'right', valign: 'middle', content: [{ text: 'Line one\nLine two' }] });
-    expect(shape).toMatchObject({ kind: 'shape', shape: 'diamond', fill: '#336699', x: 700, w: 200 });
+    expect(shape).toMatchObject({ kind: 'shape', shape: 'diamond', fillLook: { color: '#336699' }, x: 700, w: 200 });
     expect(line).toMatchObject({ kind: 'line', arrow: true, thickness: 6, x: 100, y: 600, w: 300, h: 50 });
     // A 2 × 1 picture contained in a square box keeps its shape.
     expect(picture).toMatchObject({ kind: 'image', x: 900, y: 500, w: 200, h: 100 });
@@ -225,7 +225,7 @@ describe('writing PowerPoint', () => {
     expect(document.slides[1].background).toBe('#202020');
     expect(document.slides[1].section).toBe('Results');
     expect(document.masters.map((m) => m.name)).toEqual(['Branded']);
-    expect(document.masters[0].elements[0]).toMatchObject({ kind: 'shape', fill: '#ff8800', w: 1280, h: 10 });
+    expect(document.masters[0].elements[0]).toMatchObject({ kind: 'shape', fillLook: { color: '#ff8800' }, w: 1280, h: 10 });
     expect(document.slides[1].master).toBe(document.masters[0].id);
     expect(document.slides[0].master).toBeNull();
   });

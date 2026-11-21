@@ -32,26 +32,56 @@ function control(field, id) {
  * @param {HTMLElement} host
  * @param {() => {title: string, fields: {label: string, kind?: string, value?: any, options?: [any, string][], apply: (value: any) => void, row?: string}[]}[]} describe
  *   the sections for what is selected now; an empty list says nothing is
- * @returns {{refresh: () => void}}
+ * @param {{decks?: {id: string, label: string, html: () => string, click?: (event: MouseEvent) => void}[]}} options
+ *   decks beside Properties, as LibreOffice's sidebar has Styles, Gallery and Navigator, chosen by the tabs at its top
+ * @returns {{refresh: () => void, show: (id: string) => void}}
  */
-export function createProperties(host, describe) {
+export function createProperties(host, describe, { decks = [] } = {}) {
   host.classList.add('grt-properties');
   host.setAttribute('role', 'complementary');
-  host.setAttribute('aria-label', 'Properties');
+  host.setAttribute('aria-label', 'Sidebar');
   let fields = [];
   let editing = false;
+  let deck = 'properties';
+  const bar = decks.length ? document.createElement('div') : null;
+  const body = decks.length ? document.createElement('div') : host;
+  if (bar) {
+    bar.className = 'sidebar-decks';
+    bar.setAttribute('role', 'tablist');
+    bar.innerHTML = [{ id: 'properties', label: 'Properties' }, ...decks].map((d) => `<button type="button" role="tab" data-deck="${escape(d.id)}" aria-selected="${d.id === deck}">${escape(d.label)}</button>`).join('');
+    body.className = 'sidebar-deck';
+    host.replaceChildren(bar, body);
+    bar.addEventListener('click', (event) => {
+      const tab = event.target.closest('[data-deck]');
+      if (tab) show(tab.dataset.deck);
+    });
+    body.addEventListener('click', (event) => {
+      if (deck !== 'properties') decks.find((d) => d.id === deck)?.click?.(event);
+    });
+  }
+
+  /** Brings a deck to the front: Properties, or one of the others. */
+  function show(id) {
+    deck = id === 'properties' || decks.some((d) => d.id === id) ? id : 'properties';
+    for (const tab of bar?.querySelectorAll('[data-deck]') ?? []) tab.setAttribute('aria-selected', String(tab.dataset.deck === deck));
+    refresh();
+  }
 
   function refresh() {
+    if (deck !== 'properties') {
+      body.innerHTML = decks.find((d) => d.id === deck)?.html() ?? '';
+      return;
+    }
     // A field being typed into is not redrawn under the cursor.
-    if (editing && host.contains(document.activeElement) && document.activeElement.matches('input:not([type="checkbox"]), textarea')) return;
+    if (editing && body.contains(document.activeElement) && document.activeElement.matches('input:not([type="checkbox"]), textarea')) return;
     const sections = describe() ?? [];
     fields = sections.flatMap((s) => s.fields);
     if (!sections.length) {
-      host.innerHTML = '<p class="empty">Select something to see its properties here.</p>';
+      body.innerHTML = '<p class="empty">Select something to see its properties here.</p>';
       return;
     }
     let index = 0;
-    host.innerHTML = sections.map((section) => {
+    body.innerHTML = sections.map((section) => {
       const groups = [];
       for (const field of section.fields) {
         const id = index++;
@@ -67,7 +97,7 @@ export function createProperties(host, describe) {
     // A list that can show its choices on the document before one is chosen does so.
     fields.forEach((field, i) => {
       if (field.kind !== 'select' || !field.preview) return;
-      const select = host.querySelector(`select[data-prop="${i}"]`);
+      const select = body.querySelector(`select[data-prop="${i}"]`);
       if (select) livePreview(select, { look: field.look, preview: field.preview, restore: field.restore ?? (() => {}) });
     });
   }
@@ -105,5 +135,5 @@ export function createProperties(host, describe) {
   });
 
   refresh();
-  return { refresh };
+  return { refresh, show };
 }
